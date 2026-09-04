@@ -1,0 +1,15 @@
+{
+  "name": "pi-dispatch",
+  "version": "0.2.0",
+  "description": "Hybrid multi-agent dispatch extension for the pi coding agent \u2014 parallel sub-agents with a strict context firewall",
+  "type": "module",
+  "private": true,
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "repository": {
+    "url": "git+https://github.com/Pfgoriaux/pi-dispatch.git"
+  }
+}
