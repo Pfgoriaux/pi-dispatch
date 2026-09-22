@@ -18,7 +18,6 @@ import { promisify } from "node:util";
 
 const execFileP = promisify(execFile);
 const MAX_BUFFER = 16 * 1024 * 1024;
-const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 export interface GitRunResult {
 	ok: boolean;
@@ -122,7 +121,8 @@ export async function dirtyLines(
 	repoRoot: string,
 	tolerateGitignoreAppend: boolean,
 ): Promise<string[]> {
-	const status = await gitRun(repoRoot, ["status", "--porcelain"]);
+	const status = await gitRun(repoRoot, ["status", "--porcelain", "--untracked-files=all"]);
+	if (!status.ok) throw new Error(`Cannot verify working tree: ${status.stderr.trim()}`);
 	const lines = status.stdout
 		.split("\n")
 		.map((l) => l.trim())
@@ -138,7 +138,8 @@ export async function dirtyLines(
 	if (lines.includes("M .gitignore")) {
 		// Tracked `.gitignore`: only tolerate a diff that purely appends the
 		// `.dispatch/` line.
-		const diff = await gitRun(repoRoot, ["diff", "--", ".gitignore"]);
+		const diff = await gitRun(repoRoot, ["diff", "HEAD", "--", ".gitignore"]);
+		if (!diff.ok) throw new Error(`Cannot verify .gitignore: ${diff.stderr.trim()}`);
 		const changes = diff.stdout
 			.split("\n")
 			.filter(
@@ -242,13 +243,11 @@ export async function removeWorktree(
 	const deleteBranch = options.deleteBranch ?? true;
 	try {
 		const branch = options.branch ?? (await branchOfWorktree(repoRoot, wtPath));
-		// Best-effort in every step: a half-dead worktree must not break cleanup.
-		await gitRun(repoRoot, ["worktree", "remove", "--force", wtPath]);
-		try {
-			fs.rmSync(wtPath, { recursive: true, force: true });
-		} catch {
-			/* ignore */
-		}
+		// Never force removal: Git protects dirty, locked and otherwise unsafe
+		// worktrees. Retain both the directory and branch if cleanup is refused.
+		if ((await dirtyLines(wtPath, false)).length > 0) return;
+		const removed = await gitRun(repoRoot, ["-c", "status.showUntrackedFiles=all", "worktree", "remove", wtPath]);
+		if (!removed.ok) return;
 		if (deleteBranch && branch) {
 			// A branch still checked out elsewhere can't be deleted; force is
 			// fine because either it was merged or the operator chose removal.
@@ -265,48 +264,7 @@ export async function removeWorktrees(repoRoot: string, paths: string[]): Promis
 	await Promise.allSettled(paths.map((p) => removeWorktree(repoRoot, p)));
 }
 
-/**
- * Startup GC (best-effort, never throws): remove `.dispatch/worktrees/*`
- * entries whose branch no longer exists or that are older than 24h (mtime).
- * Branches of age-GC'd worktrees are kept — only the worktree entry goes.
- */
+/** Prune missing-worktree metadata only. Age is not proof a worker stopped. */
 export async function pruneStale(repoRoot: string): Promise<void> {
-	let entries: fs.Dirent[];
-	try {
-		entries = fs.readdirSync(worktreeRoot(repoRoot), { withFileTypes: true });
-	} catch {
-		return;
-	}
-	await Promise.allSettled(
-		entries.map(async (entry) => {
-			try {
-				if (!entry.isDirectory()) return;
-				const wtPath = path.join(worktreeRoot(repoRoot), entry.name);
-				const stat = (() => {
-					try {
-						return fs.statSync(wtPath);
-					} catch {
-						return null;
-					}
-				})();
-				if (!stat) {
-					await removeWorktree(repoRoot, wtPath, { deleteBranch: false });
-					return;
-				}
-				const branch = await branchOfWorktree(repoRoot, wtPath);
-				const branchMissing =
-					branch === undefined ||
-					!(await gitRun(repoRoot, ["rev-parse", "--verify", `refs/heads/${branch}`])).ok;
-				const stale = branchMissing || stat.mtimeMs < Date.now() - STALE_AFTER_MS;
-				if (stale) {
-					await removeWorktree(repoRoot, wtPath, {
-						deleteBranch: false, // keep branches for audit
-						branch,
-					});
-				}
-			} catch {
-				/* best-effort */
-			}
-		}),
-	);
+	await gitRun(repoRoot, ["worktree", "prune"]);
 }

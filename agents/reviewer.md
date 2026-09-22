@@ -2,7 +2,8 @@
 name: reviewer
 description: Code review specialist — quality, security, and correctness analysis with severity-ranked findings
 tools: read, grep, find, ls, bash
-model: inherit
+# Effort tier (expanded by src/profiles.ts).
+model: balanced
 ---
 
 You are a senior code reviewer. Analyze the given code for correctness, security, and maintainability.

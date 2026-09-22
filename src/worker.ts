@@ -2,9 +2,9 @@
  * In-process worker runner (research tier).
  *
  * Each worker is a hermetic AgentSession:
- * - Own DefaultResourceLoader with noExtensions/noSkills/noContextFiles and
- *   the agent's system prompt (kills dispatch-in-dispatch recursion and cuts
- *   worker startup to ~10-40ms).
+ * - Own DefaultResourceLoader with extension discovery, skills and context files
+ *   disabled. Linkup tool entrypoints are added to every worker when available;
+ *   dispatch and unrelated extensions are never loaded.
  * - Own SessionManager (in-memory, compaction disabled).
  * - Tool allowlist from the agent definition.
  *
@@ -23,28 +23,42 @@ import {
 	SettingsManager,
 	type ModelRegistry,
 } from "@earendil-works/pi-coding-agent";
-import type { Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { resolveWorkerModel, sharedModelRuntime } from "./model.ts";
+import { LINKUP_GUIDANCE, LinkupSetupError, workerTools, requestedLinkupTools } from "./linkup.ts";
 import {
 	loadRosterConfig,
 	markCooldown,
 	resolveCandidates,
+	withProviderFallbacks,
 	type RankedCandidate,
 } from "./roster.ts";
+import { THINKING_LEVELS } from "./types.ts";
+import { ToolHealth } from "./tool-health.ts";
 import type { AgentConfig, WorkerResult } from "./types.ts";
 
 export interface RunWorkerOptions {
 	registry: ModelRegistry;
 	/** Parent's active model; used when the agent spec says "inherit". */
-	fallbackModel: Model | undefined;
+	fallbackModel: Model<Api> | undefined;
 	cwd?: string;
 	signal?: AbortSignal;
 	/** Called at message/tool boundaries so the TUI can update (never per-delta). */
 	onBoundary?: () => void;
+	/** Actual resolved model for each attempt, UI-only. */
+	onAttempt?: (model: string, thinking: string, attempt: number) => void;
+	/** Bounded activity metadata; no tool arguments/results or thinking text. */
+	onStream?: (line: string) => void;
+	/** Non-fatal capability setup warnings, UI-only. */
+	onWarning?: (warning: string) => void;
 	/** Opt-in: persist the worker session for later resumption. */
 	persist?: boolean;
 	/** Resume a persisted worker session from its file (continues the convo). */
 	resumeFile?: string;
+	/** Explicit model override ("provider/id"), bypassing roster and frontmatter. Used by orchestrator tools that need per-invocation model choice (e.g. diverse pairs). */
+	modelSpec?: string;
+	/** Thinking level forced alongside modelSpec (defaults to "high"). */
+	thinking?: string;
 }
 
 /** Where persisted worker sessions live: <agentDir>/pi-dispatch/sessions. */
@@ -137,7 +151,10 @@ function sumUsage(messages: Array<{ role: string; usage?: Usage }>): Usage {
 	return total;
 }
 
-function addUsage(a: Usage | undefined, b: Usage | undefined): Usage | undefined {
+function addUsage(
+	a: Usage | undefined,
+	b: Usage | undefined,
+): Usage | undefined {
 	if (!a && !b) return undefined;
 	const x = a ?? {
 		input: 0,
@@ -171,6 +188,14 @@ function addUsage(a: Usage | undefined, b: Usage | undefined): Usage | undefined
 	};
 }
 
+/** Include failed attempts and completed workers in tool-level usage accounting. */
+export function sumWorkerUsage(results: WorkerResult[]): Usage | undefined {
+	return results.reduce<Usage | undefined>(
+		(sum, result) => addUsage(sum, result.usage),
+		undefined,
+	);
+}
+
 export async function runWorker(
 	agent: AgentConfig,
 	task: string,
@@ -184,7 +209,10 @@ export async function runWorker(
 		ms: 0,
 	};
 
-	const fail = (status: WorkerResult["status"], error: string): WorkerResult => ({
+	const fail = (
+		status: WorkerResult["status"],
+		error: string,
+	): WorkerResult => ({
 		...base,
 		status,
 		text: "",
@@ -194,58 +222,113 @@ export async function runWorker(
 
 	if (options.signal?.aborted) return fail("aborted", "Aborted before start");
 
-	const rosterConfig = await loadRosterConfig();
-	const candidates = resolveCandidates(agent, rosterConfig);
+	const web = workerTools(agent.tools);
+	if (web.warning) options.onWarning?.(web.warning);
+	const extensionPaths = web.extensionPaths;
+	agent = {
+		...agent,
+		tools: web.tools,
+		systemPrompt: `${agent.systemPrompt || `You are ${agent.name}. ${agent.description}`}\n\n${web.warning ? "Linkup web tools are unavailable in this worker. Do not claim to have searched the web." : LINKUP_GUIDANCE}`,
+	};
+
+	const override = options.modelSpec?.trim();
+	const thinking =
+		options.thinking && THINKING_LEVELS.has(options.thinking)
+			? (options.thinking as AgentConfig["thinking"])
+			: (agent.thinking ?? "high");
+	// Explicit choices bypass rosters, including explicit parent inheritance.
+	const candidates: RankedCandidate[] = override
+		? override === "inherit"
+			? []
+			: withProviderFallbacks([
+					{
+						modelSpec: override,
+						thinking: thinking!,
+						entry: {
+							provider: "",
+							model: override,
+							thinking: thinking!,
+							weight: 1,
+						},
+					},
+				])
+		: resolveCandidates(agent, await loadRosterConfig());
 
 	if (candidates.length === 0) {
-		// No roster/frontmatter override: try inherit fallback once as a single candidate.
+		// No roster/frontmatter override: inherit the parent and its provider fallback.
 		if (!options.fallbackModel) {
 			return fail(
 				"error",
 				`No model available for agent "${agent.name}" (spec: ${agent.model ?? "inherit"})`,
 			);
 		}
-		const result = await runOneCandidate(
-			agent,
-			task,
-			options,
-			{
-				modelSpec: `${options.fallbackModel.provider}/${options.fallbackModel.id}`,
+		candidates.push(...withProviderFallbacks([{
+			modelSpec: `${options.fallbackModel.provider}/${options.fallbackModel.id}`,
+			thinking: "off",
+			entry: {
+				provider: options.fallbackModel.provider,
+				model: options.fallbackModel.id,
 				thinking: "off",
-				entry: {
-					provider: options.fallbackModel.provider,
-					model: options.fallbackModel.id,
-					thinking: "off",
-					weight: 1,
-				},
+				weight: 1,
 			},
-			options.fallbackModel,
-		);
-		return { ...result, attempts: 1, ms: Date.now() - started };
+		}]));
 	}
 
 	let aggregatedUsage: Usage | undefined;
 	let lastError: string | undefined;
+	let lastAttempt: WorkerResult | undefined;
+	let attempts = 0;
 
 	for (let i = 0; i < candidates.length; i++) {
 		const candidate = candidates[i];
-		const model = resolveWorkerModel(
-			options.registry,
-			candidate.modelSpec,
-			undefined,
-		);
+		if (options.signal?.aborted) {
+			return { ...fail("aborted", "Aborted before next attempt"), attempts, usage: aggregatedUsage };
+		}
+		const parent = options.fallbackModel;
+		const model = parent && candidate.modelSpec === `${parent.provider}/${parent.id}`
+			? parent
+			: resolveWorkerModel(options.registry, candidate.modelSpec, undefined);
 		if (!model) {
 			// Config error (typo'd model id), not a model-health failure: fail the
 			// candidate without poisoning cooldowns.
-			lastError = `No model available for candidate "${candidate.modelSpec}"`;
+			lastError ??= `No model available for candidate "${candidate.modelSpec}"`;
 			continue;
 		}
 
-		const attempt = await runOneCandidate(agent, task, options, candidate, model);
+		attempts++;
+		options.onAttempt?.(
+			`${model.provider}/${model.id}`,
+			candidate.thinking,
+			attempts,
+		);
+		let attempt: WorkerResult;
+		try {
+			attempt = await runOneCandidate(agent, task, options, candidate, model, extensionPaths);
+		} catch (error) {
+			// Missing requested tools are configuration failures, not unhealthy models.
+			if (error instanceof LinkupSetupError) {
+				return {
+					...fail(options.signal?.aborted ? "aborted" : "error", error.message),
+					model: `${model.provider}/${model.id}`, thinking: candidate.thinking,
+					attempts, usage: aggregatedUsage,
+				};
+			}
+			attempt = {
+				...fail(options.signal?.aborted ? "aborted" : "error", String(error)),
+				model: `${model.provider}/${model.id}`,
+				thinking: candidate.thinking,
+			};
+		}
+		lastAttempt = attempt;
 		aggregatedUsage = addUsage(aggregatedUsage, attempt.usage);
 		lastError = attempt.error;
 		if (attempt.status === "ok") {
-			return { ...attempt, usage: aggregatedUsage, attempts: i + 1, ms: Date.now() - started };
+			return {
+				...attempt,
+				usage: aggregatedUsage,
+				attempts,
+				ms: Date.now() - started,
+			};
 		}
 		// Abort is user-initiated, never a candidate failure: return immediately,
 		// keep the partial text, and do NOT poison cooldowns for models that
@@ -255,11 +338,11 @@ export async function runWorker(
 				...attempt,
 				status: "aborted",
 				usage: aggregatedUsage,
-				attempts: i + 1,
+				attempts,
 				ms: Date.now() - started,
 			};
 		}
-		markCooldown(candidate.entry.provider, candidate.entry.model);
+		if (!override) markCooldown(model.provider, model.id);
 	}
 
 	// All candidates exhausted (or all failed to resolve).
@@ -271,7 +354,9 @@ export async function runWorker(
 			lastError ??
 			`All ${candidates.length} model candidate(s) failed for agent "${agent.name}"`,
 		usage: aggregatedUsage,
-		attempts: candidates.length,
+		model: lastAttempt?.model,
+		thinking: lastAttempt?.thinking,
+		attempts,
 		ms: Date.now() - started,
 	};
 }
@@ -281,7 +366,8 @@ async function runOneCandidate(
 	task: string,
 	options: RunWorkerOptions,
 	candidate: RankedCandidate,
-	model: Model,
+	model: Model<Api>,
+	extensionPaths: string[],
 ): Promise<WorkerResult> {
 	const started = Date.now();
 	const base = {
@@ -291,7 +377,10 @@ async function runOneCandidate(
 		ms: 0,
 	};
 
-	const fail = (status: WorkerResult["status"], error: string): WorkerResult => ({
+	const fail = (
+		status: WorkerResult["status"],
+		error: string,
+	): WorkerResult => ({
 		...base,
 		status,
 		text: "",
@@ -315,13 +404,23 @@ async function runOneCandidate(
 		agentDir: getAgentDir(),
 		settingsManager,
 		noExtensions: true,
+		...(extensionPaths.length ? { additionalExtensionPaths: extensionPaths } : {}),
 		noSkills: true,
 		noPromptTemplates: true,
 		noThemes: true,
 		noContextFiles: true,
-		systemPrompt: agent.systemPrompt || `You are ${agent.name}. ${agent.description}`,
+		systemPrompt:
+			agent.systemPrompt || `You are ${agent.name}. ${agent.description}`,
 	});
 	await loader.reload();
+	if (extensionPaths.length) {
+		const loaded = loader.getExtensions();
+		const missing = requestedLinkupTools(agent.tools).filter((name) =>
+			!loaded.extensions.some((extension) => extension.tools.has(name)));
+		if (loaded.errors.length || missing.length) {
+			throw new LinkupSetupError("Requested Linkup tools failed to register. Check the installed pi-linkup version and LINKUP_API_KEY.");
+		}
+	}
 
 	const sessionManager = options.resumeFile
 		? SessionManager.open(options.resumeFile)
@@ -332,9 +431,9 @@ async function runOneCandidate(
 	const { session } = await createAgentSession({
 		cwd: effectiveCwd,
 		model,
-		thinkingLevel: candidate.thinking,
-		// Hermetic workers: only built-ins from the agent allowlist. Empty list
-		// (frontmatter `tools: none`) means no tools at all.
+		thinkingLevel: candidate.thinking as AgentConfig["thinking"],
+		// The role's local tool allowlist plus shared Linkup tools when available.
+		// An empty effective list means neither local nor web tools are available.
 		...(agent.tools && agent.tools.length > 0
 			? { tools: agent.tools }
 			: { noTools: "all" as const }),
@@ -348,6 +447,7 @@ async function runOneCandidate(
 	const onAbort = () => session.abort();
 	options.signal?.addEventListener("abort", onAbort, { once: true });
 
+	const toolHealth = new ToolHealth(session.getActiveToolNames());
 	const unsubscribe = session.subscribe((event) => {
 		// Throttle UI updates to message/tool boundaries, never per-delta:
 		// host + N workers share one event loop.
@@ -358,9 +458,23 @@ async function runOneCandidate(
 		) {
 			options.onBoundary?.();
 		}
+		if (
+			event.type === "tool_execution_start" ||
+			event.type === "tool_execution_end"
+		) {
+			options.onStream?.(toolHealth.format(event));
+			if (!toolHealth.failure && toolHealth.observe(event)) {
+				options.onStream?.(`cutoff: ${toolHealth.failure}`);
+				// Abort synchronously, without awaiting our own running event loop.
+				// The outer prompt settles and this attempt is classified as a failure.
+				session.agent.abort();
+			}
+		}
 	});
 
 	try {
+		// Cancellation may arrive while the runtime/loader/session is being created.
+		options.signal?.throwIfAborted();
 		await session.prompt(task);
 	} catch (err) {
 		// An abort mid-prompt throws: classify it as abort (with partial text and
@@ -375,7 +489,8 @@ async function runOneCandidate(
 		return {
 			...fail(
 				abortedMidPrompt ? "aborted" : "error",
-				String(err instanceof Error ? err.message : err),
+				toolHealth.failure && !abortedMidPrompt
+					? toolHealth.failure : String(err instanceof Error ? err.message : err),
 			),
 			text: abortedMidPrompt ? partialText : "",
 			usage: partialUsage,
@@ -384,32 +499,36 @@ async function runOneCandidate(
 
 	const aborted = options.signal?.aborted === true;
 	const lastMessage = session.agent.state.messages.at(-1);
-	const failed = lastMessage?.stopReason === "error";
+	const failed =
+		lastMessage?.role === "assistant" && lastMessage.stopReason === "error";
 	const finalText = session.getLastAssistantText() ?? "";
 	// Blank-response detection (pi-harness pattern): a completed turn whose
 	// assistant content carries no text at all — thinking-only or literally
 	// empty — is a failed attempt, not a legitimate short answer. It fails
 	// over to the next roster candidate; aborts keep their partial text.
-	const blank =
-		!failed && !aborted && finalText.trim().length === 0;
+	const blank = !failed && !aborted && finalText.trim().length === 0;
 
 	const result: WorkerResult = {
 		...base,
-		status: failed ? "error" : aborted ? "aborted" : blank ? "error" : "ok",
-		text: finalText,
-		error: failed
+		status: aborted ? "aborted" : toolHealth.failure || failed || blank ? "error" : "ok",
+		text: toolHealth.failure && !aborted ? "" : finalText,
+		error: aborted ? undefined : toolHealth.failure ?? (failed
 			? lastMessage?.errorMessage
 			: blank
 				? "blank response (no text in final assistant message; thinking-only or empty)"
-				: undefined,
+				: undefined),
 		sessionId: session.sessionId,
-		model: candidate.modelSpec,
-		thinking: candidate.thinking,
+		model: `${model.provider}/${model.id}`,
+		thinking: session.thinkingLevel,
 		usage: sumUsage(session.agent.state.messages),
 		ms: Date.now() - started,
 	};
 	if (options.persist) {
-		recordWorkerSession(session.sessionId, session.sessionFile ?? "", agent.name);
+		recordWorkerSession(
+			session.sessionId,
+			session.sessionFile ?? "",
+			agent.name,
+		);
 	}
 	unsubscribe();
 	options.signal?.removeEventListener("abort", onAbort);
@@ -427,7 +546,10 @@ async function runOneCandidate(
  */
 const MAX_OUTPUT_BYTES = 12 * 1024;
 
-export function truncateText(text: string, maxBytes = MAX_OUTPUT_BYTES): {
+export function truncateText(
+	text: string,
+	maxBytes = MAX_OUTPUT_BYTES,
+): {
 	text: string;
 	truncated: boolean;
 } {

@@ -7,7 +7,39 @@
  * never blocks, never throws, silently disabled everywhere else.
  */
 
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
+interface HerdrResponse {
+	pane?: { workspace_id?: string; pane_id?: string };
+	tab?: { tab_id?: string };
+	root_pane?: { pane_id?: string };
+}
+
+/** Bounded CLI transport; callers own non-fatal handling and cleanup. */
+export async function herdrCommand(args: string[]): Promise<HerdrResponse> {
+	try {
+		const { stdout } = await execFileAsync("herdr", args, {
+			timeout: 5000,
+			maxBuffer: 256 * 1024,
+		});
+		// Herdr 0.8.2 acknowledges several successful mutations with empty stdout.
+		if (!stdout.trim()) return {};
+		const result = JSON.parse(stdout).result;
+		if (!result) throw new Error("empty Herdr response");
+		return result;
+	} catch (error) {
+		const stderr = (error as { stderr?: string }).stderr;
+		let reason = "command failed or timed out";
+		try {
+			const message = JSON.parse(stderr ?? "").error?.message;
+			if (typeof message === "string") reason = message;
+		} catch { /* no CLI diagnostic */ }
+		throw new Error(`Herdr ${args[0]} ${args[1]}: ${reason.slice(0, 240)}`);
+	}
+}
 
 export function herdrEnabled(): boolean {
 	return (

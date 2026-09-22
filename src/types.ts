@@ -54,10 +54,24 @@ export interface WorkerResult {
 	ms: number;
 }
 
+/** Planned/running identities; separate from terminal WorkerResult values. */
+export interface WorkerActivity {
+	index: number;
+	agent: string;
+	task: string;
+	status: "queued" | "running" | WorkerStatus;
+	model?: string;
+	thinking?: string;
+	attempts: number;
+	ms: number;
+}
+
 /** UI-only details carried on the tool result. Never sent to the model. */
 export interface DispatchDetails {
 	mode: "single" | "parallel" | "chain" | "resume";
 	items: WorkerResult[];
+	activity?: WorkerActivity[];
+	warnings?: string[];
 	aggregated: boolean;
 	truncated: boolean;
 	/** Planned worker count (tasks, excluding aggregator). Denominator for progress. */

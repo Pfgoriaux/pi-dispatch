@@ -8,7 +8,7 @@
  * registration and the resolved credential into the worker runtime.
  */
 
-import type { Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import {
 	CredentialSynchronizationError,
 	type ModelRegistry,
@@ -19,15 +19,14 @@ const providerRuntimes = new Map<string, Promise<ModelRuntime>>();
 
 export function sharedModelRuntime(
 	registry: ModelRegistry,
-	model: Model,
+	model: Model<Api>,
 ): Promise<ModelRuntime> {
 	const existing = providerRuntimes.get(model.provider);
 	if (existing) return existing;
 
 	const created = (async () => {
 		const runtime = await ModelRuntime.create();
-		const nativeProvider =
-			registry.getRegisteredNativeProvider(model.provider);
+		const nativeProvider = registry.getRegisteredNativeProvider(model.provider);
 		if (nativeProvider) {
 			runtime.registerNativeProvider(nativeProvider);
 		}
@@ -45,6 +44,10 @@ export function sharedModelRuntime(
 	})();
 
 	providerRuntimes.set(model.provider, created);
+	void created.catch(() => {
+		if (providerRuntimes.get(model.provider) === created)
+			providerRuntimes.delete(model.provider);
+	});
 	return created;
 }
 
@@ -52,8 +55,8 @@ export function sharedModelRuntime(
 export function resolveWorkerModel(
 	registry: ModelRegistry,
 	spec: string | undefined,
-	fallback: Model | undefined,
-): Model | undefined {
+	fallback: Model<Api> | undefined,
+): Model<Api> | undefined {
 	if (!spec || spec === "inherit" || spec === "") return fallback;
 	const slash = spec.indexOf("/");
 	if (slash === -1) {

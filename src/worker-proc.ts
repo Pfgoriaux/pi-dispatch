@@ -7,8 +7,8 @@
  * abort) assistant text is surfaced — the context firewall rules from the
  * SDK tier (worker.ts) apply exactly: no transcripts, no stderr dumps.
  *
- * Recursion backstop: the child is spawned with `--exclude-tools dispatch`
- * and `PI_DISPATCH_DEPTH = parent + 1`; a depth above MAX_PROC_DEPTH is
+ * Recursion backstop: all three workflow tools are excluded from the child.
+ * With `PI_DISPATCH_DEPTH = parent + 1`, a depth above MAX_PROC_DEPTH is
  * refused outright.
  */
 
@@ -16,21 +16,36 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
-import type { AgentConfig, WorkerResult } from "./types.ts";
+import { LINKUP_GUIDANCE, workerTools } from "./linkup.ts";
+import { ToolHealth } from "./tool-health.ts";
+import { withProviderFallbacks } from "./roster.ts";
+import { dirtyLines } from "./worktree.ts";
+import { stopWorker } from "./process-tree.ts";
+import {
+	THINKING_LEVELS,
+	type AgentConfig,
+	type WorkerResult,
+} from "./types.ts";
 
-const ABORT_SIGKILL_AFTER_MS = 5000;
 const MAX_PROC_DEPTH = 2;
 
 export interface RunWorkerProcOptions {
 	/** Working directory for the child (the task's git worktree). */
 	cwd: string;
+	/** Write-tier tasks must commit all tracked/untracked edits before merging. */
+	requireCleanWorktree?: boolean;
 	signal?: AbortSignal;
 	/** Called at tool boundaries so the TUI can update (never per-delta). */
 	onBoundary?: () => void;
 	/** Live worker activity for observers (Herdr panes); UI-only, throttled naturally by event rate. */
 	onStream?: (line: string) => void;
+	onWarning?: (warning: string) => void;
+	onAttempt?: (model: string, thinking: string, attempt: number) => void;
+	thinking?: string;
 	/** Parent model as `provider/id`; used when the agent spec says "inherit". */
 	model?: string;
+	/** Per-task model override (tier-expanded `provider/id`); wins over agent frontmatter. */
+	modelOverride?: string;
 }
 
 /**
@@ -112,8 +127,8 @@ function sumUsage(messages: ChildMessage[]): Usage {
 		total.totalTokens += message.usage.totalTokens ?? 0;
 		total.cost.input += message.usage.cost?.input ?? 0;
 		total.cost.output += message.usage.cost?.output ?? 0;
-		total.cost.cacheRead += message.usage.cacheRead ?? 0;
-		total.cost.cacheWrite += message.usage.cacheWrite ?? 0;
+		total.cost.cacheRead += message.usage.cost?.cacheRead ?? 0;
+		total.cost.cacheWrite += message.usage.cost?.cacheWrite ?? 0;
 		total.cost.total += message.usage.cost?.total ?? 0;
 	}
 	return total;
@@ -125,8 +140,54 @@ export async function runWorkerProc(
 	options: RunWorkerProcOptions,
 ): Promise<WorkerResult> {
 	const started = Date.now();
-	const base = { agent: agent.name, task, ms: 0 };
-	const fail = (status: WorkerResult["status"], error: string): WorkerResult => ({
+	const spec = options.modelOverride?.trim() || agent.model;
+	const model = spec && spec !== "inherit" ? spec : options.model;
+	if (!model) return runOneProc(agent, task, options);
+	const thinking = options.thinking && THINKING_LEVELS.has(options.thinking)
+		? options.thinking : (agent.thinking ?? "off");
+	const candidates = withProviderFallbacks([{
+		modelSpec: model, thinking,
+		entry: { provider: "", model, thinking, weight: 1 },
+	}]);
+	const attempts: WorkerResult[] = [];
+	let result!: WorkerResult;
+	for (const candidate of candidates) {
+		if (options.signal?.aborted) {
+			result = { agent: agent.name, task, status: "aborted", text: "", error: "Aborted before next attempt", ms: 0, attempts: attempts.length };
+			break;
+		}
+		let toolsStarted = false;
+		result = await runOneProc(agent, task, {
+			...options,
+			modelOverride: candidate.modelSpec,
+			thinking: candidate.thinking,
+			onAttempt: (selected, effort) => options.onAttempt?.(selected, effort, attempts.length + 1),
+			onBoundary: () => { toolsStarted = true; options.onBoundary?.(); },
+		});
+		attempts.push(result);
+		if (options.signal?.aborted) result = { ...result, status: "aborted" };
+		// A fresh process cannot safely replay a writer after tools may have changed files.
+		if (result.status !== "error" || toolsStarted) break;
+	}
+	return {
+		...result,
+		attempts: attempts.length,
+		usage: sumUsage(attempts.map(attempt => ({ role: "assistant", usage: attempt.usage }))),
+		ms: Date.now() - started,
+	};
+}
+
+async function runOneProc(
+	agent: AgentConfig,
+	task: string,
+	options: RunWorkerProcOptions,
+): Promise<WorkerResult> {
+	const started = Date.now();
+	const base = { agent: agent.name, task, ms: 0, attempts: 1 };
+	const fail = (
+		status: WorkerResult["status"],
+		error: string,
+	): WorkerResult => ({
 		...base,
 		status,
 		text: "",
@@ -137,7 +198,8 @@ export async function runWorkerProc(
 	if (options.signal?.aborted) return fail("aborted", "Aborted before start");
 
 	// Depth backstop for dispatch-in-dispatch via child processes.
-	const parentDepth = Number.parseInt(process.env.PI_DISPATCH_DEPTH ?? "0", 10) || 0;
+	const parentDepth =
+		Number.parseInt(process.env.PI_DISPATCH_DEPTH ?? "0", 10) || 0;
 	const childDepth = parentDepth + 1;
 	if (childDepth > MAX_PROC_DEPTH) {
 		return fail(
@@ -146,22 +208,32 @@ export async function runWorkerProc(
 		);
 	}
 
+	const web = workerTools(agent.tools);
+	if (web.warning) options.onWarning?.(web.warning);
 	const args: string[] = ["-p", "--no-session", "--mode", "json"];
-	if (agent.tools && agent.tools.length > 0) {
-		args.push("--tools", agent.tools.join(","));
+	for (const entry of web.extensionPaths) args.push("--extension", entry);
+	if (web.tools.length > 0) {
+		args.push("--tools", web.tools.join(","));
 	} else {
 		args.push("--no-tools");
 	}
 	// Recursion backstop: the child must never be able to dispatch.
-	args.push("--exclude-tools", "dispatch");
+	args.push("--exclude-tools", "dispatch,pr_review,feature_plan");
 	// Same "inherit" semantics as resolveWorkerModel (model.ts): a literal
 	// "inherit" (or empty) spec means "use the parent's model". The raw
 	// string must never reach the child CLI as --model (pi exits 1 with
 	// `Model "inherit" not found` before making any API call).
-	const model = agent.model && agent.model !== "inherit" ? agent.model : options.model;
+	const spec = options.modelOverride?.trim() || agent.model;
+	const model = spec && spec !== "inherit" ? spec : options.model;
+	const thinking =
+		options.thinking && THINKING_LEVELS.has(options.thinking)
+			? options.thinking
+			: (agent.thinking ?? "off");
 	if (model) args.push("--model", model);
+	args.push("--thinking", thinking);
+	options.onAttempt?.(model ?? "child default", thinking, 1);
 	const systemPrompt =
-		agent.systemPrompt.trim() || `You are ${agent.name}. ${agent.description}`;
+		`${agent.systemPrompt.trim() || `You are ${agent.name}. ${agent.description}`}\n\n${web.warning ? "Linkup web tools are unavailable in this worker. Do not claim to have searched the web." : LINKUP_GUIDANCE}`;
 	// `--` ends option parsing: `task` is model-controlled text, so without
 	// this separator a task beginning with "-"/"--" would be parsed by the
 	// child pi CLI as a flag (in-context injection rewriting child flags).
@@ -177,6 +249,7 @@ export async function runWorkerProc(
 	let lastModel: string | undefined;
 	let lastError: { stopReason?: string; errorMessage?: string } | undefined;
 
+	const toolHealth = new ToolHealth(web.tools);
 	let buffer = "";
 	const processLine = (line: string) => {
 		if (!line.trim()) return;
@@ -200,13 +273,9 @@ export async function runWorkerProc(
 								errorMessage: message.errorMessage,
 							};
 						}
-						// Observer-only (Herdr pane log); never surfaces in tool output.
-						const text = textOf(message).trim();
-						if (text) {
-							options.onStream?.(
-								`· ${message.model ?? "worker"}: ${text.replace(/\s+/g, " ").slice(0, 160)}`,
-							);
-						}
+						options.onStream?.(
+							`assistant message completed · ${message.model ?? "worker"}`,
+						);
 					}
 				}
 				break;
@@ -224,6 +293,11 @@ export async function runWorkerProc(
 			case "tool_execution_end":
 				// Map child tool boundaries to the parent's throttled UI updates.
 				options.onBoundary?.();
+				options.onStream?.(toolHealth.format({
+					type: event.type,
+					toolName: typeof event.toolName === "string" ? event.toolName : "",
+					isError: event.isError === true,
+				}));
 				break;
 			case "agent_end": {
 				// Authoritative final state: last assistant message with text,
@@ -245,7 +319,8 @@ export async function runWorkerProc(
 			if (msg.role !== "assistant") continue;
 			const parts = msg.content ?? [];
 			if (parts.some((p) => p.type === "toolCall")) continue;
-			if (parts.some((p) => p.type === "text" && (p.text ?? "").trim())) return i;
+			if (parts.some((p) => p.type === "text" && (p.text ?? "").trim()))
+				return i;
 		}
 		return -1;
 	}
@@ -263,10 +338,12 @@ export async function runWorkerProc(
 		cwd: options.cwd,
 		shell: false,
 		stdio: ["ignore", "pipe", "pipe"],
+		detached: process.platform !== "win32",
 		env: { ...process.env, PI_DISPATCH_DEPTH: String(childDepth) },
 	});
-	proc.stdout.on("data", (data) => {
-		buffer += data.toString();
+	proc.stdout.setEncoding("utf8");
+	proc.stdout.on("data", (data: string) => {
+		buffer += data;
 		const lines = buffer.split("\n");
 		buffer = lines.pop() ?? "";
 		for (const line of lines) processLine(line);
@@ -275,9 +352,12 @@ export async function runWorkerProc(
 	proc.stderr.resume();
 
 	let exitCode: number | null = null;
+	let exitSignal: NodeJS.Signals | null = null;
+	let termination: Promise<void> | undefined;
 	await new Promise<void>((resolve) => {
-		proc.on("close", (code) => {
-			exitCode = code ?? 0;
+		proc.on("close", (code, signal) => {
+			exitCode = code;
+			exitSignal = signal;
 			if (buffer.trim()) processLine(buffer);
 			resolve();
 		});
@@ -288,25 +368,27 @@ export async function runWorkerProc(
 		if (options.signal) {
 			const kill = () => {
 				wasAborted = true;
-				proc.kill("SIGTERM");
-				// SIGKILL backstop if the child is still alive after 5s.
-				setTimeout(() => {
-					if (proc.exitCode === null) proc.kill("SIGKILL");
-				}, ABORT_SIGKILL_AFTER_MS).unref();
+				termination ??= stopWorker(proc, options.onWarning);
 			};
-			options.signal.addEventListener("abort", kill, { once: true });
-			proc.on("close", () => options.signal?.removeEventListener("abort", kill));
+			if (options.signal.aborted) kill();
+			else options.signal.addEventListener("abort", kill, { once: true });
+			proc.on("close", () =>
+				options.signal?.removeEventListener("abort", kill),
+			);
 		}
 	});
 
-	if (wasAborted || options.signal?.aborted) {
+	await termination;
+
+	if (wasAborted || options.signal?.aborted || lastError?.stopReason === "aborted") {
 		// Partial = whatever assistant text was streamed before the kill call.
-		const partial = finalText || finalAssistantText(endedMessages) || streamedText;
+		const partial =
+			finalText || finalAssistantText(endedMessages) || streamedText;
 		return {
 			...base,
 			status: "aborted",
 			text: partial,
-			model: lastModel,
+			model: model ?? lastModel,
 			usage: sumUsage(endedMessages),
 			ms: Date.now() - started,
 		};
@@ -315,6 +397,7 @@ export async function runWorkerProc(
 	if (exitCode !== 0) {
 		const why =
 			lastError?.errorMessage ||
+			(exitSignal ? `child pi terminated by ${exitSignal}` : undefined) ||
 			(lastError?.stopReason && lastError.stopReason !== "end"
 				? `child pi stopped: ${lastError.stopReason}`
 				: `child pi exited with code ${exitCode}`);
@@ -323,18 +406,34 @@ export async function runWorkerProc(
 			status: "error",
 			text: finalText || finalAssistantText(endedMessages),
 			error: why,
-			model: lastModel,
+			model: model ?? lastModel,
 			usage: sumUsage(endedMessages),
 			ms: Date.now() - started,
 		};
 	}
 
+	const text = finalText || finalAssistantText(endedMessages);
+	let worktreeError: string | undefined;
+	if (options.requireCleanWorktree) {
+		try {
+			if ((await dirtyLines(options.cwd, false)).length > 0) {
+				worktreeError = `Worker left uncommitted edits; worktree retained at ${options.cwd}`;
+			}
+		} catch {
+			worktreeError = `Cannot verify committed edits; worktree retained at ${options.cwd}`;
+		}
+	}
+	const failed = lastError?.stopReason === "error" || !text.trim() || !!worktreeError;
 	return {
 		...base,
-		status: "ok",
-		text: finalText || finalAssistantText(endedMessages),
-		model: lastModel,
-		usage: finalUsage ?? sumUsage(endedMessages),
+		status: failed ? "error" : "ok",
+		error: failed
+			? (lastError?.errorMessage ?? worktreeError ?? "blank response from child pi")
+			: undefined,
+		text,
+		model: model ?? lastModel,
+		thinking,
+		usage: endedMessages.length ? sumUsage(endedMessages) : finalUsage,
 		ms: Date.now() - started,
 	};
 }

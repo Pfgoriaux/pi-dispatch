@@ -1,5 +1,10 @@
 # Herdr review #1 — dispatch extension (commit 9f0fb2b)
 
+> Historical review of the named commit, not an audit of current HEAD. The
+> deferred items below describe that point in time; some were implemented later.
+> See [README](../README.md) for current capabilities. Verification claims here
+> refer to the original review session and were not rerun during the docs audit.
+
 Reviewed via `pr_review` fan-out (rev-range `e54c77d..HEAD`) on 2026-09-03:
 - security (deepsec · GLM-5.3) — full structured findings
 - code review (GLM-5.3) — transcript captured; findings extracted

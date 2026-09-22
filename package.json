@@ -1,9 +1,27 @@
 {
   "name": "pi-dispatch",
   "version": "0.2.0",
-  "description": "Hybrid multi-agent dispatch extension for the pi coding agent \u2014 parallel sub-agents with a strict context firewall",
+  "description": "Hybrid multi-agent dispatch extension for the pi coding agent — parallel sub-agents with a strict context firewall",
   "type": "module",
   "private": true,
+  "scripts": {
+    "test": "tsx --test tests/*.test.ts",
+    "check": "tsc --noEmit && npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.85.0",
+    "@earendil-works/pi-coding-agent": "0.85.0",
+    "@earendil-works/pi-server": "0.85.0",
+    "@earendil-works/pi-tui": "0.85.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  },
   "pi": {
     "extensions": [
       "./src/index.ts"

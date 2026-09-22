@@ -1,5 +1,9 @@
 # Phase 0 spike results
 
+> Historical measurements against the version named below. Treat API quirks and
+> timings as observations from that run, not requirements for all pi versions.
+> The deferred list is not a current work queue; see [README](../README.md).
+
 Run 2026-09-03 against the installed pi 0.84.4, provider aperture/neuralwatt (GLM-5.3).
 Spike scripts were throwaway (`/tmp/spikes/`); conclusions below are the durable output.
 

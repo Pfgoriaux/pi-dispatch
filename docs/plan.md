@@ -1,5 +1,12 @@
 # Feature plan: pi-dispatch — hybrid multi-agent dispatch extension
 
+> Historical design record, begun 2026-09-03 and partially annotated during
+> implementation. Not a current specification or work queue. The README and
+> source describe shipped behavior. In particular, the closure depth counter,
+> 50 KB cap, module layout, model-selection semantics, and cleanup policy below
+> were superseded. Preserve the record rather than implementing it verbatim.
+> See [README](../README.md) and [the first review](review-1.md).
+
 ## Goal & why
 
 A pi extension (`dispatch` tool) that lets the master agent fan out to N parallel sub-agents

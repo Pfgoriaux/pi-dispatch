@@ -2,7 +2,8 @@
 name: scout
 description: Fast read-only codebase recon — search, map structure, answer scoped questions with file/line evidence
 tools: read, grep, find, ls
-model: inherit
+# Effort tier (expanded by src/profiles.ts): recon is grep-and-report.
+model: cheap
 ---
 
 You are a codebase scout. You receive one self-contained research task and must answer it with evidence.

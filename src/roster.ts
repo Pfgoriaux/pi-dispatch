@@ -119,16 +119,74 @@ export function loadRosterConfig(): Promise<Map<string, RosterEntry[]> | undefin
 	return cachedConfig;
 }
 
-/** Stable sort by weight desc; skip cooled-down candidates. */
+// Model counterparts in Aperture's Synthetic catalog. Do not guess IDs.
+// Where Synthetic has no exact variant (plain GLM 5.3 is Flash-only there),
+// the closest deliberate substitute is mapped: glm-5.3 (non-flash) →
+// GLM-5.3-Flash. Keep the requested provider first, then its counterpart.
+const SYNTHETIC_COUNTERPARTS = new Map([
+	["kimi-k3", "hf:moonshotai/Kimi-K3"],
+	["glm-5.3", "hf:zai-org/GLM-5.3-Flash"],
+	["glm-5.3-flash", "hf:zai-org/GLM-5.3-Flash"],
+]);
+
+const OPENAI_FALLBACK = "openai-codex/gpt-5.6-terra";
+const routeId = (spec: string) => spec.replace(/^aperture\//, "");
+
+/** Known provider counterparts in either direction, then Codex Terra once, last. */
+export function withProviderFallbacks(candidates: RankedCandidate[]): RankedCandidate[] {
+	const seen = new Set<string>();
+	const result: RankedCandidate[] = [];
+	let terminal: RankedCandidate | undefined;
+	const append = (candidate: RankedCandidate) => {
+		if (seen.has(candidate.modelSpec)) return;
+		seen.add(candidate.modelSpec);
+		result.push(candidate);
+	};
+	const at = (candidate: RankedCandidate, modelSpec: string): RankedCandidate => ({
+		...candidate,
+		modelSpec,
+		entry: { ...candidate.entry, provider: modelSpec.slice(0, modelSpec.indexOf("/")), model: modelSpec.slice(modelSpec.indexOf("/") + 1) },
+	});
+	for (const candidate of candidates) {
+		const route = routeId(candidate.modelSpec);
+		let counterpart: string | undefined;
+		if (route.startsWith("neuralwatt/")) {
+			const synthetic = SYNTHETIC_COUNTERPARTS.get(route.slice("neuralwatt/".length));
+			if (synthetic) counterpart = `synthetic/${synthetic}`;
+		} else if (route.startsWith("synthetic/")) {
+			const synthetic = route.slice("synthetic/".length);
+			// Prefer an already specified variant; otherwise Flash maps back to Flash.
+			const existing = candidates.find(c => {
+				const id = routeId(c.modelSpec);
+				return id.startsWith("neuralwatt/") && SYNTHETIC_COUNTERPARTS.get(id.slice("neuralwatt/".length)) === synthetic;
+			});
+			const id = [...SYNTHETIC_COUNTERPARTS].reverse().find(([, value]) => value === synthetic)?.[0];
+			if (id) counterpart = existing ? routeId(existing.modelSpec) : `neuralwatt/${id}`;
+		}
+		append(candidate);
+		if (!counterpart) continue;
+		const existing = candidates.find(c => routeId(c.modelSpec) === counterpart);
+		append(existing ?? at(candidate, `aperture/${counterpart}`));
+		terminal ??= at(candidate, OPENAI_FALLBACK);
+	}
+	// Preserve explicit Terra settings, but keep it after all provider routes.
+	if (terminal) {
+		const explicit = result.find(c => c.modelSpec === OPENAI_FALLBACK);
+		return [...result.filter(c => c.modelSpec !== OPENAI_FALLBACK), explicit ?? terminal];
+	}
+	return result;
+}
+
+/** Stable sort by weight desc; expand routes before checking their own cooldowns. */
 export function rankCandidates(roster: RosterEntry[]): RankedCandidate[] {
-	return roster
-		.filter((entry) => !isCooledDown(entry.provider, entry.model))
+	return withProviderFallbacks(roster
 		.map((entry) => ({
 			entry,
 			modelSpec: `${entry.provider}/${entry.model}`,
 			thinking: entry.thinking,
 		}))
-		.sort((a, b) => b.entry.weight - a.entry.weight);
+		.sort((a, b) => b.entry.weight - a.entry.weight))
+		.filter(({ entry }) => !isCooledDown(entry.provider, entry.model));
 }
 
 /** Resolve the ordered candidate list for an agent: roster → frontmatter → inherit. */
@@ -143,7 +201,7 @@ export function resolveCandidates(
 	}
 
 	if (agent.model && agent.model !== "inherit") {
-		return [
+		return withProviderFallbacks([
 			{
 				modelSpec: agent.model,
 				thinking: agent.thinking ?? "off",
@@ -157,7 +215,7 @@ export function resolveCandidates(
 					weight: 1,
 				},
 			},
-		];
+		]);
 	}
 
 	return [];

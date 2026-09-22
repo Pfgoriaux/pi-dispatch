@@ -36,7 +36,9 @@ function formatCost(items: WorkerResult[]): string | undefined {
 }
 
 /** Group results by agent name, preserving first-seen order. */
-function groupByAgent(items: WorkerResult[]): { agent: string; rows: WorkerResult[] }[] {
+function groupByAgent(
+	items: WorkerResult[],
+): { agent: string; rows: WorkerResult[] }[] {
 	const order: string[] = [];
 	const map = new Map<string, WorkerResult[]>();
 	for (const r of items) {
@@ -56,7 +58,11 @@ function formatWorkerRow(
 	fg: (c: string, s: string) => string,
 ): string {
 	const color =
-		r.status === "ok" ? "success" : r.status === "aborted" ? "warning" : "error";
+		r.status === "ok"
+			? "success"
+			: r.status === "aborted"
+				? "warning"
+				: "error";
 	let row = `  ${fg(color, statusIcon(r))} ${fg("accent", shortModel(r.model) ?? r.agent)}`;
 	row += fg("dim", ` · ${formatSeconds(r.ms)}`);
 	if (r.attempts > 1) {
@@ -86,7 +92,8 @@ export function renderDispatchCall(
 	theme: { fg: (c: string, s: string) => string; bold: (s: string) => string },
 	context: { lastComponent?: unknown },
 ): Text {
-	const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+	const text =
+		(context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 	const count =
 		(Array.isArray(args.tasks) ? args.tasks.length : 0) ||
 		(Array.isArray(args.chain) ? args.chain.length : 0) ||
@@ -102,20 +109,84 @@ export function renderDispatchCall(
 	if (typeof args.task === "string" && args.task) {
 		content += " " + theme.fg("dim", `"${firstLine(args.task as string, 60)}"`);
 	}
+	const tasks = Array.isArray(args.tasks)
+		? args.tasks
+		: Array.isArray(args.chain)
+			? args.chain
+			: args.agent
+				? [args]
+				: [];
+	for (const [index, item] of tasks.slice(0, 8).entries()) {
+		if (!item || typeof item !== "object") continue;
+		content += `\n  ${index + 1}. ${theme.fg("accent", String(item.agent ?? "agent"))}`;
+		if (typeof item.model === "string")
+			content += theme.fg("dim", ` · requested ${item.model}`);
+		if (typeof item.task === "string")
+			content += theme.fg("dim", ` — ${firstLine(item.task, 70)}`);
+	}
 	text.setText(content);
 	return text;
 }
 
 export function renderDispatchResult(
-	result: { details?: DispatchDetails },
+	result: {
+		details?: DispatchDetails;
+		content?: { type: string; text?: string }[];
+	},
 	options: { expanded: boolean },
 	theme: { fg: (c: string, s: string) => string; bold: (s: string) => string },
 	context: { lastComponent?: unknown },
 ): Text {
-	const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+	const text =
+		(context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 	const details = result.details;
 	if (!details) {
-		text.setText(theme.fg("muted", "dispatch: no details"));
+		text.setText(
+			theme.fg(
+				"muted",
+				result.content
+					?.filter((part) => part.type === "text")
+					.map((part) => part.text ?? "")
+					.join("\n") || "dispatch: no details",
+			),
+		);
+		return text;
+	}
+
+	if (details.running && details.activity) {
+		const done = details.activity.filter(
+			(row) => row.status !== "running" && row.status !== "queued",
+		).length;
+		const lines = [
+			theme.fg(
+				"muted",
+				`⋯ ${done}/${details.activity.length} workers finished`,
+			),
+		];
+		for (const row of details.activity) {
+			const icon =
+				row.status === "queued"
+					? "○"
+					: row.status === "running"
+						? "▶"
+						: row.status === "ok"
+							? "✓"
+							: "✗";
+			const model =
+				row.model ??
+				(row.status === "queued" ? "model pending" : "resolving model");
+			lines.push(
+				`  ${icon} ${row.index + 1}. ${theme.fg("accent", row.agent)} · ${model}` +
+					(row.thinking ? ` · ${row.thinking}` : "") +
+					` · ${row.status} · ${formatSeconds(row.ms)}` +
+					(row.attempts > 1 ? ` · attempt ${row.attempts}` : ""),
+			);
+			if (options.expanded)
+				lines.push(`    ${theme.fg("dim", firstLine(row.task, 100))}`);
+		}
+		for (const warning of details.warnings ?? [])
+			lines.push(theme.fg("warning", warning));
+		text.setText(lines.join("\n"));
 		return text;
 	}
 
@@ -141,7 +212,7 @@ export function renderDispatchResult(
 		if (aborted > 0) content += theme.fg("warning", `, ${aborted} aborted`);
 		// Agent-type repartition — visible without expanding.
 		const groups = groupByAgent(details.items);
-		if (groups.length > 1 || (groups[0]?.rows.length ?? 0) > 1) {
+		if (groups.length > 0) {
 			content +=
 				" " +
 				theme.fg(
@@ -164,8 +235,7 @@ export function renderDispatchResult(
 				theme.fg("toolTitle", theme.bold(`dispatch ${details.mode}`)) +
 				theme.fg("dim", ` — running · ${workers.length}/${total} done`);
 		} else {
-			header =
-				`${workers.length} ${workers.length === 1 ? "worker" : "workers"}`;
+			header = `${workers.length} ${workers.length === 1 ? "worker" : "workers"}`;
 			header += ` · ${ok} ok`;
 			if (failed > 0) header += ` · ${failed} failed`;
 			if (aborted > 0) header += ` · ${aborted} aborted`;
@@ -188,8 +258,9 @@ export function renderDispatchResult(
 		} else {
 			for (const group of groupByAgent(details.items)) {
 				content +=
-				theme.bold(group.agent) +
-				theme.fg("dim", ` ×${group.rows.length}`) + "\n";
+					theme.bold(group.agent) +
+					theme.fg("dim", ` ×${group.rows.length}`) +
+					"\n";
 				for (const r of group.rows) {
 					content += formatWorkerRow(r, theme.fg) + "\n";
 					content += `    ${theme.fg("text", formatResultLine(r))}\n`;
@@ -201,12 +272,14 @@ export function renderDispatchResult(
 		if (details.merges) {
 			if (details.merges.merged.length > 0) {
 				content +=
-					theme.fg("success", `merged · ${details.merges.merged.join(", ")}`) + "\n";
+					theme.fg("success", `merged · ${details.merges.merged.join(", ")}`) +
+					"\n";
 			}
 			for (const f of details.merges.failed) {
 				content +=
 					theme.fg("error", `merge failed · ${f.branch}`) +
-					theme.fg("dim", ` — ${firstLine(f.error ?? "", 80)}`) + "\n";
+					theme.fg("dim", ` — ${firstLine(f.error ?? "", 80)}`) +
+					"\n";
 			}
 		}
 

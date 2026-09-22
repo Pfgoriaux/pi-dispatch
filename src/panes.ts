@@ -1,344 +1,199 @@
-/**
- * Optional Herdr arborescence — one viewer Space per `herdr: true` task.
- *
- * Design: panes are pure VIEWERS. Workers keep their hermetic transport
- * (in-process loops / headless child pi with stdio); each Space merely
- * `tail -f`s a per-worker pretty log that this process writes.
- *
- * Nesting: herdr allows exactly ONE lifecycle authority per pane, so
- * sub-agents can never be reported on the master's pane (the pi agent
- * already owns it). Instead each task gets a git worktree Space
- * (`herdr worktree create` from the master's workspace). The Spaces
- * sidebar groups worktree children under the parent repo row, which
- * gives the operator a proper `pi-dispatch (master) → scout-1, scout-2`
- * arborescence. Clicking a child shows that worker's live log tail.
- *
- * Everything here is best-effort and never throws into the dispatch path:
- * Herdr is observability, not a dependency. Failures are stderr-only —
- * pane log content never becomes model-visible (context firewall applies
- * to UI artifacts too).
- *
- * Cleanup contract: success → the worker's Space is removed; failure →
- * the Space is held open with the error message for post-mortem. Log
- * artifacts live under a fresh os.tmpdir() directory that the OS reclaims.
- */
-
-import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
+/** Herdr viewer tabs: observability only, never execution or Git worktrees. */
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { herdrEnabled } from "./herdr.ts";
+import { herdrCommand as herdr, herdrEnabled } from "./herdr.ts";
 import type { WorkerResult } from "./types.ts";
 
-/** Freshly created shells need a beat before pane run lands (direnv, rc files). */
-const SHELL_SETTLE_MS = 600;
+const MAX_LOG_BYTES = 256 * 1024;
+let sequence = Date.now() * 1000;
 
 interface PaneEntry {
-	index: number;
 	name: string;
-	agent: string;
-	source: string;
+	paneId: string;
+	tabId: string;
 	logPath: string;
-	paneId?: string;
-	workspaceId?: string;
-	/** Branch we created for the view worktree, deleted on removal. */
-	branch?: string;
-	started?: boolean;
+	bytes: number;
+	queue: Promise<void>;
 	finished?: boolean;
 }
 
-/** Run a herdr CLI command; resolve parsed JSON "result" or null. Never throws. */
-async function herdr(args: string[]): Promise<Record<string, unknown> | null> {
-	return new Promise((resolve) => {
-		let settled = false;
-		const finish = (value: Record<string, unknown> | null) => {
-			if (settled) return;
-			settled = true;
-			resolve(value);
-		};
-		try {
-			const child = spawn("herdr", args, {
-				stdio: ["ignore", "pipe", "ignore"],
-			});
-			let out = "";
-			child.stdout.on("data", (d) => {
-				out += d.toString();
-			});
-			child.on("error", () => finish(null));
-			child.on("close", (code) => {
-				if (code !== 0) return finish(null);
-				try {
-					const parsed = JSON.parse(out) as {
-						result?: Record<string, unknown>;
-					};
-					finish((parsed.result as Record<string, unknown>) ?? null);
-				} catch {
-					finish(null);
-				}
-			});
-			const timer = setTimeout(() => {
-				child.kill();
-				finish(null);
-			}, 15_000);
-			timer.unref?.();
-		} catch {
-			finish(null);
-		}
-	});
+/** Shell-quote only our generated log path, never a task or model command. */
+export function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", "'\\''")}'`;
 }
-
-function firstLine(text: string, maxLen: number): string {
-	const line = (text ?? "").split("\n").find((l) => l.trim().length > 0) ?? "";
-	const clean = line.replace(/\s+/g, " ").trim();
-	return clean.length > maxLen ? `${clean.slice(0, maxLen)}…` : clean;
-}
-
-const execFileAsync = promisify(execFile);
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-/**
- * Strictly increasing seq for every report-agent / release-agent call.
- * Workers finish concurrently, so calls from parallel entries interleave —
- * herdr ignores stale sequence numbers from the same source. Initialized
- * from Date.now()*1000 so it never loses a race against a freshly restarted
- * herdr server (same seeding scheme pi's own integration uses).
- */
-const reportSeqSeed = Date.now() * 1000;
-let reportSeq = reportSeqSeed;
-const nextSeq = (): number => (reportSeq += 1);
 
 export class DispatchPanes {
 	private entries = new Map<number, PaneEntry>();
-	/** Session cwd (realpath) — used as `git -C` target for branch cleanup. */
-	private repoDir: string;
+	private constructor(
+		private dir: string,
+		private warn: (text: string) => void,
+	) {}
 
-	private constructor(private dir: string) {
-		this.repoDir = dir;
-	}
-
-	/**
-	 * Open one worktree Space per flagged task, nested under the master's
-	 * repo in the Spaces sidebar. Each Space's root pane tails that
-	 * worker's pretty log. Returns null when disabled (outside Herdr),
-	 * nothing flagged, or the first Space could not be created (e.g. the
-	 * session cwd is not a git repo) — callers proceed identically either
-	 * way.
-	 */
 	static async create(
 		flagged: { index: number; agent: string; task: string }[],
 		cwd: string,
-		_label: string,
+		label: string,
+		warn: (text: string) => void = () => {},
+		signal?: AbortSignal,
 	): Promise<DispatchPanes | null> {
-		if (!herdrEnabled() || flagged.length === 0) return null;
-		const panes = new DispatchPanes("");
+		if (!herdrEnabled() || flagged.length === 0 || signal?.aborted) return null;
+		let panes: DispatchPanes | undefined;
 		try {
-			panes.dir = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-"));
-		} catch {
-			return null;
-		}
-
-		// Prefer the calling pane's workspace (HERDR_WORKSPACE_ID from the
-		// shell that launched pi); fall back to deriving the repo from the
-		// session cwd. Both nest as worktree children of the same repo.
-		let resolvedCwd = cwd;
-		try {
-			resolvedCwd = fs.realpathSync(cwd);
-		} catch {
-			// keep the session cwd as given
-		}
-		panes.repoDir = resolvedCwd;
-		const baseArgs = ["worktree", "create", "--no-focus"];
-		const workspace = process.env.HERDR_WORKSPACE_ID;
-		if (workspace) {
-			baseArgs.push("--workspace", workspace);
-		} else {
-			baseArgs.push("--cwd", resolvedCwd);
-		}
-		const branchRand = Math.random().toString(36).slice(2, 8);
-
-		for (const item of flagged) {
-			const name = `${item.agent.replace(/[^a-zA-Z0-9_-]/g, "")}-${item.index + 1}`;
-			// Own the branch name: herdr keeps the branch around after
-			// `worktree remove`, and the dispatch-view- prefix guarantees our
-			// cleanup deletes only branches this run created.
-			const branch = `dispatch-view-${branchRand}-${item.index + 1}`;
-			const res = await herdr(
-				[...baseArgs, "--label", name, "--branch", branch],
-			);
-			const ws = (res?.workspace ?? {}) as Record<string, unknown>;
-			const pane = (res?.root_pane ?? {}) as Record<string, unknown>;
-			const workspaceId =
-				typeof ws.workspace_id === "string" ? ws.workspace_id : undefined;
-			const paneId = typeof pane.pane_id === "string" ? pane.pane_id : undefined;
-			if (!workspaceId || !paneId) {
-				process.stderr.write(
-					`[pi-dispatch] panes: worktree create failed for ${name} ` +
-						`(panes disabled for this run)\n`,
-				);
-				continue;
+			// Resolve the caller, not the user's currently focused workspace.
+			const current = await herdr(["pane", "current", "--current"]);
+			const workspaceId = current.pane?.workspace_id;
+			const parentId = current.pane?.pane_id;
+			if (typeof workspaceId !== "string" || typeof parentId !== "string") {
+				throw new Error("caller pane unavailable");
 			}
-			const entry: PaneEntry = {
-				index: item.index,
-				name,
-				agent: item.agent,
-				source: `pi-dispatch-worker-${item.index + 1}`,
-				logPath: path.join(panes.dir, `${item.index}-${name}.log`),
-				paneId,
-				workspaceId,
-				branch,
-			};
-			panes.entries.set(item.index, entry);
-			fs.writeFileSync(
-				entry.logPath,
-				`▼ ${item.agent} — ${firstLine(item.task, 120)}\n`,
+			panes = new DispatchPanes(
+				fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-")),
+				warn,
 			);
-			await sleep(SHELL_SETTLE_MS);
-			void (async () => {
-				await herdr(["pane", "rename", entry.paneId, name]);
+			for (const item of flagged) {
+				if (signal?.aborted) break;
+				const name = `${item.agent.replace(/[^a-zA-Z0-9_-]/g, "")}-${item.index + 1}`;
+				const res = await herdr([
+					"tab",
+					"create",
+					"--workspace",
+					workspaceId,
+					"--cwd",
+					cwd,
+					"--label",
+					`${label} · ${name}`,
+					"--no-focus",
+				]);
+				const tabId = res.tab?.tab_id;
+				const paneId = res.root_pane?.pane_id;
+				if (typeof tabId !== "string" || typeof paneId !== "string") {
+					throw new Error("Herdr did not return viewer tab/pane identifiers");
+				}
+				const entry: PaneEntry = {
+					name,
+					tabId,
+					paneId,
+					bytes: 0,
+					queue: Promise.resolve(),
+					logPath: path.join(panes.dir, `${item.index}.log`),
+				};
+				panes.entries.set(item.index, entry);
+				fs.writeFileSync(entry.logPath, "", { mode: 0o600 });
+				panes.append(
+					entry,
+					`${name} · viewer of worker under ${parentId}\nTask: ${item.task}`,
+				);
+				// Let shells settle concurrently, rather than delaying every spawn by 600ms.
+				entry.queue = (async () => {
+					await new Promise((resolve) => setTimeout(resolve, 600));
+					await herdr([
+						"pane",
+						"run",
+						paneId,
+						`tail -n +1 -f ${shellQuote(entry.logPath)}`,
+					]);
+				})();
+				panes.enqueue(entry, "working", "queued");
+			}
+			await Promise.all(
+				[...panes.entries.values()].map((entry) => entry.queue),
+			);
+			return panes;
+		} catch (error) {
+			warn(
+				`${String(error)}; viewers incomplete, worker status remains visible in tool output.`,
+			);
+			// Retain ownership of partially created tabs so end() still cleans them.
+			return panes ?? null;
+		}
+	}
+
+	private append(entry: PaneEntry, line: string): void {
+		if (entry.bytes >= MAX_LOG_BYTES) return;
+		try {
+			// Activity is metadata, not raw tool output. Strip terminal control bytes.
+			const text =
+				line.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "").slice(0, 1000) +
+				"\n";
+			fs.appendFileSync(entry.logPath, text);
+			entry.bytes += Buffer.byteLength(text);
+		} catch {
+			// Disk observability failures never fail workers.
+		}
+	}
+
+	private enqueue(
+		entry: PaneEntry,
+		state: "working" | "idle" | "unknown",
+		message: string,
+	): void {
+		entry.queue = entry.queue
+			.then(async () => {
 				await herdr([
 					"pane",
-					"run",
+					"report-agent",
 					entry.paneId,
-					`tail -n +1 -f ${entry.logPath}`,
+					"--source",
+					"pi-dispatch-viewer",
+					"--agent",
+					entry.name,
+					"--state",
+					state,
+					"--message",
+					message.slice(0, 120),
+					"--seq",
+					String(++sequence),
 				]);
-				await panes.report(entry, "working", `queued · ${item.agent}`);
-			})();
-		}
-		if (panes.entries.size === 0) return null;
-		return panes;
+			})
+			.catch((error) => this.warn(`${entry.name}: ${String(error)}`));
 	}
 
-	private async report(
-		entry: PaneEntry,
-		state: "working" | "idle",
-		message: string,
-	) {
-		if (!entry.paneId) return;
-		await herdr([
-			"pane",
-			"report-agent",
-			entry.paneId,
-			"--source",
-			entry.source,
-			"--agent",
-			entry.name,
-			"--state",
-			state,
-			"--message",
-			firstLine(message, 120),
-			"--seq",
-			String(nextSeq()),
-		]);
+	start(index: number, model?: string): void {
+		const entry = this.entries.get(index);
+		if (!entry || entry.finished) return;
+		const message = model ? `running · ${model}` : "starting";
+		this.append(entry, message);
+		this.enqueue(entry, "working", message);
 	}
 
-	/** Release this entry's lifecycle authority (best-effort, before removal). */
-	private async release(entry: PaneEntry) {
-		if (!entry.paneId) return;
-		await herdr([
-			"pane",
-			"release-agent",
-			entry.paneId,
-			"--source",
-			entry.source,
-			"--agent",
-			entry.name,
-			"--seq",
-			String(nextSeq()),
-		]);
-	}
-
-	private append(entry: PaneEntry, line: string) {
-		try {
-			fs.appendFileSync(entry.logPath, `${line}\n`);
-		} catch {
-			// Log write failures are cosmetic — never fail the dispatch.
-		}
-	}
-
-	/** Banner when the worker actually starts. */
-	start(entryIndex: number, model?: string): void {
-		const entry = this.entries.get(entryIndex);
-		if (!entry) return;
-		entry.started = true;
-		this.append(entry, `▶ started${model ? ` · ${model}` : ""}`);
-		void this.report(entry, "working", `running · ${entry.agent}`);
-	}
-
-	/** Live worker activity (write-tier stream). */
-	streamer(entryIndex: number): (line: string) => void {
-		return (line: string) => {
-			const entry = this.entries.get(entryIndex);
-			if (entry) this.append(entry, `  ${line}`);
+	streamer(index: number): (line: string) => void {
+		return (line) => {
+			const entry = this.entries.get(index);
+			if (entry && !entry.finished) this.append(entry, line);
 		};
 	}
 
-	/** Final state: remove the Space on success, hold it open on failure. */
-	async finish(entryIndex: number, result: WorkerResult): Promise<void> {
-		const entry = this.entries.get(entryIndex);
+	async finish(index: number, result: WorkerResult): Promise<void> {
+		const entry = this.entries.get(index);
 		if (!entry || entry.finished) return;
 		entry.finished = true;
-		const model = result.model ? ` (${result.model})` : "";
-		if (result.status === "ok") {
-			this.append(
-				entry,
-				`✓ done${model} · ${Math.round(result.ms / 100) / 10}s — ${firstLine(result.text, 200)}`,
-			);
-		} else {
-			this.append(
-				entry,
-				`✗ ${result.status}${model} — ${firstLine(result.error ?? result.text ?? "", 300)}`,
-			);
-		}
-		if (result.status === "ok") {
-			await this.report(entry, "idle", "done");
-			await this.release(entry);
-			await this.removeSpace(entry);
-		} else {
-			// Held for post-mortem: the operator can click the child Space
-			// and read the tail to see where the worker died.
-			await this.report(
-				entry,
-				"idle",
-				`${result.status}: ${firstLine(result.error ?? "", 100)}`,
-			);
-		}
+		const message = `${result.status} · ${result.model ?? "model unresolved"} · ${Math.round(result.ms / 1000)}s`;
+		this.append(entry, message);
+		this.enqueue(entry, "idle", message);
+		await entry.queue;
 	}
 
-	private async removeSpace(entry: PaneEntry) {
-		if (entry.workspaceId) {
-			await herdr(["worktree", "remove", "--workspace", entry.workspaceId]);
-		}
-		if (entry.branch) {
-			// herdr leaves the branch behind; argv-array execFile so nothing in
-			// the branch name is ever shell-interpreted. Best-effort only.
+	async end(): Promise<void> {
+		let held = false;
+		for (const entry of this.entries.values()) {
+			await entry.queue;
 			try {
-				await execFileAsync("git", [
-					"-C",
-					this.repoDir,
-					"branch",
-					"-D",
-					entry.branch,
-				]);
+				await herdr(["tab", "close", entry.tabId]);
+				fs.rmSync(entry.logPath, { force: true });
 			} catch {
-				// Branch already gone or repo moved — cosmetic, never fail.
+				held = true;
+				this.enqueue(entry, "unknown", "dispatch ended; viewer cleanup failed");
+				await entry.queue;
+				this.warn(`Herdr viewer ${entry.tabId} could not be closed.`);
 			}
 		}
-	}
-
-	/**
-	 * Final safety net: close Spaces that never got a finish() — but hold
-	 * ones whose worker started (partial logs have post-mortem value when
-	 * the dispatch path itself aborted around them).
-	 */
-	async end(): Promise<void> {
-		for (const entry of this.entries.values()) {
-			if (entry.finished) continue; // already handled in finish()
-			entry.finished = true;
-			if (entry.started) continue; // held open on purpose
-			this.append(entry, "— dispatch ended before this worker started");
-			await this.release(entry);
-			await this.removeSpace(entry);
+		if (!held) {
+			try {
+				fs.rmSync(this.dir, { recursive: true, force: true });
+			} catch {
+				this.warn("Herdr viewer logs could not be removed.");
+			}
 		}
 	}
 }
