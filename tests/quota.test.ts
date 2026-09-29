@@ -43,6 +43,16 @@ test("unknown, stale, future and expired reset snapshots leave existing ordering
 	}
 });
 
+test("DeepSeek 4.1 Flash steers between NeuralWatt and Synthetic; Sonnet stays behind both", () => {
+	const dnw = "aperture/neuralwatt/deepseek-v4.1-flash";
+	const dsy = "aperture/synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash";
+	const deepseek = withProviderFallbacks([candidate(dnw)]);
+	for (const [synthetic, neuralwatt, first, second] of [[100, 60, dsy, dnw], [5, 60, dnw, dsy]] as const) {
+		const result = steerByQuota(deepseek, new Map([["synthetic", snapshot(synthetic)], ["neuralwatt", snapshot(neuralwatt)]]), now);
+		assert.deepEqual(specs(result.candidates), [first, second, "anthropic/claude-sonnet-5-5", codexSol]);
+	}
+});
+
 test("quota never promotes another model family", () => {
 	const glm = "aperture/neuralwatt/glm-5.3";
 	const mixed = withProviderFallbacks([candidate(glm), candidate(nw)]);

@@ -120,14 +120,15 @@ export function loadRosterConfig(): Promise<Map<string, RosterEntry[]> | undefin
 }
 
 // Model counterparts in Aperture's Synthetic catalog. Do not guess IDs.
-// Flash/fast variants are not used; plain GLM 5.3 has no Synthetic peer.
+// GLM Flash and Kimi fast variants are not used; plain GLM 5.3 has no Synthetic peer.
 // Keep the requested provider first; quota routing may reorder exact peers.
 const SYNTHETIC_COUNTERPARTS = new Map([
 	["kimi-k3", "hf:moonshotai/Kimi-K3"],
+	["deepseek-v4.1-flash", "hf:deepseek-ai/DeepSeek-V4.1-Flash"],
 ]);
 
-// DeepSeek 4.1 falls back to Sonnet 5.5, then the terminal 6.1 Sol.
-const DEEPSEEK_ROUTE = "neuralwatt/deepseek-v4.1-flash";
+// DeepSeek 4.1 (either route) falls back to Sonnet 5.5, then the terminal 6.1 Sol.
+const DEEPSEEK_ROUTES = new Set(["neuralwatt/deepseek-v4.1-flash", "synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash"]);
 const DEEPSEEK_FALLBACK = "anthropic/claude-sonnet-5-5";
 
 const OPENAI_FALLBACK = "openai-codex/gpt-6.1-sol";
@@ -200,12 +201,6 @@ export function withProviderFallbacks(candidates: RankedCandidate[]): RankedCand
 			if (crossPeer !== OPENAI_FALLBACK) terminal ??= at(candidate, OPENAI_FALLBACK);
 			continue;
 		}
-		if (route === DEEPSEEK_ROUTE) {
-			append(candidate);
-			append(candidates.find(c => c.modelSpec === DEEPSEEK_FALLBACK) ?? at(candidate, DEEPSEEK_FALLBACK));
-			terminal ??= at(candidate, OPENAI_FALLBACK);
-			continue;
-		}
 		// NeuralWatt ↔ Synthetic counterparts
 		if (route.startsWith("neuralwatt/")) {
 			const synthetic = SYNTHETIC_COUNTERPARTS.get(route.slice("neuralwatt/".length));
@@ -226,6 +221,9 @@ export function withProviderFallbacks(candidates: RankedCandidate[]): RankedCand
 		if (!counterpart) continue;
 		const existing = candidates.find(c => routeId(c.modelSpec) === counterpart);
 		append(existing ?? at(candidate, `aperture/${counterpart}`));
+		if (DEEPSEEK_ROUTES.has(route)) {
+			append(candidates.find(c => c.modelSpec === DEEPSEEK_FALLBACK) ?? at(candidate, DEEPSEEK_FALLBACK));
+		}
 		terminal ??= at(candidate, OPENAI_FALLBACK);
 	}
 	// Preserve explicit 6.1 Sol settings, but keep it after all provider routes.

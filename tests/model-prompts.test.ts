@@ -22,6 +22,8 @@ test("worker adapts the resolved model on every fallback without changing role o
     assert.equal(task, "Inspect only; do not edit.");
     seen.push(this.systemPrompt);
     assert.match(this.systemPrompt, /Read-only scout role/);
+    assert.match(this.systemPrompt, /nobody can answer questions/);
+    assert.match(this.systemPrompt, /requested output shape/);
     if (seen.length === 1) throw new Error("fixture provider failure");
   });
   t.mock.method(AgentSession.prototype, "getLastAssistantText", () => "fixture result");

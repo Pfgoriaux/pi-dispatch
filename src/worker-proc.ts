@@ -17,7 +17,8 @@ import { createRequire } from "node:module";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
-import { LINKUP_GUIDANCE, workerTools } from "./linkup.ts";
+import { workerTools } from "./linkup.ts";
+import { workerSystemPrompt } from "./worker-prompt.ts";
 import { ToolHealth } from "./tool-health.ts";
 import { withProviderFallbacks } from "./roster.ts";
 import { quotaCandidates } from "./quota.ts";
@@ -241,8 +242,7 @@ async function runOneProc(
 	if (model) args.push("--model", model);
 	args.push("--thinking", thinking);
 	options.onAttempt?.(model ?? "child default", thinking, 1);
-	const systemPrompt =
-		`${agent.systemPrompt.trim() || `You are ${agent.name}. ${agent.description}`}\n\n${web.warning ? "Linkup web tools are unavailable in this worker. Do not claim to have searched the web." : LINKUP_GUIDANCE}`;
+	const systemPrompt = workerSystemPrompt(agent, web.warning);
 	// `--` ends option parsing: `task` is model-controlled text, so without
 	// this separator a task beginning with "-"/"--" would be parsed by the
 	// child pi CLI as a flag (in-context injection rewriting child flags).

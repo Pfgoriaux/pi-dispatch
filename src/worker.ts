@@ -26,7 +26,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { resolveWorkerModel, sharedModelRuntime } from "./model.ts";
-import { LINKUP_GUIDANCE, LinkupSetupError, workerTools, requestedLinkupTools } from "./linkup.ts";
+import { LinkupSetupError, workerTools, requestedLinkupTools } from "./linkup.ts";
+import { workerSystemPrompt } from "./worker-prompt.ts";
 import {
 	loadRosterConfig,
 	markCooldown,
@@ -232,7 +233,7 @@ export async function runWorker(
 	agent = {
 		...agent,
 		tools: web.tools,
-		systemPrompt: `${agent.systemPrompt || `You are ${agent.name}. ${agent.description}`}\n\n${web.warning ? "Linkup web tools are unavailable in this worker. Do not claim to have searched the web." : LINKUP_GUIDANCE}`,
+		systemPrompt: workerSystemPrompt(agent, web.warning),
 	};
 
 	const override = options.modelSpec?.trim();

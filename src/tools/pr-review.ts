@@ -419,7 +419,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 		promptSnippet:
 			"Run a 6-model PR review (security + Astra/Opus/GLM/Kimi + slop detector), Opus verification pass, aggregate findings, optionally fix",
 		promptGuidelines: [
-			"pr_review: Use when the user asks to review a pull request, a diff, or a branch, and wants findings aggregated (and optionally fixed).",
+			"pr_review: Use when the user asks to review a pull request, a diff, or a branch, and on your own, without asking, once a PR you opened is ready: review it, fix validated findings on its branch, then hand it to the user.",
 			"pr_review: The fix step runs in a git worktree and merges back; it requires a committed-clean repo root and explicit user intent to change code.",
 			"pr_review: Pass intent with the user's original request and your summary of what the changes should achieve, so reviewers can assess implementation vs. intent.",
 		],

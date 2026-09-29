@@ -9,7 +9,7 @@
  * Model routing:
  * - Kimi 3: neuralwatt primary, steerByQuota handles neuralwatt/synthetic
  *   fallover automatically via withProviderFallbacks + quotaCandidates
- * - DeepSeek 4.1: Flash with Sonnet 5.5 as fallback, and a simplified prompt
+ * - DeepSeek 4.1 Flash: quota-routed neuralwatt/synthetic, then Sonnet 5.5; simplified prompt
  *   focused on straightforward, non-overengineered solutions
  *
  * Context firewall unchanged: scouts' full transcripts never leave their
@@ -54,7 +54,7 @@ function envModel(name: string): string | undefined {
 	return v || undefined;
 }
 
-/** DeepSeek 4.1 Flash; roster fallbacks add Sonnet 5.5, then Codex 6.1 Sol. */
+/** DeepSeek 4.1 Flash; fallbacks add the Synthetic peer, Sonnet 5.5, then Codex 6.1 Sol. */
 function selectDeepSeekModel(): string {
 	return envModel("DISPATCH_DEEPSEEK_MODEL") ?? "aperture/neuralwatt/deepseek-v4.1-flash";
 }
@@ -85,7 +85,8 @@ const SCOUT_MODELS: ScoutConfig[] = [
 		modelSpec: selectDeepSeekModel,
 		thinking: "high",
 		simplifiedPrompt: true, // Uses straightforward, non-overengineered prompt
-		steerByQuota: false, // No counterpart to steer between
+		// withProviderFallbacks adds the synthetic counterpart; steer by headroom.
+		steerByQuota: true,
 	},
 	{
 		id: "kimi-3",

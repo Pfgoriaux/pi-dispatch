@@ -114,10 +114,12 @@ test("GLM 5.3 retains the Codex fallback", () => {
 	]);
 });
 
-test("DeepSeek 4.1 falls back to Sonnet 5.5, then 6.1 Sol", () => {
-	for (const modelSpec of ["neuralwatt/deepseek-v4.1-flash", "aperture/neuralwatt/deepseek-v4.1-flash"]) {
+test("DeepSeek 4.1 Flash pairs NeuralWatt with Synthetic, then Sonnet 5.5, then 6.1 Sol", () => {
+	const nw = "aperture/neuralwatt/deepseek-v4.1-flash";
+	const sy = "aperture/synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash";
+	for (const [modelSpec, peer] of [["neuralwatt/deepseek-v4.1-flash", sy], [nw, sy], [sy, nw]]) {
 		const routes = withProviderFallbacks([{ modelSpec, thinking: "off", entry: { provider: "test", model: modelSpec, thinking: "off", weight: 1 } }]);
-		assert.deepEqual(routes.map((c) => c.modelSpec), [modelSpec, "anthropic/claude-sonnet-5-5", "openai-codex/gpt-6.1-sol"]);
+		assert.deepEqual(routes.map((c) => c.modelSpec), [modelSpec, peer, "anthropic/claude-sonnet-5-5", "openai-codex/gpt-6.1-sol"]);
 		assert.deepEqual(withProviderFallbacks(routes), routes, "expansion is idempotent");
 	}
 });

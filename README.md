@@ -54,7 +54,8 @@ in a council phase to refine their views. Fable 5.1 then drafts the final plan.
 
 Model routing:
 - **Opus 5.5 & Astra**: top-tier models with quota-aware counterpart routing
-- **DeepSeek 4.1**: Flash with Sonnet 5.5 as fallback; uses a simplified
+- **DeepSeek 4.1**: Flash, quota-aware neuralwatt/synthetic routing, then
+  Sonnet 5.5 as fallback; uses a simplified
   "find the simplest solution" prompt
 - **Kimi 3**: quota-aware neuralwatt/synthetic routing
 - **GLM 5.3**: neuralwatt only (no synthetic counterpart for plain GLM)
@@ -117,12 +118,14 @@ Fields:
 
 Known Neuralwatt and Synthetic models retry **in either direction**. Both direct
 and `aperture/` specs are recognized; tier defaults and inserted counterpart
-routes use Aperture. The only exact pair is `kimi-k3` ↔
-`synthetic/hf:moonshotai/Kimi-K3`. **GLM 5.3 stays on Neuralwatt; GLM Flash and
+routes use Aperture. The exact pairs are `kimi-k3` ↔
+`synthetic/hf:moonshotai/Kimi-K3` and `deepseek-v4.1-flash` ↔
+`synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash`. **GLM 5.3 stays on Neuralwatt; GLM Flash and
 Kimi fast variants are not used.** Kimi and GLM 5.3 retain a final fallback to
 **`openai-codex/gpt-6.1-sol`**, once, last, directly through Pi's Codex
 subscription authentication (not Aperture or the billed OpenAI API).
-`deepseek-v4.1-flash` falls back to `anthropic/claude-sonnet-5-5`, then 6.1 Sol.
+DeepSeek 4.1 Flash (either provider) then falls back to
+`anthropic/claude-sonnet-5-5`, then 6.1 Sol.
 Unmapped IDs get no invented fallback routes.
 
 `claude-opus-5-5` ↔ `gpt-6-astra` retry in either direction (top tier).

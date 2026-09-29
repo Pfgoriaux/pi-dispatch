@@ -217,10 +217,10 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 		promptSnippet:
 			"Fan out work to specialized sub-agents (research, review, confined writes) with context isolation",
 		promptGuidelines: [
-			"dispatch: Use for parallel exploration, multi-file research, or multi-perspective review instead of doing everything in this session — worker transcripts never enter the main context.",
+			"dispatch: Use on your own judgment, no user approval needed, when the task breaks down across multiple agents: parallel exploration, multi-file research, multi-perspective review — worker transcripts never enter the main context.",
 			"dispatch: Make each task self-contained: include the goal, concrete paths/symbols, and the desired output shape. Workers start with no prior conversation.",
 			"dispatch: Prefer parallel tasks over one giant task; N small workers beat one big one (max 8).",
-			"dispatch: For tasks that create or edit files, use the writer agent with worktree:true — each runs in its own git worktree and its branch merges back automatically after all workers finish. Requires a committed-clean repo root; writer returns a change summary, not diffs.",
+			"dispatch: For tasks that create or edit files, use the writer agent with worktree:true — each runs in its own git worktree and its branch merges back automatically into the current branch after all workers finish, so run it from a feature branch, never main. Requires a committed-clean repo root; writer returns a change summary, not diffs.",
 			"dispatch: Do NOT use for trivial single questions a direct read/grep answers faster.",
 			"dispatch: Herdr viewers open automatically inside Herdr; set herdr:false to opt out. Viewers are tabs in the calling workspace, not worker execution terminals.",
 		],
