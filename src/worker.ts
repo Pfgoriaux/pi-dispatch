@@ -33,6 +33,7 @@ import {
 	markCooldown,
 	resolveCandidates,
 	withProviderFallbacks,
+	withoutModels,
 	type RankedCandidate,
 } from "./roster.ts";
 import { THINKING_LEVELS } from "./types.ts";
@@ -262,8 +263,6 @@ export async function runWorker(
 				])
 		: selection!.candidates;
 
-	const excluded = new Set(options.excludeModels);
-	candidates = candidates.filter((c) => !excluded.has(c.modelSpec));
 	if (options.steerByQuota ?? selection?.quotaRouting) {
 		candidates = quotaCandidates(candidates, options.onWarning);
 	}
@@ -286,6 +285,11 @@ export async function runWorker(
 				weight: 1,
 			},
 		}]));
+	}
+	// Last, so quota routing and parent inheritance cannot reintroduce an excluded model.
+	candidates = withoutModels(candidates, options.excludeModels);
+	if (candidates.length === 0) {
+		return fail("error", `Every model candidate for agent "${agent.name}" is excluded`);
 	}
 
 	let aggregatedUsage: Usage | undefined;
@@ -374,6 +378,7 @@ export async function runWorker(
 		model: lastAttempt?.model,
 		thinking: lastAttempt?.thinking,
 		attempts,
+		failedAttempts: failedAttempts.length > 0 ? failedAttempts : undefined,
 		ms: Date.now() - started,
 	};
 }

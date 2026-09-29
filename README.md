@@ -34,7 +34,7 @@ via `gh`, a git rev-range, a branch vs HEAD, or default `<origin/base>...HEAD`),
 then runs six in-process reviewers in parallel:
 
 - `security-reviewer` on the `precise` tier (uses an operator-installed `deepsec` executable outside the checkout, manual review otherwise; repository-local scanners are never selected automatically)
-- four `reviewer` passes pinned to `REVIEW_MODELS`: Codex Astra, Opus 5.5, GLM 5.3, and Kimi 3 (quota-routed between Neuralwatt and Synthetic). The Astra and Opus passes never fail over to each other, so a failure cannot produce two reviews from one model; they fall back to 6.1 Sol instead. The report labels each review with its actual model and any failed attempts.
+- four `reviewer` passes pinned to `REVIEW_MODELS`: Codex Astra, Opus 5.5, GLM 5.3, and Kimi 3 (quota-routed between Neuralwatt and Synthetic). The Astra and Opus passes never fail over to each other; each falls back to 6.1 Sol. Each review is labeled with its actual model and any failed attempts.
 - a `slop-reviewer` pass on GLM 5.3
 
 Opus 5.5 then verifies the code review findings. The `aggregator` distills the findings into one prioritized report, and when

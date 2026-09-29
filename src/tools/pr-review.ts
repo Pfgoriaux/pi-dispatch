@@ -209,6 +209,9 @@ const CODE_REVIEW_MODELS = {
 	slop: REVIEW_MODELS.slop,
 } as const;
 
+/** Provider error text goes into a markdown heading: keep it short and on one line. */
+const oneLine = (text: string) => truncateText(text, 300).text.replace(/\s+/g, " ");
+
 function securityTask(c: {
 	cwd: string;
 	diffFile: string;
@@ -632,6 +635,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					]);
 
 					const codeReviewers = [astra, opus, glm, kimi];
+					const codeNames = ["Codex Astra", "Opus 5.5", "GLM 5.3", "Kimi 3"];
 					const allReviewers = [sec, ...codeReviewers, slop];
 
 					if (signal?.aborted) {
@@ -646,7 +650,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 
 					const report = (r: WorkerResult, name: string) => ({
 						label: `${name} [actual model: ${r.model ?? "unavailable"}] — ${r.status}` +
-							(r.failedAttempts ? ` (failed over from ${truncateText(r.failedAttempts.join("; ")).text})` : ""),
+							(r.failedAttempts ? ` (failed attempts: ${r.failedAttempts.map(oneLine).join("; ")})` : ""),
 						text:
 							r.status === "ok"
 								? truncateText(r.text || "(no output)").text
@@ -681,12 +685,9 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					// Phase 2: Opus 5.5 verification pass on all code review findings
 					let verifyResult: WorkerResult | undefined;
 					if (okCodeReviews.length > 0 && !signal?.aborted) {
-						const codeReports = [
-							report(astra, "Codex Astra"),
-							report(opus, "Opus 5.5"),
-							report(glm, "GLM 5.3"),
-							report(kimi, "Kimi 3"),
-						].filter((_, i) => codeReviewers[i].status === "ok");
+						const codeReports = codeReviewers
+							.map((r, i) => report(r, codeNames[i]))
+							.filter((_, i) => codeReviewers[i].status === "ok");
 
 						verifyResult = await progress.run(
 							6, // After 6 parallel reviewers
@@ -726,8 +727,8 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 										...(verifyResult
 											? [report(verifyResult, "Opus 5.5 verified code findings")]
 											: codeReviewers
-													.filter((r) => r.status === "ok")
-													.map((r, i) => report(r, ["Astra", "Opus", "GLM", "Kimi"][i]))
+													.map((r, i) => report(r, codeNames[i]))
+													.filter((_, i) => codeReviewers[i].status === "ok")
 										),
 										// Slop review is independent, include directly
 										...(slop.status === "ok" ? [report(slop, "slop detector (GLM 5.3)")] : []),
