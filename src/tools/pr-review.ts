@@ -558,7 +558,13 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					const reviewOne = (
 						index: number,
 						task: string,
-						extra: { modelSpec?: string; thinking?: string; steerByQuota?: boolean; agent?: string },
+						extra: {
+							modelSpec?: string;
+							thinking?: string;
+							steerByQuota?: boolean;
+							excludeModels?: string[];
+							agent?: string;
+						},
 					) =>
 						progress.run(
 							index,
@@ -578,6 +584,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 										thinking: extra.thinking,
 										modelSpec: extra.modelSpec,
 										steerByQuota: extra.steerByQuota,
+										excludeModels: extra.excludeModels,
 										...progress.options(index),
 									},
 								),
@@ -595,16 +602,17 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 							}),
 							{}, // security-reviewer agent is precise-tier via frontmatter
 						),
-						// Astra and Opus are deliberately distinct top-tier models.
-						// Do NOT enable steerByQuota - we want both models for diversity,
-						// not quota-based reordering that would make both use Astra.
+						// Astra and Opus are deliberately distinct top-tier models. Each
+						// excludes the other so failover never duplicates a reviewer.
 						reviewOne(1, codeTask({ ...reviewerCtx, reviewer: "Codex Astra" }), {
 							modelSpec: CODE_REVIEW_MODELS.astra,
 							thinking: "high",
+							excludeModels: [CODE_REVIEW_MODELS.opus],
 						}),
 						reviewOne(2, codeTask({ ...reviewerCtx, reviewer: "Opus 5.5" }), {
 							modelSpec: CODE_REVIEW_MODELS.opus,
 							thinking: "high",
+							excludeModels: [CODE_REVIEW_MODELS.astra],
 						}),
 						reviewOne(3, codeTask({ ...reviewerCtx, reviewer: "GLM 5.3" }), {
 							modelSpec: CODE_REVIEW_MODELS.glm,
@@ -637,7 +645,8 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					}
 
 					const report = (r: WorkerResult, name: string) => ({
-						label: `${name} [actual model: ${r.model ?? "unavailable"}] — ${r.status}`,
+						label: `${name} [actual model: ${r.model ?? "unavailable"}] — ${r.status}` +
+							(r.failedAttempts ? ` (failed over from ${truncateText(r.failedAttempts.join("; ")).text})` : ""),
 						text:
 							r.status === "ok"
 								? truncateText(r.text || "(no output)").text

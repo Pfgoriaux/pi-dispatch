@@ -188,3 +188,40 @@ test("mixed top-tier and NeuralWatt/Synthetic get appropriate counterparts", () 
 	assert.ok(routes.some(c => c.modelSpec === synthetic));
 	assert.equal(routes.at(-1)?.modelSpec, codexSol);
 });
+
+test("excluded peer is skipped on failover and the failed attempt is reported", { timeout: 10000 }, async (t) => {
+	t.mock.method(ModelRuntime.prototype, "hasConfiguredAuth", () => true);
+	const calls: string[] = [];
+	t.mock.method(ModelRuntime.prototype, "streamSimple", (model: Model<Api>) => {
+		const selected = `${model.provider}/${model.id}`;
+		calls.push(selected);
+		const failed = selected === astra;
+		const message: AssistantMessage = {
+			role: "assistant", api: model.api, provider: model.provider, model: model.id,
+			content: failed ? [] : [{ type: "text", text: "REVIEWED" }],
+			stopReason: failed ? "error" : "stop", errorMessage: failed ? "402 insufficient credits" : undefined,
+			timestamp: Date.now(),
+			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		};
+		const stream = createAssistantMessageEventStream();
+		if (failed) stream.push({ type: "error", reason: "error", error: message });
+		else stream.push({ type: "done", reason: "stop", message });
+		return stream;
+	});
+	const registry = {
+		find: (provider: string, id: string) => ({
+			provider, id, api: "openai-completions", name: id, reasoning: false, input: ["text"],
+			contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		}),
+		getRegisteredNativeProvider: () => undefined,
+		getApiKeyForProvider: async () => undefined,
+	} as unknown as ModelRegistry;
+	const result = await runWorker(agent, "test", {
+		registry, fallbackModel: undefined, modelSpec: astra, excludeModels: [opus],
+	});
+	assert.deepEqual(calls, [astra, codexSol]);
+	assert.equal(result.status, "ok");
+	assert.equal(result.model, codexSol);
+	assert.deepEqual(result.failedAttempts, [`${astra}: 402 insufficient credits`]);
+});

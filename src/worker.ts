@@ -62,6 +62,8 @@ export interface RunWorkerOptions {
 	modelSpec?: string;
 	/** Opt in for tier/workflow model choices; explicit per-task pins default off. */
 	steerByQuota?: boolean;
+	/** Model specs never tried, not even as failover (keeps parallel workers on distinct models). */
+	excludeModels?: readonly string[];
 	/** Thinking level forced alongside modelSpec (defaults to "high"). */
 	thinking?: string;
 }
@@ -260,6 +262,8 @@ export async function runWorker(
 				])
 		: selection!.candidates;
 
+	const excluded = new Set(options.excludeModels);
+	candidates = candidates.filter((c) => !excluded.has(c.modelSpec));
 	if (options.steerByQuota ?? selection?.quotaRouting) {
 		candidates = quotaCandidates(candidates, options.onWarning);
 	}
@@ -288,6 +292,7 @@ export async function runWorker(
 	let lastError: string | undefined;
 	let lastAttempt: WorkerResult | undefined;
 	let attempts = 0;
+	const failedAttempts: string[] = [];
 
 	for (let i = 0; i < candidates.length; i++) {
 		const candidate = candidates[i];
@@ -337,6 +342,7 @@ export async function runWorker(
 				...attempt,
 				usage: aggregatedUsage,
 				attempts,
+				failedAttempts: failedAttempts.length > 0 ? failedAttempts : undefined,
 				ms: Date.now() - started,
 			};
 		}
@@ -352,6 +358,7 @@ export async function runWorker(
 				ms: Date.now() - started,
 			};
 		}
+		failedAttempts.push(`${model.provider}/${model.id}: ${attempt.error ?? "failed"}`);
 		if (!override) markCooldown(model.provider, model.id);
 	}
 

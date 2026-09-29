@@ -53,6 +53,8 @@ export interface WorkerResult {
 	usage?: Usage;
 	/** Number of model candidates tried (details-only). */
 	attempts: number;
+	/** "provider/id: error" for each failed attempt before failover. */
+	failedAttempts?: string[];
 	ms: number;
 }
 
