@@ -1,19 +1,34 @@
 /**
- * Effort-tiered model routing — a local implementation of the Routing-Profile
- * concept (named tiers exposed as model choices), adapted because we do not
- * (yet) run the gateway side.
+ * Effort-tiered model routing for agent spawning.
  *
  * Agents request a tier by name in their frontmatter (`model: cheap`); this
  * module expands it to a concrete `provider/id` spec plus a thinking default.
  * "inherit" and explicit provider/id specs keep their existing meaning.
  *
- * Tiers express *effort*, not identity: pick a tier by how hard a task is,
- * not by who does it. Anything needing model independence (cross-check
- * scouting, duplicate code review) must use deliberately different fixed
- * models — a tier is shared, so two workers on the same tier are correlated.
+ * TIER SELECTION GUIDE:
  *
- * Defaults are provisional where marked; every tier model is overridable with
- * `DISPATCH_PROFILE_<TIER>_MODEL` (full `provider/id` spec).
+ *   cheap    — Simple lookups, grep-and-report, boilerplate generation.
+ *              Fast, low-cost. Use for scouts doing file discovery or
+ *              straightforward extraction tasks.
+ *
+ *   balanced — Everyday coding, standard reviews, general-purpose work.
+ *              Good cost/quality ratio. Sonnet 5.5 / Sol 6.1 with
+ *              quota-aware routing between them.
+ *
+ *   precise  — Security review, architecture decisions, complex features,
+ *              production-critical code. Top-tier models (Opus 5.5 / Astra)
+ *              with quota-aware routing between them.
+ *
+ *   long     — Huge codebases, multi-file refactors, codebase-wide analysis,
+ *              research across many files. Kimi 3 (1M context).
+ *              Use when context exceeds 100K tokens or spans 10+ files.
+ *
+ * Tiers express *effort*, not identity: pick a tier by how hard a task is,
+ * not by who does it. Cross-check scouting and duplicate code review need
+ * deliberately different fixed models — a tier is shared, so two workers
+ * on the same tier are correlated.
+ *
+ * Every tier model is overridable with `DISPATCH_PROFILE_<TIER>_MODEL`.
  */
 
 export type ProfileTier = "cheap" | "balanced" | "precise" | "long";
@@ -31,27 +46,31 @@ function envModel(name: string): string | undefined {
 }
 
 export const PROFILES: Record<ProfileTier, ModelProfile> = {
-	// Fast, cheap, good-enough for grep-and-report recon.
+	// CHEAP: Simple tasks, file discovery, grep-and-report, boilerplate.
+	// DeepSeek V4.1 Flash (Aperture has no plain v4-flash route).
 	cheap: {
 		model:
 			envModel("DISPATCH_PROFILE_CHEAP_MODEL") ??
-			"neuralwatt/deepseek-v4.1-flash",
+			"aperture/neuralwatt/deepseek-v4.1-flash",
 		thinking: "off",
 	},
-	// General-purpose workhorse. Provisional default.
+	// BALANCED: Everyday coding, standard reviews, general work.
+	// Sonnet 5.5 (with Sol 6.1 as quota-routed counterpart via withProviderFallbacks).
 	balanced: {
-		model: envModel("DISPATCH_PROFILE_BALANCED_MODEL") ?? "neuralwatt/glm-5.3",
+		model: envModel("DISPATCH_PROFILE_BALANCED_MODEL") ?? "anthropic/claude-sonnet-5-5",
 		thinking: "high",
 	},
-	// Top model for high-skill tasks (planning, security review).
+	// PRECISE: Security, architecture, complex features, production-critical.
+	// Opus 5.5 (with Astra as quota-routed counterpart via withProviderFallbacks).
 	precise: {
 		model:
-			envModel("DISPATCH_PROFILE_PRECISE_MODEL") ?? "openai-codex/gpt-6-astra",
+			envModel("DISPATCH_PROFILE_PRECISE_MODEL") ?? "anthropic/claude-opus-5-5",
 		thinking: "high",
 	},
-	// Dedicated model for long-effort/long-baseline tasks (Kimi-3).
+	// LONG: Huge context (>100K tokens), multi-file refactors, codebase research.
+	// Kimi 3
 	long: {
-		model: envModel("DISPATCH_PROFILE_LONG_MODEL") ?? "neuralwatt/kimi-k3",
+		model: envModel("DISPATCH_PROFILE_LONG_MODEL") ?? "aperture/neuralwatt/kimi-k3",
 		thinking: "high",
 	},
 };
@@ -61,17 +80,38 @@ export const PROFILE_TIERS: ReadonlySet<string> = new Set(
 );
 
 /**
- * Cross-check pair with different model families. Both defaults run via
- * Neuralwatt through Aperture first and fail over to Aperture's Synthetic
- * counterparts when Neuralwatt credits run out (kimi-k3 → Kimi-K3,
- * glm-5.3 → GLM-5.3-Flash, Synthetic's only GLM 5.3 variant). Operators can
- * choose separate providers with DISPATCH_DIVERSE_0_MODEL / DISPATCH_DIVERSE_1_MODEL.
- * Different families reduce shared blind spots; they do not prove independence.
+ * Cross-check pair for lightweight 2-model validation.
+ * Different model families reduce shared blind spots.
+ * Overridable with DISPATCH_DIVERSE_0_MODEL / DISPATCH_DIVERSE_1_MODEL.
  */
 export const DIVERSE_PAIR: readonly [string, string] = [
 	envModel("DISPATCH_DIVERSE_0_MODEL") ?? "aperture/neuralwatt/glm-5.3",
 	envModel("DISPATCH_DIVERSE_1_MODEL") ?? "aperture/neuralwatt/kimi-k3",
 ];
+
+/**
+ * PR review roster: models across providers for diverse perspectives.
+ * NOT effort-based 
+ *
+ * The goal is catching different types of issues:
+ *   - Opus 5.5: Nuanced correctness, safety, subtle bugs
+ *   - Astra: Implementation details, API contracts, code quality
+ *   - Kimi 3: Cross-file patterns, long-range dependencies
+ *   - GLM 5.3: Pragmatic view, obvious issues
+ *   - GLM 5.3: Slop detection (fluff, unnecessary docs, low-value tests)
+ */
+export const REVIEW_MODELS = {
+	/** Codex Astra - top-tier model */
+	astra: envModel("DISPATCH_REVIEW_ASTRA_MODEL") ?? "openai-codex/gpt-6-astra",
+	/** Opus 5.5 - top-tier model */
+	opus: envModel("DISPATCH_REVIEW_OPUS_MODEL") ?? "anthropic/claude-opus-5-5",
+	/** GLM 5.3 - Neuralwatt only, Codex 6.1 Sol fallback */
+	glm: envModel("DISPATCH_REVIEW_GLM_MODEL") ?? "aperture/neuralwatt/glm-5.3",
+	/** Kimi 3 - neuralwatt/synthetic quota-routed */
+	kimi: envModel("DISPATCH_REVIEW_KIMI_MODEL") ?? "aperture/neuralwatt/kimi-k3",
+	/** GLM 5.3 - slop/fluff detection (balanced tier, not quota-routed) */
+	slop: envModel("DISPATCH_REVIEW_SLOP_MODEL") ?? "aperture/neuralwatt/glm-5.3",
+} as const;
 
 /** True when a frontmatter `model` value names a tier. */
 export function isProfileTier(spec: string | undefined): spec is ProfileTier {

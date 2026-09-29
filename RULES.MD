@@ -8,8 +8,10 @@
   counting lines.
 - Enforce mechanical rules with linting, types, tests, and CI, not prose.
   Use scripts for repeatable workflows; do not weaken checks to make them pass.
-- Run relevant checks before declaring completion. Report failures and checks
-  you could not run; never claim mocked tests verify live behavior.
+- Run relevant checks before declaring completion, and verify observable
+  behavior before saying it works: run the code, hit the endpoint, exercise
+  the fix. An unverified change is not done. Report failures and checks you
+  could not run; never claim mocked tests verify live behavior.
 - Keep AGENTS.md to purpose, non-obvious constraints, safety boundaries, and
   conditional documentation pointers. Do not repeat what code or config says.
 - AGENTS.md is not a journal: no session summaries, test results or inventories,
@@ -37,6 +39,9 @@
   hardware as a fixed ceiling; retain safety limits and third-party quotas.
 - Never commit or push without permission. Production writes, deployments,
   restarts, and infrastructure changes require explicit authorization.
+- One agent per checkout: when multiple agents work in the same repo in
+  parallel, each gets its own git worktree and branch. Never stash, switch,
+  reset, or clean in a checkout another agent is using.
 - Localhost does not mean test data. Verify isolated development/test targets;
   never trust an existing .env to be safe. Preserve production and access boundaries.
 - Keep secrets in approved storage, never in tracked files, logs, or replies.

@@ -136,7 +136,8 @@ console.log(JSON.stringify({type: "message_end", message: {role: "assistant", co
 	assert.equal(child.status, "ok", child.error);
 	const args = JSON.parse(child.text) as string[];
 	assert.deepEqual(args[args.indexOf("--tools") + 1].split(","), ["read", ...LINKUP_TOOLS]);
-	assert.equal(args.filter((arg) => arg === "--extension").length, 3);
+	assert.equal(args.filter((arg) => arg === "--extension").length, 4);
+	assert.ok(args.some((arg) => arg.endsWith("pi-model-prompts/dist/index.js")));
 	assert.equal(args[args.indexOf("--exclude-tools") + 1], "dispatch,pr_review,feature_plan");
 
 	// A fresh path avoids the SDK's extension cache, simulating incompatible registration.

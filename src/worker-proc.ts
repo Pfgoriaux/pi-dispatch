@@ -13,12 +13,14 @@
  */
 
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
 import { LINKUP_GUIDANCE, workerTools } from "./linkup.ts";
 import { ToolHealth } from "./tool-health.ts";
 import { withProviderFallbacks } from "./roster.ts";
+import { quotaCandidates } from "./quota.ts";
 import { dirtyLines } from "./worktree.ts";
 import { stopWorker } from "./process-tree.ts";
 import {
@@ -46,6 +48,8 @@ export interface RunWorkerProcOptions {
 	model?: string;
 	/** Per-task model override (tier-expanded `provider/id`); wins over agent frontmatter. */
 	modelOverride?: string;
+	/** Opt in for tier/workflow model choices, not explicit per-task pins. */
+	steerByQuota?: boolean;
 }
 
 /**
@@ -145,10 +149,13 @@ export async function runWorkerProc(
 	if (!model) return runOneProc(agent, task, options);
 	const thinking = options.thinking && THINKING_LEVELS.has(options.thinking)
 		? options.thinking : (agent.thinking ?? "off");
-	const candidates = withProviderFallbacks([{
+	let candidates = withProviderFallbacks([{
 		modelSpec: model, thinking,
 		entry: { provider: "", model, thinking, weight: 1 },
 	}]);
+	if (options.steerByQuota ?? (!options.modelOverride?.trim() && agent.quotaRouting === true)) {
+		candidates = quotaCandidates(candidates, options.onWarning);
+	}
 	const attempts: WorkerResult[] = [];
 	let result!: WorkerResult;
 	for (const candidate of candidates) {
@@ -210,7 +217,9 @@ async function runOneProc(
 
 	const web = workerTools(agent.tools);
 	if (web.warning) options.onWarning?.(web.warning);
-	const args: string[] = ["-p", "--no-session", "--mode", "json"];
+	// Let the child's actual selected model choose its adaptation, including CLI defaults.
+	const promptExtension = createRequire(import.meta.url).resolve("@pf/pi-model-prompts/extension");
+	const args: string[] = ["-p", "--no-session", "--mode", "json", "--extension", promptExtension];
 	for (const entry of web.extensionPaths) args.push("--extension", entry);
 	if (web.tools.length > 0) {
 		args.push("--tools", web.tools.join(","));

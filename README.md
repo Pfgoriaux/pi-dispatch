@@ -34,7 +34,7 @@ via `gh`, a git rev-range, a branch vs HEAD, or default `<origin/base>...HEAD`),
 then runs three in-process reviewers in parallel:
 
 - `security-reviewer` on the `precise` tier (uses an operator-installed `deepsec` executable outside the checkout, manual review otherwise; repository-local scanners are never selected automatically)
-- two `reviewer` passes on the `DIVERSE_PAIR` (separate contexts, different model families: GLM 5.3 and Kimi-K3, both Neuralwatt through Aperture with Synthetic failover)
+- two `reviewer` passes on the `DIVERSE_PAIR` (separate contexts, different model families: GLM 5.3 on Neuralwatt and Kimi-K3 on Neuralwatt/Synthetic, through Aperture with quota-aware provider selection)
 
 The `aggregator` distills the findings into one prioritized report, and when
 `fix: true` is explicitly requested, a `writer` fixes the findings in a git
@@ -47,13 +47,19 @@ before writing and merging so findings cannot silently target another revision.
 
 ## feature_plan
 
-"What would implementing X entail?" — two independent architecture scouts
-(on the same `DIVERSE_PAIR`: `aperture/neuralwatt/glm-5.3` and
-`aperture/neuralwatt/kimi-k3`, both failing over to their Synthetic counterparts)
-explore the repository from
-the technical-risk lens, then the `planner` agent reconciles both reports into
-one implementation plan (goal, scope, file-level where, work breakdown, test
-strategy, risks, disagreements, open questions). Read-only, no Herdr needed.
+"What would implementing X entail?" — Five diverse scouts (Opus 5.5, Astra,
+DeepSeek 4.1, Kimi 3, GLM 5.3) explore the repository from the technical-risk
+lens. After the initial scout phase, each scout sees the others' conclusions
+in a council phase to refine their views. Fable 5.1 then drafts the final plan.
+
+Model routing:
+- **Opus 5.5 & Astra**: top-tier models with quota-aware counterpart routing
+- **DeepSeek 4.1**: Flash with Sonnet 5.5 as fallback; uses a simplified
+  "find the simplest solution" prompt
+- **Kimi 3**: quota-aware neuralwatt/synthetic routing
+- **GLM 5.3**: neuralwatt only (no synthetic counterpart for plain GLM)
+
+Read-only, no Herdr needed.
 
 **Isolation:** in-process workers disable extension discovery, skills, and context files.
 Every worker also gets Linkup search/answer/fetch when configured; only those tool
@@ -67,6 +73,15 @@ The bundled scout and planner have no write or shell tools; the reviewer has
 `bash` and is read-only by instruction, not enforcement. Models resolve through
 rosters, agent frontmatter, then the parent's active model as described below.
 Single mode always runs in-process, even when the agent is named `writer`.
+
+## Model-specific guidance
+
+Workers preserve their role and task while adding model-selected guidance from
+`@pf/pi-model-prompts`. In-process workers select it after resolving each fallback;
+child workers load its extension against the actual child model. Unknown models
+are unchanged. The dependency is packed in `vendor/` so standalone installs work;
+update the archive, dependency, and lockfile together after changing its source
+in the sibling `pi-model-prompts` directory. No provider settings are changed.
 
 ## In-process model rosters
 
@@ -100,18 +115,43 @@ Fields:
 
 **Failover:** dispatch tries candidates in ranked order. A candidate fails when `prompt()` throws, the last assistant message has `stopReason === "error"`, or the turn completes with **no text at all** (blank-response detection — thinking-only or empty finals fail over to the next candidate rather than returning "ok with no output"). On failure the next candidate gets a fresh `createAgentSession` with a shared model runtime per provider. Usage is aggregated across all attempts and reported in `details.items[].usage`.
 
-Known Neuralwatt and Synthetic models retry **in either direction**, keeping
-the requested provider first. Both direct and `aperture/` specs are recognized;
-inserted counterpart routes use Aperture. The pairs are `kimi-k3` ↔
-`synthetic/hf:moonshotai/Kimi-K3` and `glm-5.3-flash` ↔
-`synthetic/hf:zai-org/GLM-5.3-Flash`. Neuralwatt's non-flash `glm-5.3` also
-substitutes Synthetic Flash, since Synthetic carries only that variant.
-After provider routes are exhausted, **`openai-codex/gpt-5.6-terra`** is tried
-once, last, using Codex subscription authentication rather than the billed
-OpenAI API. Unmapped IDs (including `deepseek-v4.1-flash`) are unchanged.
+Known Neuralwatt and Synthetic models retry **in either direction**. Both direct
+and `aperture/` specs are recognized; tier defaults and inserted counterpart
+routes use Aperture. The only exact pair is `kimi-k3` ↔
+`synthetic/hf:moonshotai/Kimi-K3`. **GLM 5.3 stays on Neuralwatt; GLM Flash and
+Kimi fast variants are not used.** Kimi and GLM 5.3 retain a final fallback to
+**`openai-codex/gpt-6.1-sol`**, once, last, directly through Pi's Codex
+subscription authentication (not Aperture or the billed OpenAI API).
+`deepseek-v4.1-flash` falls back to `anthropic/claude-sonnet-5-5`, then 6.1 Sol.
+Unmapped IDs get no invented fallback routes.
 
-This applies to in-process rosters, frontmatter, explicit overrides, and
-inherited models. Write-tier children use the same fallback chain for startup
+`claude-opus-5-5` ↔ `gpt-6-astra` retry in either direction (top tier).
+`claude-sonnet-5-5` retries `gpt-6.1-sol` next (balanced tier); Sol itself does
+not expand to Sonnet because it is every chain's terminal fallback. Both pairs
+are quota-routed and spend Codex first on a healthy tie.
+
+**Quota routing:** rosters, frontmatter tiers, per-task tiers, and the default
+workflow cross-check pair prefer the exact-model provider with the highest
+bottleneck percentage across all reported quota windows. Synthetic's 5-hour
+and weekly limits both count; a full 5-hour window cannot hide a depleted week.
+A healthy tie (at least 50% remaining) prefers Synthetic. Different model
+families keep their roster priority, and Codex stays the terminal fallback.
+Concrete per-task/frontmatter model pins, `inherit`, and `DISPATCH_DIVERSE_*_MODEL`
+overrides retain their provider order and existing failure fallbacks.
+
+Snapshots are read at spawn time from
+`<getAgentDir()>/cache/usage-bar/<provider>-v3.json`, written by `pi-usage-bar`.
+Aperture routes use their upstream provider's quota. Missing, invalid,
+unquantifiable (physical balance without a total), or older-than-3-minute
+readings leave that model's provider order unchanged;
+expired reset windows also require a fresh reading. Upcoming/refill timestamps
+do not promise restored capacity, so routing never spends a forecast refill.
+Routing changes appear in UI-only progress warnings. No provider polling,
+credential reads, or cache writes are added. Concurrent spawns may choose the
+same provider; this is advisory routing, not a quota reservation system.
+
+Failure fallback applies to in-process rosters, frontmatter, explicit overrides,
+and inherited models. Write-tier children use the same fallback chain for startup
 failures, but stop retrying once any tool has executed: replaying a fresh writer
 could duplicate side effects. Thinking is preserved; target routes must be
 registered/authenticated in Pi. Duplicate routes are tried once, cancellation
@@ -137,10 +177,11 @@ cutoff. Uncommitted worktrees are retained for recovery rather than force-delete
 **Cooldowns:** after a candidate fails, it is skipped for 60 seconds (in-memory,
 keyed `provider/model`, no disk persistence).
 
-Write-tier children do not use this roster/failover path. They receive the task's
-model override or agent frontmatter model, falling back to the parent for
-`inherit`. Thinking comes from the task's tier or agent frontmatter and is
-forwarded through `--thinking`.
+Write-tier children do not load the in-process roster or cooldown map. They
+receive the task's model override or agent frontmatter model, falling back to
+the parent for `inherit`, then apply the same exact-counterpart quota routing
+and startup fallback rules. Thinking comes from the task's tier or agent
+frontmatter and is forwarded through `--thinking`.
 
 ## Web research with Linkup
 
@@ -340,17 +381,17 @@ fixed models, because two workers on the same tier are correlated. Defaults
 live in `src/profiles.ts` and are overridable with
 `DISPATCH_PROFILE_<TIER>_MODEL`:
 
-| Tier | Default model | Thinking | Notes |
+| Tier | Default model | Thinking | When to use |
 |---|---|---|---|
-| `cheap` | `neuralwatt/deepseek-v4.1-flash` | `off` | grep-and-report recon |
-| `balanced` | `neuralwatt/glm-5.3` | `high` | general workhorse (provisional) |
-| `precise` | `openai-codex/gpt-6-astra` | `high` | top tier — code writing, security review |
-| `long` | `neuralwatt/kimi-k3` | `high` | dedicated long-effort/long-context model |
+| `cheap` | `aperture/neuralwatt/deepseek-v4.1-flash` | `off` | Simple lookups, grep-and-report, boilerplate |
+| `balanced` | `anthropic/claude-sonnet-5-5` (Sol 6.1 peer) | `high` | Everyday coding, standard reviews, general work |
+| `precise` | `anthropic/claude-opus-5-5` | `high` | Security, architecture, complex features, production-critical |
+| `long` | `aperture/neuralwatt/kimi-k3` | `high` | Huge context (>100K tokens), multi-file refactors, research |
 
 Tasks may also pick a model directly: `tasks: [{agent: "writer", model: "long", task}]`
 accepts a tier name or an explicit `provider/id` and skips the agent's roster —
 the standard way to run long-context writes on Kimi-3 while `writer` defaults
-to `precise` (gpt-6-astra).
+to `precise` (Opus 5.5). The feature-plan Opus override is `DISPATCH_OPUS55_MODEL`.
 
 ### Rosters as failover
 

@@ -13,6 +13,7 @@
  */
 
 import type { Usage } from "@earendil-works/pi-ai";
+import { buildAdaptedSystemPrompt, knownModelFamily } from "@pf/pi-model-prompts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
@@ -34,6 +35,7 @@ import {
 	type RankedCandidate,
 } from "./roster.ts";
 import { THINKING_LEVELS } from "./types.ts";
+import { quotaCandidates } from "./quota.ts";
 import { ToolHealth } from "./tool-health.ts";
 import type { AgentConfig, WorkerResult } from "./types.ts";
 
@@ -57,6 +59,8 @@ export interface RunWorkerOptions {
 	resumeFile?: string;
 	/** Explicit model override ("provider/id"), bypassing roster and frontmatter. Used by orchestrator tools that need per-invocation model choice (e.g. diverse pairs). */
 	modelSpec?: string;
+	/** Opt in for tier/workflow model choices; explicit per-task pins default off. */
+	steerByQuota?: boolean;
 	/** Thinking level forced alongside modelSpec (defaults to "high"). */
 	thinking?: string;
 }
@@ -237,7 +241,8 @@ export async function runWorker(
 			? (options.thinking as AgentConfig["thinking"])
 			: (agent.thinking ?? "high");
 	// Explicit choices bypass rosters, including explicit parent inheritance.
-	const candidates: RankedCandidate[] = override
+	const selection = override ? undefined : resolveCandidates(agent, await loadRosterConfig());
+	let candidates: RankedCandidate[] = override
 		? override === "inherit"
 			? []
 			: withProviderFallbacks([
@@ -252,7 +257,11 @@ export async function runWorker(
 						},
 					},
 				])
-		: resolveCandidates(agent, await loadRosterConfig());
+		: selection!.candidates;
+
+	if (options.steerByQuota ?? selection?.quotaRouting) {
+		candidates = quotaCandidates(candidates, options.onWarning);
+	}
 
 	if (candidates.length === 0) {
 		// No roster/frontmatter override: inherit the parent and its provider fallback.
@@ -409,8 +418,10 @@ async function runOneCandidate(
 		noPromptTemplates: true,
 		noThemes: true,
 		noContextFiles: true,
-		systemPrompt:
+		systemPrompt: buildAdaptedSystemPrompt(
 			agent.systemPrompt || `You are ${agent.name}. ${agent.description}`,
+			knownModelFamily(model),
+		),
 	});
 	await loader.reload();
 	if (extensionPaths.length) {

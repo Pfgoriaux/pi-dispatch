@@ -17,7 +17,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { THINKING_LEVELS, type AgentConfig } from "./types.ts";
-import { expandModelSpec, tierThinking } from "./profiles.ts";
+import { expandModelSpec, isProfileTier, tierThinking } from "./profiles.ts";
 
 type AgentFrontmatter = {
 	name?: unknown;
@@ -88,6 +88,7 @@ function loadAgentsFromDir(
 			description: frontmatter.description,
 			tools: parseToolList(frontmatter.tools),
 			model: expandModelSpec(rawModel),
+			quotaRouting: isProfileTier(rawModel),
 			// Frontmatter thinking overrides the tier default; frontmatter
 			// thinking is optional and invalid values fall back to "off"
 			// (or the tier default) rather than dropping the whole agent file.

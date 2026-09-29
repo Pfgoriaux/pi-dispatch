@@ -29,7 +29,7 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { agentRosterHelp, discoverAgents } from "./agents.ts";
-import { expandModelSpec, tierThinking } from "./profiles.ts";
+import { expandModelSpec, isProfileTier, tierThinking } from "./profiles.ts";
 import { renderDispatchCall, renderDispatchResult } from "./render.ts";
 import { findWorkerSession, runWorker, truncateText } from "./worker.ts";
 import { notifyDispatchDone } from "./herdr.ts";
@@ -420,6 +420,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 				item.model
 					? {
 							modelSpec: expandModelSpec(item.model)!,
+							steerByQuota: isProfileTier(item.model),
 							thinking: tierThinking(item.model),
 						}
 					: undefined;
@@ -430,7 +431,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 				cwd?: string,
 				index?: number,
 				resumeFile?: string,
-				modelOverride?: { modelSpec: string; thinking?: string },
+				modelOverride?: { modelSpec: string; thinking?: string; steerByQuota?: boolean },
 			) => {
 				let result: WorkerResult;
 				if (index !== undefined) paneSession.start(index);
@@ -446,6 +447,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 						persist: params.persist,
 						resumeFile,
 						modelSpec: modelOverride?.modelSpec,
+						steerByQuota: modelOverride?.steerByQuota,
 						thinking: modelOverride?.thinking,
 					});
 				} catch (err) {
@@ -554,6 +556,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 									signal,
 									model: parentModel,
 									modelOverride: taskModel(item)?.modelSpec,
+									steerByQuota: taskModel(item)?.steerByQuota,
 									thinking: taskModel(item)?.thinking,
 									...paneSession.options(i),
 								},
@@ -661,6 +664,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 								signal,
 								model: parentModel,
 								modelOverride: taskModel(item)?.modelSpec,
+								steerByQuota: taskModel(item)?.steerByQuota,
 								thinking: taskModel(item)?.thinking,
 								...paneSession.options(i),
 							}).then(async (result) => {

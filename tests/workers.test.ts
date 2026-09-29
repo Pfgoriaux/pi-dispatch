@@ -83,14 +83,14 @@ test("ranked roster retains provider/model names containing slashes", () => {
 test("Neuralwatt routes retry the same model via Aperture Synthetic before changing families", () => {
 	const entries = [
 		{ provider: "aperture", model: "neuralwatt/kimi-k3", thinking: "low", weight: 3 },
-		{ provider: "neuralwatt", model: "glm-5.3-flash", thinking: "high", weight: 2 },
+		{ provider: "neuralwatt", model: "glm-5.3", thinking: "high", weight: 2 },
 		{ provider: "aperture", model: "synthetic/hf:moonshotai/Kimi-K3", thinking: "low", weight: 1 },
 	];
 	const ranked = rankCandidates(entries);
 	assert.deepEqual(ranked.map(c => c.modelSpec), [
 		"aperture/neuralwatt/kimi-k3", "aperture/synthetic/hf:moonshotai/Kimi-K3",
-		"neuralwatt/glm-5.3-flash", "aperture/synthetic/hf:zai-org/GLM-5.3-Flash",
-		"openai-codex/gpt-5.6-terra",
+		"neuralwatt/glm-5.3",
+		"openai-codex/gpt-6.1-sol",
 	]);
 	assert.equal(ranked[1].thinking, "low");
 	assert.equal(ranked[1].entry.provider, "aperture");
@@ -99,10 +99,10 @@ test("Neuralwatt routes retry the same model via Aperture Synthetic before chang
 	markCooldown("aperture", "neuralwatt/kimi-k3");
 	assert.equal(rankCandidates(entries)[0].modelSpec, "aperture/synthetic/hf:moonshotai/Kimi-K3");
 	markCooldown("aperture", "synthetic/hf:moonshotai/Kimi-K3");
-	assert.equal(rankCandidates(entries)[0].modelSpec, "neuralwatt/glm-5.3-flash");
+	assert.equal(rankCandidates(entries)[0].modelSpec, "neuralwatt/glm-5.3");
 });
 
-test("non-flash GLM 5.3 on Neuralwatt falls back to Synthetic's Flash variant", () => {
+test("GLM 5.3 retains the Codex fallback", () => {
 	const candidates: RankedCandidate[] = [{
 		modelSpec: "aperture/neuralwatt/glm-5.3",
 		thinking: "high",
@@ -110,13 +110,20 @@ test("non-flash GLM 5.3 on Neuralwatt falls back to Synthetic's Flash variant", 
 	}];
 	assert.deepEqual(withProviderFallbacks(candidates).map((c) => c.modelSpec), [
 		"aperture/neuralwatt/glm-5.3",
-		"aperture/synthetic/hf:zai-org/GLM-5.3-Flash",
-		"openai-codex/gpt-5.6-terra",
+		"openai-codex/gpt-6.1-sol",
 	]);
 });
 
+test("DeepSeek 4.1 falls back to Sonnet 5.5, then 6.1 Sol", () => {
+	for (const modelSpec of ["neuralwatt/deepseek-v4.1-flash", "aperture/neuralwatt/deepseek-v4.1-flash"]) {
+		const routes = withProviderFallbacks([{ modelSpec, thinking: "off", entry: { provider: "test", model: modelSpec, thinking: "off", weight: 1 } }]);
+		assert.deepEqual(routes.map((c) => c.modelSpec), [modelSpec, "anthropic/claude-sonnet-5-5", "openai-codex/gpt-6.1-sol"]);
+		assert.deepEqual(withProviderFallbacks(routes), routes, "expansion is idempotent");
+	}
+});
+
 test("unmapped models and other providers do not invent Synthetic routes", () => {
-	for (const modelSpec of ["neuralwatt/unknown", "neuralwatt/glm-5.2", "neuralwatt/deepseek-v4.1-flash", "other/kimi-k3", "aperture/neuralwatt/kimi-k3-fast"]) {
+	for (const modelSpec of ["neuralwatt/unknown", "neuralwatt/glm-5.2", "neuralwatt/glm-5.3-flash", "other/kimi-k3", "aperture/neuralwatt/kimi-k3-fast"]) {
 		const candidates = [{ modelSpec, thinking: "low", entry: { provider: "test", model: modelSpec, thinking: "low", weight: 1 } }];
 		assert.deepEqual(withProviderFallbacks(candidates), candidates);
 	}

@@ -20,11 +20,14 @@ processes in Git worktrees. Usage and current behavior: [README.md](README.md).
   the starting directory to the session subtree; it is not a filesystem sandbox.
 - In-process workers disable extension discovery, skills, and context-file loading.
   All roles get Linkup web tools when configured, in addition to their local tool
-  allowlist. Only Linkup entrypoints load, never unrelated extensions or spawning
+  allowlist. Model guidance from the packaged pi-model-prompts dependency is
+  applied after candidate resolution without replacing role or task constraints.
+  Only Linkup entrypoints load, never unrelated extensions or spawning
   tools. Missing setup warns without blocking local work. Their tasks must carry
   applicable constraints or explicit instructions to read the relevant files.
   Do not assume they inherit the parent's AGENTS.md.
-- Child-process write workers have a separate loader and depth/exclusion guard;
+- Child-process write workers explicitly load pi-model-prompts for the actual
+  child model. They have a separate loader and depth/exclusion guard;
   do not claim all tiers are hermetic. Worktrees separate changes but do not
   prevent shell access to other paths.
 - Worktree dispatch commits worker changes and merges branches automatically.

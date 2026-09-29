@@ -29,5 +29,8 @@
   },
   "repository": {
     "url": "git+https://github.com/Pfgoriaux/pi-dispatch.git"
+  },
+  "dependencies": {
+    "@pf/pi-model-prompts": "file:vendor/pf-pi-model-prompts-3.0.2.tgz"
   }
 }

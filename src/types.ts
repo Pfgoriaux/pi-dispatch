@@ -30,6 +30,8 @@ export interface AgentConfig {
 	description: string;
 	tools?: string[];
 	model?: string;
+	/** Tier-derived model; concrete frontmatter pins keep their provider order. */
+	quotaRouting?: boolean;
 	thinking?: ThinkingLevel;
 	systemPrompt: string;
 	source: "bundled" | "user" | "project";
