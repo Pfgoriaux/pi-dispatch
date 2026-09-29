@@ -33,6 +33,7 @@ import {
 	markCooldown,
 	resolveCandidates,
 	withProviderFallbacks,
+	withoutModels,
 	type RankedCandidate,
 } from "./roster.ts";
 import { THINKING_LEVELS } from "./types.ts";
@@ -62,6 +63,8 @@ export interface RunWorkerOptions {
 	modelSpec?: string;
 	/** Opt in for tier/workflow model choices; explicit per-task pins default off. */
 	steerByQuota?: boolean;
+	/** Model specs never tried, not even as failover (keeps parallel workers on distinct models). */
+	excludeModels?: readonly string[];
 	/** Thinking level forced alongside modelSpec (defaults to "high"). */
 	thinking?: string;
 }
@@ -283,11 +286,17 @@ export async function runWorker(
 			},
 		}]));
 	}
+	// Last, so quota routing and parent inheritance cannot reintroduce an excluded model.
+	candidates = withoutModels(candidates, options.excludeModels);
+	if (candidates.length === 0) {
+		return fail("error", `Every model candidate for agent "${agent.name}" is excluded`);
+	}
 
 	let aggregatedUsage: Usage | undefined;
 	let lastError: string | undefined;
 	let lastAttempt: WorkerResult | undefined;
 	let attempts = 0;
+	const failedAttempts: string[] = [];
 
 	for (let i = 0; i < candidates.length; i++) {
 		const candidate = candidates[i];
@@ -337,6 +346,7 @@ export async function runWorker(
 				...attempt,
 				usage: aggregatedUsage,
 				attempts,
+				failedAttempts: failedAttempts.length > 0 ? failedAttempts : undefined,
 				ms: Date.now() - started,
 			};
 		}
@@ -352,6 +362,7 @@ export async function runWorker(
 				ms: Date.now() - started,
 			};
 		}
+		failedAttempts.push(`${model.provider}/${model.id}: ${attempt.error ?? "failed"}`);
 		if (!override) markCooldown(model.provider, model.id);
 	}
 
@@ -367,6 +378,7 @@ export async function runWorker(
 		model: lastAttempt?.model,
 		thinking: lastAttempt?.thinking,
 		attempts,
+		failedAttempts: failedAttempts.length > 0 ? failedAttempts : undefined,
 		ms: Date.now() - started,
 	};
 }

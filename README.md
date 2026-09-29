@@ -31,12 +31,13 @@ live in `details` (UI-only). Raw worker transcripts are not returned to the pare
 
 "Review a PR" without leaving dispatch. Resolves the diff (GitHub PR number
 via `gh`, a git rev-range, a branch vs HEAD, or default `<origin/base>...HEAD`),
-then runs three in-process reviewers in parallel:
+then runs six in-process reviewers in parallel:
 
 - `security-reviewer` on the `precise` tier (uses an operator-installed `deepsec` executable outside the checkout, manual review otherwise; repository-local scanners are never selected automatically)
-- two `reviewer` passes on the `DIVERSE_PAIR` (separate contexts, different model families: GLM 5.3 on Neuralwatt and Kimi-K3 on Neuralwatt/Synthetic, through Aperture with quota-aware provider selection)
+- four `reviewer` passes pinned to `REVIEW_MODELS`: Codex Astra, Opus 5.5, GLM 5.3, and Kimi 3 (quota-routed between Neuralwatt and Synthetic). The Astra and Opus passes never fail over to each other; each falls back to 6.1 Sol. Each review is labeled with its actual model and any failed attempts.
+- a `slop-reviewer` pass on GLM 5.3
 
-The `aggregator` distills the findings into one prioritized report, and when
+Opus 5.5 then verifies the code review findings. The `aggregator` distills the findings into one prioritized report, and when
 `fix: true` is explicitly requested, a `writer` fixes the findings in a git
 worktree whose branch merges back automatically. Unlike the old swarm this
 needs no Herdr; the fix step requires a trusted, committed-clean repo root at the

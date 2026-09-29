@@ -159,6 +159,12 @@ export const PROVIDER_TOP_MODELS: Record<string, string> = {
 
 const routeId = (spec: string) => spec.replace(/^aperture\//, "");
 
+/** Drop candidates naming an excluded model, with or without the Aperture prefix. */
+export function withoutModels(candidates: RankedCandidate[], excluded: readonly string[] = []): RankedCandidate[] {
+	const ids = new Set(excluded.map(routeId));
+	return candidates.filter((c) => !ids.has(routeId(c.modelSpec)));
+}
+
 /** Exact-model equivalence only; unknown models must never be guessed. */
 export function quotaFamily(spec: string): string | undefined {
 	const route = routeId(spec);

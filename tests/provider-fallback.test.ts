@@ -188,3 +188,59 @@ test("mixed top-tier and NeuralWatt/Synthetic get appropriate counterparts", () 
 	assert.ok(routes.some(c => c.modelSpec === synthetic));
 	assert.equal(routes.at(-1)?.modelSpec, codexSol);
 });
+
+/** Mock the SDK so `failing` models error with a non-retryable credit failure. */
+function mockModels(t: { mock: typeof test.mock }, failing: string[], calls: string[]): ModelRegistry {
+	t.mock.method(ModelRuntime.prototype, "hasConfiguredAuth", () => true);
+	t.mock.method(ModelRuntime.prototype, "streamSimple", (model: Model<Api>) => {
+		const selected = `${model.provider}/${model.id}`;
+		calls.push(selected);
+		const failed = failing.includes(selected);
+		const message: AssistantMessage = {
+			role: "assistant", api: model.api, provider: model.provider, model: model.id,
+			content: failed ? [] : [{ type: "text", text: "REVIEWED" }],
+			stopReason: failed ? "error" : "stop", errorMessage: failed ? "402 insufficient\ncredits" : undefined,
+			timestamp: Date.now(),
+			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		};
+		const stream = createAssistantMessageEventStream();
+		if (failed) stream.push({ type: "error", reason: "error", error: message });
+		else stream.push({ type: "done", reason: "stop", message });
+		return stream;
+	});
+	return {
+		find: (provider: string, id: string) => ({
+			provider, id, api: "openai-completions", name: id, reasoning: false, input: ["text"],
+			contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		}),
+		getRegisteredNativeProvider: () => undefined,
+		getApiKeyForProvider: async () => undefined,
+	} as unknown as ModelRegistry;
+}
+
+for (const [pinned, peer] of [[astra, opus], [opus, astra]]) {
+	test(`${pinned} failover skips excluded peer and reports the failed attempt`, { timeout: 10000 }, async (t) => {
+		const calls: string[] = [];
+		const registry = mockModels(t, [pinned], calls);
+		// The Aperture prefix must not let the peer slip through.
+		const result = await runWorker(agent, "test", {
+			registry, fallbackModel: undefined, modelSpec: pinned, excludeModels: [`aperture/${peer}`],
+		});
+		assert.deepEqual(calls, [pinned, codexSol]);
+		assert.equal(result.status, "ok");
+		assert.equal(result.model, codexSol);
+		assert.deepEqual(result.failedAttempts, [`${pinned}: 402 insufficient\ncredits`]);
+	});
+}
+
+test("excluding every candidate fails without calling a model", async (t) => {
+	const calls: string[] = [];
+	const registry = mockModels(t, [], calls);
+	const result = await runWorker(agent, "test", {
+		registry, fallbackModel: undefined, modelSpec: astra, excludeModels: [astra, opus, codexSol],
+	});
+	assert.deepEqual(calls, []);
+	assert.equal(result.status, "error");
+	assert.match(result.error!, /excluded/);
+});

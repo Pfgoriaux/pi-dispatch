@@ -209,6 +209,9 @@ const CODE_REVIEW_MODELS = {
 	slop: REVIEW_MODELS.slop,
 } as const;
 
+/** Provider error text goes into a markdown heading: keep it short and on one line. */
+const oneLine = (text: string) => truncateText(text, 300).text.replace(/\s+/g, " ");
+
 function securityTask(c: {
 	cwd: string;
 	diffFile: string;
@@ -558,7 +561,13 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					const reviewOne = (
 						index: number,
 						task: string,
-						extra: { modelSpec?: string; thinking?: string; steerByQuota?: boolean; agent?: string },
+						extra: {
+							modelSpec?: string;
+							thinking?: string;
+							steerByQuota?: boolean;
+							excludeModels?: string[];
+							agent?: string;
+						},
 					) =>
 						progress.run(
 							index,
@@ -578,6 +587,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 										thinking: extra.thinking,
 										modelSpec: extra.modelSpec,
 										steerByQuota: extra.steerByQuota,
+										excludeModels: extra.excludeModels,
 										...progress.options(index),
 									},
 								),
@@ -595,16 +605,17 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 							}),
 							{}, // security-reviewer agent is precise-tier via frontmatter
 						),
-						// Astra and Opus are deliberately distinct top-tier models.
-						// Do NOT enable steerByQuota - we want both models for diversity,
-						// not quota-based reordering that would make both use Astra.
+						// Astra and Opus are deliberately distinct top-tier models. Each
+						// excludes the other so failover never duplicates a reviewer.
 						reviewOne(1, codeTask({ ...reviewerCtx, reviewer: "Codex Astra" }), {
 							modelSpec: CODE_REVIEW_MODELS.astra,
 							thinking: "high",
+							excludeModels: [CODE_REVIEW_MODELS.opus],
 						}),
 						reviewOne(2, codeTask({ ...reviewerCtx, reviewer: "Opus 5.5" }), {
 							modelSpec: CODE_REVIEW_MODELS.opus,
 							thinking: "high",
+							excludeModels: [CODE_REVIEW_MODELS.astra],
 						}),
 						reviewOne(3, codeTask({ ...reviewerCtx, reviewer: "GLM 5.3" }), {
 							modelSpec: CODE_REVIEW_MODELS.glm,
@@ -624,6 +635,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					]);
 
 					const codeReviewers = [astra, opus, glm, kimi];
+					const codeNames = ["Codex Astra", "Opus 5.5", "GLM 5.3", "Kimi 3"];
 					const allReviewers = [sec, ...codeReviewers, slop];
 
 					if (signal?.aborted) {
@@ -637,7 +649,8 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					}
 
 					const report = (r: WorkerResult, name: string) => ({
-						label: `${name} [actual model: ${r.model ?? "unavailable"}] — ${r.status}`,
+						label: `${name} [actual model: ${r.model ?? "unavailable"}] — ${r.status}` +
+							(r.failedAttempts ? ` (failed attempts: ${r.failedAttempts.map(oneLine).join("; ")})` : ""),
 						text:
 							r.status === "ok"
 								? truncateText(r.text || "(no output)").text
@@ -672,12 +685,9 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					// Phase 2: Opus 5.5 verification pass on all code review findings
 					let verifyResult: WorkerResult | undefined;
 					if (okCodeReviews.length > 0 && !signal?.aborted) {
-						const codeReports = [
-							report(astra, "Codex Astra"),
-							report(opus, "Opus 5.5"),
-							report(glm, "GLM 5.3"),
-							report(kimi, "Kimi 3"),
-						].filter((_, i) => codeReviewers[i].status === "ok");
+						const codeReports = codeReviewers
+							.map((r, i) => report(r, codeNames[i]))
+							.filter((_, i) => codeReviewers[i].status === "ok");
 
 						verifyResult = await progress.run(
 							6, // After 6 parallel reviewers
@@ -717,8 +727,8 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 										...(verifyResult
 											? [report(verifyResult, "Opus 5.5 verified code findings")]
 											: codeReviewers
-													.filter((r) => r.status === "ok")
-													.map((r, i) => report(r, ["Astra", "Opus", "GLM", "Kimi"][i]))
+													.map((r, i) => report(r, codeNames[i]))
+													.filter((_, i) => codeReviewers[i].status === "ok")
 										),
 										// Slop review is independent, include directly
 										...(slop.status === "ok" ? [report(slop, "slop detector (GLM 5.3)")] : []),
