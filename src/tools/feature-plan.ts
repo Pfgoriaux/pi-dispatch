@@ -27,6 +27,7 @@ import { runWorker, truncateText } from "../worker.ts";
 import type { DispatchDetails, WorkerResult } from "../types.ts";
 import { DispatchProgress } from "../progress.ts";
 import { renderDispatchResult } from "../render.ts";
+import { ModelDiversity } from "../model-diversity.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Scout models — the five-model diverse council
@@ -261,7 +262,7 @@ function fablePlannerTask(c: {
 		"FEATURE IDEA:",
 		c.idea,
 		"",
-		"COUNCIL CONCLUSIONS (5 scouts, each having seen the others' initial findings):",
+		`COUNCIL CONCLUSIONS (${c.councilOutputs.length} scouts, each having seen the others' initial findings):`,
 		...c.councilOutputs.map((r) => `### ${r.label}\n${r.conclusion}`),
 		"",
 		"Your task:",
@@ -373,6 +374,7 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 				// Phase 1: Run 5 scouts in parallel
 				// ─────────────────────────────────────────────────────────────────
 
+				const scoutModels = new ModelDiversity();
 				const runScout = async (
 					index: number,
 					scoutConfig: ScoutConfig,
@@ -394,6 +396,7 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 								signal,
 								modelSpec,
 								steerByQuota: scoutConfig.steerByQuota,
+								claimModel: scoutModels.worker(),
 								thinking: scoutConfig.thinking,
 								...progress.options(index),
 							}),
@@ -442,6 +445,7 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 				// Phase 2: Council — each scout sees others' conclusions
 				// ─────────────────────────────────────────────────────────────────
 
+				const councilModels = new ModelDiversity();
 				const runCouncil = async (
 					scoutIndex: number,
 					scoutConfig: ScoutConfig,
@@ -449,7 +453,7 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 				): Promise<WorkerResult> => {
 					// Skip council for failed scouts
 					if (ownResult.status !== "ok") {
-						return {
+						return progress.run(5 + scoutIndex, async () => ({
 							agent: scout!.name,
 							task: `Council: ${scoutConfig.label}`,
 							status: "error",
@@ -457,12 +461,12 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 							error: `Skipped: initial scout failed (${ownResult.error})`,
 							attempts: 0,
 							ms: 0,
-						};
+						}), signal);
 					}
 
 					const otherReports = scoutResults
 						.map((r, i) => ({
-							label: SCOUT_MODELS[i].label,
+							label: `${SCOUT_MODELS[i].label} [actual model: ${r.model ?? "unavailable"}]`,
 							conclusion: r.status === "ok"
 								? truncateText(r.text || "(no output)", 2000).text
 								: `(FAILED: ${r.error})`,
@@ -491,6 +495,7 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 								signal,
 								modelSpec,
 								steerByQuota: scoutConfig.steerByQuota,
+								claimModel: councilModels.worker(),
 								thinking: scoutConfig.thinking,
 								...progress.options(councilIndex),
 							}),
@@ -515,7 +520,7 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 				// ─────────────────────────────────────────────────────────────────
 
 				const councilOutputs = councilResults.map((r, i) => ({
-					label: SCOUT_MODELS[i].label,
+					label: `${SCOUT_MODELS[i].label} [actual model: ${(r.status === "ok" ? r : scoutResults[i]).model ?? "unavailable"}]`,
 					conclusion:
 						r.status === "ok"
 							? truncateText(r.text || "(no output)", 2500).text
@@ -523,7 +528,7 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 								scoutResults[i].status === "ok"
 								? `(Council failed, initial report): ${truncateText(scoutResults[i].text || "(no output)", 2000).text}`
 								: `(Both phases failed: ${r.error})`,
-				}));
+				})).filter((_, i) => scoutResults[i].status === "ok");
 
 				const fablePlannerResult = await progress.run(
 					10, // Index 10

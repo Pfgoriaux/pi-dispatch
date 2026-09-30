@@ -7,6 +7,7 @@ import { createAssistantMessageEventStream, type Api, type AssistantMessage, typ
 import { ModelRuntime, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { withProviderFallbacks, type RankedCandidate } from "../src/roster.ts";
 import { runWorker } from "../src/worker.ts";
+import { ModelDiversity } from "../src/model-diversity.ts";
 import { runWorkerProc } from "../src/worker-proc.ts";
 import type { AgentConfig } from "../src/types.ts";
 
@@ -233,6 +234,45 @@ for (const [pinned, peer] of [[astra, opus], [opus, astra]]) {
 		assert.deepEqual(result.failedAttempts, [`${pinned}: 402 insufficient\ncredits`]);
 	});
 }
+
+test("parallel credit fallbacks use Sol only once, then continue with fewer workers", async (t) => {
+	const calls: string[] = [];
+	const registry = mockModels(t, [opus, astra, neuralwatt, synthetic], calls);
+	const diversity = new ModelDiversity();
+	const results = await Promise.all([opus, astra, neuralwatt].map(modelSpec => runWorker(agent, "test", {
+		registry, fallbackModel: undefined, modelSpec, claimModel: diversity.worker(),
+	})));
+	assert.equal(results.filter(r => r.status === "ok").length, 1);
+	assert.equal(calls.filter(model => model === codexSol).length, 1);
+	assert.equal(calls.filter(model => model === opus).length, 1);
+	assert.equal(calls.filter(model => model === astra).length, 1);
+	assert.equal(calls.filter(model => model === neuralwatt).length, 1);
+	assert.equal(calls.filter(model => model === synthetic).length, 1, "same owner can retry the other provider");
+	assert.equal(results.reduce((sum, r) => sum + (r.usage?.totalTokens ?? 0), 0), calls.length * 2);
+	assert.ok(results.filter(r => r.status !== "ok").every(r => r.failedAttempts?.length));
+});
+
+test("provider aliases cannot supply a second voice, but a new phase can reuse models", async (t) => {
+	const calls: string[] = [];
+	const registry = mockModels(t, [], calls);
+	const diversity = new ModelDiversity();
+	const first = await runWorker(agent, "test", {
+		registry, fallbackModel: undefined, modelSpec: neuralwatt, claimModel: diversity.worker(),
+	});
+	const warnings: string[] = [];
+	const second = await runWorker(agent, "test", {
+		registry, fallbackModel: undefined, modelSpec: synthetic,
+		claimModel: diversity.worker(), onWarning: warning => warnings.push(warning),
+	});
+	assert.equal(first.model, neuralwatt);
+	assert.equal(second.model, codexSol);
+	assert.deepEqual(calls, [neuralwatt, codexSol]);
+	assert.equal(warnings.filter(w => w.includes("already used")).length, 2);
+	const council = await runWorker(agent, "test", {
+		registry, fallbackModel: undefined, modelSpec: synthetic, claimModel: new ModelDiversity().worker(),
+	});
+	assert.equal(council.model, synthetic);
+});
 
 test("excluding every candidate fails without calling a model", async (t) => {
 	const calls: string[] = [];

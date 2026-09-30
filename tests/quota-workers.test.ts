@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { runWorker } from "../src/worker.ts";
+import { ModelDiversity } from "../src/model-diversity.ts";
 import { runWorkerProc } from "../src/worker-proc.ts";
 import type { AgentConfig } from "../src/types.ts";
 
@@ -69,6 +70,28 @@ test("SDK rereads cache for subsequent spawns and skips unavailable routes", asy
 		fallbackModel: undefined, signal: controller.signal, onAttempt: () => controller.abort(),
 	});
 	assert.equal(result.model, nw);
+});
+
+test("Claude exhaustion cannot route a second worker to an already claimed Astra", async () => {
+	const opus = "anthropic/claude-opus-5-5", astra = "openai-codex/gpt-6-astra", sol = "openai-codex/gpt-6.1-sol";
+	for (const [provider, remaining] of [["claude", 0], ["codex", 39]] as const) {
+		fs.writeFileSync(path.join(cache, `${provider}-v3.json`), JSON.stringify({ updatedAt: Date.now(), limits: [{ label: "week", remaining, unit: "%" }] }));
+	}
+	const diversity = new ModelDiversity();
+	assert.equal(diversity.worker()(astra), true);
+	assert.equal(diversity.worker()(sol), true);
+	const controller = new AbortController();
+	const calls: string[] = [], warnings: string[] = [];
+	const result = await runWorker(agent, "test", {
+		registry, fallbackModel: undefined, modelSpec: opus, steerByQuota: true,
+		claimModel: diversity.worker(), signal: controller.signal, onWarning: w => warnings.push(w),
+		onAttempt: model => { calls.push(model); controller.abort(); },
+	});
+	assert.deepEqual(calls, [opus]);
+	assert.ok(warnings.some(w => w.startsWith("Quota routing:")));
+	assert.ok(warnings.some(w => w.includes(`Skipped ${astra}`)));
+	assert.equal(result.status, "aborted");
+	for (const provider of ["claude", "codex"]) fs.rmSync(path.join(cache, `${provider}-v3.json`));
 });
 
 test("child workers route tier choices but preserve concrete pins and direct Codex", async () => {
