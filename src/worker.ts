@@ -65,6 +65,8 @@ export interface RunWorkerOptions {
 	steerByQuota?: boolean;
 	/** Model specs never tried, not even as failover (keeps parallel workers on distinct models). */
 	excludeModels?: readonly string[];
+	/** Synchronous phase-wide claim, checked against the resolved model on every attempt. */
+	claimModel?: (spec: string) => boolean;
 	/** Thinking level forced alongside modelSpec (defaults to "high"). */
 	thinking?: string;
 }
@@ -311,6 +313,14 @@ export async function runWorker(
 			// Config error (typo'd model id), not a model-health failure: fail the
 			// candidate without poisoning cooldowns.
 			lastError ??= `No model available for candidate "${candidate.modelSpec}"`;
+			continue;
+		}
+
+		const resolvedSpec = `${model.provider}/${model.id}`;
+		if (options.claimModel && !options.claimModel(resolvedSpec)) {
+			const reason = `Skipped ${resolvedSpec}: model already used by another worker in this phase`;
+			options.onWarning?.(reason);
+			lastError ??= reason;
 			continue;
 		}
 

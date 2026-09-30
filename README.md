@@ -31,10 +31,10 @@ live in `details` (UI-only). Raw worker transcripts are not returned to the pare
 
 "Review a PR" without leaving dispatch. Resolves the diff (GitHub PR number
 via `gh`, a git rev-range, a branch vs HEAD, or default `<origin/base>...HEAD`),
-then runs six in-process reviewers in parallel:
+then runs up to six in-process reviewers in parallel:
 
 - `security-reviewer` on the `precise` tier (uses an operator-installed `deepsec` executable outside the checkout, manual review otherwise; repository-local scanners are never selected automatically)
-- four `reviewer` passes pinned to `REVIEW_MODELS`: Codex Astra, Opus 5.5, GLM 5.3, and Kimi 3 (quota-routed between Neuralwatt and Synthetic). The Astra and Opus passes never fail over to each other; each falls back to 6.1 Sol. Each review is labeled with its actual model and any failed attempts.
+- four `reviewer` passes pinned to `REVIEW_MODELS`: Codex Astra, Opus 5.5, GLM 5.3, and Kimi 3 (quota-routed between Neuralwatt and Synthetic). The Astra and Opus passes never fail over to each other; each falls back to 6.1 Sol. Each review is labeled with its actual model and any failed attempts. All parallel review roles share a model-identity guard: a model already attempted by one worker cannot run in another, including through quota routing or fallback. Workers skip duplicate candidates and stop if no unique candidate remains.
 - a `slop-reviewer` pass on GLM 5.3
 
 Opus 5.5 then verifies the code review findings. The `aggregator` distills the findings into one prioritized report, and when
@@ -52,6 +52,11 @@ before writing and merging so findings cannot silently target another revision.
 DeepSeek 4.1, Kimi 3, GLM 5.3) explore the repository from the technical-risk
 lens. After the initial scout phase, each scout sees the others' conclusions
 in a council phase to refine their views. Fable 5.1 then drafts the final plan.
+Each parallel phase uses distinct model identities, including provider aliases
+for Kimi and DeepSeek. Quota routing and retries cannot duplicate another
+worker's model. Fewer scouts run when no unique candidate remains; at least
+two must succeed. The council uses a fresh guard, so models can return in
+that later phase. Planning and review verification are separate phases too.
 
 Model routing:
 - **Opus 5.5 & Astra**: top-tier models with quota-aware counterpart routing
@@ -161,8 +166,8 @@ could duplicate side effects. Thinking is preserved; target routes must be
 registered/authenticated in Pi. Duplicate routes are tried once, cancellation
 never triggers fallback, and exhaustion returns the last error. Unresolved
 fallback entries do not hide the last provider error or mislabel its model.
-PR review reports identify the actual model and flag when both code reviewers
-land on the same model: independent runs are not a cross-model review.
+The workflow tools prevent duplicate models within each parallel phase.
+Ordinary `dispatch` tasks keep their existing routing and fallback behavior.
 
 **Failed-tool loop cutoff (in-process):** an attempt stops after 3 consecutive
 calls to unavailable tools, or 5 consecutive tool errors without a successful

@@ -30,6 +30,7 @@ import type {
 import { agentRosterHelp, discoverAgents } from "../agents.ts";
 import { PROFILES, REVIEW_MODELS } from "../profiles.ts";
 import { runWorker, sumWorkerUsage, truncateText } from "../worker.ts";
+import { ModelDiversity } from "../model-diversity.ts";
 import { runWorkerProc } from "../worker-proc.ts";
 import { notifyDispatchDone } from "../herdr.ts";
 import { DispatchProgress } from "../progress.ts";
@@ -558,6 +559,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 				);
 				try {
 					await progress.open(ctx.cwd, signal);
+					const reviewModels = new ModelDiversity();
 					const reviewOne = (
 						index: number,
 						task: string,
@@ -588,6 +590,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 										modelSpec: extra.modelSpec,
 										steerByQuota: extra.steerByQuota,
 										excludeModels: extra.excludeModels,
+										claimModel: reviewModels.worker(),
 										...progress.options(index),
 									},
 								),
