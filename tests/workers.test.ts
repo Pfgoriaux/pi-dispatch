@@ -11,6 +11,10 @@ import { rankCandidates, markCooldown, withProviderFallbacks, type RankedCandida
 import { shellQuote } from "../src/panes.ts";
 import type { AgentConfig } from "../src/types.ts";
 
+import { isolateAgentDir } from "./isolated-agent-dir.ts";
+
+isolateAgentDir();
+
 const agent: AgentConfig = {
 	name: "scout",
 	description: "test",
@@ -212,6 +216,7 @@ console.log(JSON.stringify({type: "message_end", message: {role: "assistant", co
 		args[args.indexOf("--exclude-tools") + 1],
 		"dispatch,pr_review,feature_plan",
 	);
+	assert.equal(args[args.indexOf("--provider") + 1], "parent");
 	assert.equal(args[args.indexOf("--model") + 1], "parent/model");
 	assert.equal(args[args.indexOf("--thinking") + 1], "high");
 	assert.deepEqual(args.slice(-2), ["--", "--not-a-flag"]);

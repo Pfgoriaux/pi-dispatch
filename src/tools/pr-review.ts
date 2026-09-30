@@ -793,6 +793,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 										fixTask({ cwd: worktree.path, label, findings }),
 										{
 											cwd: worktree.path,
+											registry: ctx.modelRegistry,
 											requireCleanWorktree: true,
 											signal,
 											model: ctx.model
@@ -811,6 +812,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 									[worktree.branch],
 									{
 										signal,
+										registry: ctx.modelRegistry,
 										model: ctx.model
 											? `${ctx.model.provider}/${ctx.model.id}`
 											: undefined,

@@ -41,7 +41,7 @@ export function validQuotaSnapshot(value: unknown, now = Date.now()): value is Q
 }
 
 export function quotaProvider(spec: string): string {
-	const provider = spec.replace(/^aperture\//, "").split("/")[0];
+	const provider = spec.replace(/^aperture\//i, "").split("/")[0].toLowerCase();
 	if (provider === "openai-codex") return "codex";
 	if (provider === "anthropic") return "claude";
 	return provider;
@@ -134,7 +134,7 @@ export function checkGlobalLowQuota(
 
 	// Find the provider with the highest remaining headroom for fallback
 	let bestProvider: string | undefined;
-	let bestHeadroom = -1;
+	let bestHeadroom = 0;
 	for (const [provider, headroom] of headrooms) {
 		if (headroom > bestHeadroom) {
 			bestHeadroom = headroom;
@@ -142,6 +142,15 @@ export function checkGlobalLowQuota(
 		}
 	}
 	return { allLow: true, bestProvider, headrooms };
+}
+
+/** Hard eligibility check, independent of advisory routing and explicit model pins. */
+export function exhaustedQuotaReason(spec: string): string | undefined {
+	const provider = quotaProvider(spec);
+	const now = Date.now();
+	const snapshot = readQuotaSnapshot(provider, join(getAgentDir(), "cache", "usage-bar"), now);
+	if (quotaHeadroom(snapshot, now) !== 0) return undefined;
+	return `Skipped ${spec}: ${provider} quota exhausted (0% bottleneck remaining)`;
 }
 
 /** Called once before attempts; parallel workers never mutate snapshots or reserve invented token costs. */

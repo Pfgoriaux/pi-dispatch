@@ -11,6 +11,10 @@ import { ModelDiversity } from "../src/model-diversity.ts";
 import { runWorkerProc } from "../src/worker-proc.ts";
 import type { AgentConfig } from "../src/types.ts";
 
+import { isolateAgentDir } from "./isolated-agent-dir.ts";
+
+isolateAgentDir();
+
 const codexSol = "openai-codex/gpt-6.1-sol";
 const synthetic = "aperture/synthetic/hf:moonshotai/Kimi-K3";
 const neuralwatt = "aperture/neuralwatt/kimi-k3";

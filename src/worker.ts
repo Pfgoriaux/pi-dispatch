@@ -37,7 +37,7 @@ import {
 	type RankedCandidate,
 } from "./roster.ts";
 import { THINKING_LEVELS } from "./types.ts";
-import { quotaCandidates } from "./quota.ts";
+import { exhaustedQuotaReason, quotaCandidates } from "./quota.ts";
 import { ToolHealth } from "./tool-health.ts";
 import type { AgentConfig, WorkerResult } from "./types.ts";
 
@@ -317,6 +317,12 @@ export async function runWorker(
 		}
 
 		const resolvedSpec = `${model.provider}/${model.id}`;
+		const resolvedQuotaReason = exhaustedQuotaReason(resolvedSpec);
+		if (resolvedQuotaReason) {
+			options.onWarning?.(resolvedQuotaReason);
+			lastError ??= resolvedQuotaReason;
+			continue;
+		}
 		if (options.claimModel && !options.claimModel(resolvedSpec)) {
 			const reason = `Skipped ${resolvedSpec}: model already used by another worker in this phase`;
 			options.onWarning?.(reason);
@@ -334,6 +340,12 @@ export async function runWorker(
 		try {
 			attempt = await runOneCandidate(agent, task, options, candidate, model, extensionPaths);
 		} catch (error) {
+			if (error instanceof ExhaustedQuotaError) {
+				attempts--;
+				options.onWarning?.(error.message);
+				lastError ??= error.message;
+				continue;
+			}
 			// Missing requested tools are configuration failures, not unhealthy models.
 			if (error instanceof LinkupSetupError) {
 				return {
@@ -379,7 +391,7 @@ export async function runWorker(
 	// All candidates exhausted (or all failed to resolve).
 	return {
 		...base,
-		status: "error",
+		status: options.signal?.aborted ? "aborted" : "error",
 		text: "",
 		error:
 			lastError ??
@@ -392,6 +404,8 @@ export async function runWorker(
 		ms: Date.now() - started,
 	};
 }
+
+class ExhaustedQuotaError extends Error {}
 
 async function runOneCandidate(
 	agent: AgentConfig,
@@ -509,6 +523,8 @@ async function runOneCandidate(
 	try {
 		// Cancellation may arrive while the runtime/loader/session is being created.
 		options.signal?.throwIfAborted();
+		const quotaReason = exhaustedQuotaReason(`${model.provider}/${model.id}`);
+		if (quotaReason) throw new ExhaustedQuotaError(quotaReason);
 		await session.prompt(task);
 	} catch (err) {
 		// An abort mid-prompt throws: classify it as abort (with partial text and
@@ -520,6 +536,7 @@ async function runOneCandidate(
 		unsubscribe();
 		options.signal?.removeEventListener("abort", onAbort);
 		session.dispose();
+		if (err instanceof ExhaustedQuotaError) throw err;
 		return {
 			...fail(
 				abortedMidPrompt ? "aborted" : "error",

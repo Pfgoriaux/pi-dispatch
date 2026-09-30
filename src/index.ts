@@ -555,6 +555,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 									requireCleanWorktree: true,
 									signal,
 									model: parentModel,
+									registry: ctx.modelRegistry,
 									modelOverride: taskModel(item)?.modelSpec,
 									steerByQuota: taskModel(item)?.steerByQuota,
 									thinking: taskModel(item)?.thinking,
@@ -575,6 +576,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 									{
 										signal,
 										model: parentModel,
+										registry: ctx.modelRegistry,
 										onBoundary: emitProgress,
 									},
 								);
@@ -663,6 +665,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 								requireCleanWorktree: true,
 								signal,
 								model: parentModel,
+								registry: ctx.modelRegistry,
 								modelOverride: taskModel(item)?.modelSpec,
 								steerByQuota: taskModel(item)?.steerByQuota,
 								thinking: taskModel(item)?.thinking,
@@ -710,7 +713,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 							const outcome = await mergeWorktreeBranches(
 								repoRoot!,
 								mergeable.map((w) => w.branch),
-								{ signal, model: parentModel, onBoundary: emitProgress },
+								{ signal, model: parentModel, registry: ctx.modelRegistry, onBoundary: emitProgress },
 							);
 							mergeRecorder.merged.push(...outcome.merged);
 							mergeRecorder.failed.push(...outcome.failed);
