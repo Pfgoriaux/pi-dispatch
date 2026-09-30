@@ -340,6 +340,12 @@ export async function runWorker(
 		try {
 			attempt = await runOneCandidate(agent, task, options, candidate, model, extensionPaths);
 		} catch (error) {
+			if (error instanceof ExhaustedQuotaError) {
+				attempts--;
+				options.onWarning?.(error.message);
+				lastError ??= error.message;
+				continue;
+			}
 			// Missing requested tools are configuration failures, not unhealthy models.
 			if (error instanceof LinkupSetupError) {
 				return {
@@ -398,6 +404,8 @@ export async function runWorker(
 		ms: Date.now() - started,
 	};
 }
+
+class ExhaustedQuotaError extends Error {}
 
 async function runOneCandidate(
 	agent: AgentConfig,
@@ -515,6 +523,8 @@ async function runOneCandidate(
 	try {
 		// Cancellation may arrive while the runtime/loader/session is being created.
 		options.signal?.throwIfAborted();
+		const quotaReason = exhaustedQuotaReason(`${model.provider}/${model.id}`);
+		if (quotaReason) throw new ExhaustedQuotaError(quotaReason);
 		await session.prompt(task);
 	} catch (err) {
 		// An abort mid-prompt throws: classify it as abort (with partial text and
@@ -526,6 +536,7 @@ async function runOneCandidate(
 		unsubscribe();
 		options.signal?.removeEventListener("abort", onAbort);
 		session.dispose();
+		if (err instanceof ExhaustedQuotaError) throw err;
 		return {
 			...fail(
 				abortedMidPrompt ? "aborted" : "error",

@@ -149,7 +149,10 @@ Concrete per-task/frontmatter model pins, `inherit`, and `DISPATCH_DIVERSE_*_MOD
 overrides retain their provider order and existing failure fallbacks.
 Every model attempt in both worker tiers checks the latest cache and skips providers
 with fresh, known zero headroom, including pinned, inherited, and fallback models.
-Skipped models do not consume an attempt or claim a parallel model identity.
+Models blocked at selection do not consume an attempt or claim a parallel model identity.
+SDK workers recheck quotas after async setup, before prompting. A setup-time
+exhaustion skips the prompt without failed-attempt accounting or cooldown penalties;
+the phase's early model reservation remains in place.
 If every candidate is exhausted or already claimed, the worker returns an error
 without calling a provider. A later positive reading makes the provider eligible again.
 Child workers resolve bare IDs through the parent's registry and pass the full

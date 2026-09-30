@@ -264,7 +264,7 @@ async function runOneProc(
 			: (agent.thinking ?? "off");
 	if (model) {
 		const slash = model.indexOf("/");
-		args.push("--provider", model.slice(0, slash), "--model", model.slice(slash + 1));
+		args.push("--provider", model.slice(0, slash), "--model", model);
 	}
 	args.push("--thinking", thinking);
 	options.onAttempt?.(model ?? "child default", thinking, 1);

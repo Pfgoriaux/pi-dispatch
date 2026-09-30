@@ -108,7 +108,7 @@ for (const scenario of ["recover", "exhaust", "tools-started", "abort", "child-a
 		});
 		fs.writeFileSync(bin, `#!/usr/bin/env node
 const args = process.argv.slice(2);
-const model = args[args.indexOf("--provider") + 1] + '/' + args[args.indexOf("--model") + 1];
+const model = args[args.indexOf("--model") + 1];
 const failed = ${JSON.stringify(scenario)} !== "recover" || model !== ${JSON.stringify(codexSol)};
 if (${JSON.stringify(scenario)} === "tools-started") console.log(JSON.stringify({type: "tool_execution_start", toolName: "write"}));
 console.log(JSON.stringify({type: "message_end", message: {

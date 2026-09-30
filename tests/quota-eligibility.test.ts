@@ -3,7 +3,7 @@ import test, { after } from "node:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { AgentSession, DefaultResourceLoader, ModelRuntime, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { exhaustedQuotaReason, checkGlobalLowQuota } from "../src/quota.ts";
 import { runWorker } from "../src/worker.ts";
 import { runWorkerProc } from "../src/worker-proc.ts";
@@ -99,7 +99,7 @@ test("global low-quota fallback never selects a zero-headroom provider", () => {
 
 const bin = join(root, "fake-pi");
 writeFileSync(bin, `#!/usr/bin/env node
-const model = process.argv[process.argv.indexOf('--provider') + 1] + '/' + process.argv[process.argv.indexOf('--model') + 1];
+const model = process.argv[process.argv.indexOf('--model') + 1];
 console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:model}],stopReason:'stop'}}));
 `, { mode: 0o700 });
 process.env.PI_DISPATCH_PI_BIN = bin;
@@ -193,7 +193,7 @@ test("child fallback checks updated quota before its next attempt", async () => 
 	quota("codex", 50);
 	writeFileSync(bin, `#!/usr/bin/env node
 const fs = require('node:fs');
-const model = process.argv[process.argv.indexOf('--provider') + 1] + '/' + process.argv[process.argv.indexOf('--model') + 1];
+const model = process.argv[process.argv.indexOf('--model') + 1];
 if (model === ${JSON.stringify(nw)}) {
   fs.writeFileSync(${JSON.stringify(join(cache, "synthetic-v3.json"))}, JSON.stringify({updatedAt:Date.now(),limits:[{label:'week',remaining:0,unit:'%'}]}));
   process.exit(1);
@@ -204,6 +204,34 @@ console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content
 	assert.equal(result.status, "ok");
 	assert.equal(result.text, sol);
 	assert.equal(result.attempts, 2, `must skip ${sy}`);
+});
+
+test("SDK rechecks quotas after asynchronous setup without counting a skipped prompt", async t => {
+	quota("neuralwatt", 50);
+	quota("synthetic", 50);
+	quota("codex", 50);
+	const reload = DefaultResourceLoader.prototype.reload;
+	t.mock.method(DefaultResourceLoader.prototype, "reload", async function (this: DefaultResourceLoader) {
+		await reload.call(this);
+		quota("neuralwatt", 0);
+	});
+	t.mock.method(ModelRuntime.prototype, "hasConfiguredAuth", () => true);
+	const prompts: string[] = [];
+	t.mock.method(AgentSession.prototype, "prompt", async function (this: AgentSession) {
+		prompts.push(`${this.model!.provider}/${this.model!.id}`);
+	});
+	t.mock.method(AgentSession.prototype, "getLastAssistantText", () => "fixture response");
+	const setupRegistry = {
+		...registry,
+		find: (provider: string, id: string) => ({ provider, id, api: "openai-completions", name: id, reasoning: false,
+			input: ["text"], contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
+		getRegisteredNativeProvider: () => undefined, getApiKeyForProvider: async () => undefined,
+	} as unknown as ModelRegistry;
+	const result = await runWorker(agent, "test", { registry: setupRegistry, fallbackModel: undefined, modelSpec: nw });
+	assert.deepEqual(prompts, [sy]);
+	assert.equal(result.status, "ok");
+	assert.equal(result.attempts, 1);
+	assert.equal(result.failedAttempts, undefined);
 });
 
 test("unregistered fallbacks preserve the last child provider error", async () => {
@@ -219,4 +247,22 @@ process.exitCode = 1;
 	assert.equal(result.attempts, 1);
 	assert.equal(result.model, opus);
 	assert.match(result.error!, /fixture provider error/);
+});
+
+test("child flags preserve provider-prefixed IDs through the installed CLI resolver", async () => {
+	const models = [{ provider: "p", id: "p/foo" }, { provider: "p", id: "z/foo" }];
+	const prefixedRegistry = { find: (provider: string, id: string) => models.find(model => model.provider === provider && model.id === id) } as ModelRegistry;
+	writeFileSync(bin, `#!/usr/bin/env node
+console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:JSON.stringify(process.argv.slice(2))}],stopReason:'stop'}}));
+`, { mode: 0o700 });
+	const result = await runWorkerProc(agent, "test", { cwd: root, modelOverride: "p/p/foo", registry: prefixedRegistry });
+	assert.equal(result.status, "ok");
+	const args = JSON.parse(result.text) as string[];
+	const sdk = import.meta.resolve("@earendil-works/pi-coding-agent");
+	const { resolveCliModel } = await import(new URL("./core/model-resolver.js", sdk).href);
+	const resolved = resolveCliModel({ cliProvider: args[args.indexOf("--provider") + 1], cliModel: args[args.indexOf("--model") + 1],
+		modelRuntime: { getModels: () => models },
+	});
+	assert.equal(resolved.error, undefined);
+	assert.equal(resolved.model.id, "p/foo");
 });
