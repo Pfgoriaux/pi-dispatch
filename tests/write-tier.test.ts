@@ -40,8 +40,8 @@ function fake(code: string) {
  fs.writeFileSync(bin,'#!/usr/bin/env node\n'+code,{mode:0o700}); process.env.PI_DISPATCH_PI_BIN=bin;
 }
 const final = `console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'fixture finished'}],stopReason:'stop',model:'fixture'}}));`;
-const agent:any={name:'writer',description:'test',tools:['read','edit','write','bash'],systemPrompt:'test',source:'bundled',filePath:''};
-const ctx=(cwd:string)=>({cwd,isProjectTrusted:()=>false}) as any;
+const agent:any={name:'writer',description:'test',model:'fake/model',tools:['read','edit','write','bash'],systemPrompt:'test',source:'bundled',filePath:''};
+const ctx=(cwd:string)=>({cwd,model:{provider:'fake',id:'model'},isProjectTrusted:()=>false}) as any;
 const call=(cwd:string,params:any,signal?:AbortSignal)=>dispatch.execute('test', {...params,herdr:false},signal,undefined,ctx(cwd));
 
 test('reject invalid dispatch inputs before launching workers', async()=>{
@@ -87,13 +87,13 @@ async function conflicted() {
 }
 test('conflict resolution uses real git with simulated merge worker',async()=>{
  const {dir,w}=await conflicted(); fake(`require('fs').writeFileSync('shared.txt','parent\\nworker\\n');`+final);
- const result=await mergeWorktreeBranches(dir,[w.branch]); assert.deepEqual(result.failed,[]); assert.equal(result.merged.length,1);
+ const result=await mergeWorktreeBranches(dir,[w.branch],{model:'fake/model'}); assert.deepEqual(result.failed,[]); assert.equal(result.merged.length,1);
  assert.equal(fs.readFileSync(path.join(dir,'shared.txt'),'utf8'),'parent\nworker\n'); assert.equal(git(dir,'status','--porcelain'),'');
  await removeWorktree(dir,w.path,{branch:w.branch});
 });
 test('unresolved conflict markers abort merge and preserve parent',async()=>{
  const {dir,w}=await conflicted(), head=git(dir,'rev-parse','HEAD'); fake(final);
- const result=await mergeWorktreeBranches(dir,[w.branch]); assert.equal(result.merged.length,0); assert.match(result.failed[0].error,/markers remain/);
+ const result=await mergeWorktreeBranches(dir,[w.branch],{model:'fake/model'}); assert.equal(result.merged.length,0); assert.match(result.failed[0].error,/markers remain/);
  assert.equal(git(dir,'rev-parse','HEAD'),head); assert.equal(git(dir,'status','--porcelain'),''); await removeWorktree(dir,w.path,{deleteBranch:false});
 });
 test('pre-aborted merge performs no commits',async()=>{

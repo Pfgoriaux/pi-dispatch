@@ -111,6 +111,27 @@ for (const source of ["frontmatter", "pin", "inherit"] as const) {
 	});
 }
 
+test("child resolves bare IDs before quota checks and pins the actual provider", async () => {
+	const bareRegistry = { ...registry, getAll: () => [{ provider: "anthropic", id: "claude-opus-5-5" }] } as any;
+	quota("claude", 0);
+	quota("codex", 40);
+	const result = await runWorkerProc(agent, "test", { cwd: root, modelOverride: "claude-opus-5-5", registry: bareRegistry });
+	assert.equal(result.status, "ok");
+	assert.equal(result.text, astra);
+	assert.equal(result.attempts, 1);
+});
+
+test("child refuses unknown provider identity instead of using CLI defaults", async () => {
+	for (const config of [{ ...agent, model: undefined }, { ...agent, model: "claude-opus-5-5" }]) {
+		const calls: string[] = [];
+		const result = await runWorkerProc(config, "test", { cwd: root, onAttempt: model => calls.push(model) });
+		assert.deepEqual(calls, []);
+		assert.equal(result.status, "error");
+		assert.equal(result.attempts, 0);
+		assert.match(result.error!, /resolved provider\/model identity/);
+	}
+});
+
 test("child skips all exhausted routes without spawning or inheriting", async () => {
 	quota("neuralwatt", 0);
 	quota("synthetic", 0);

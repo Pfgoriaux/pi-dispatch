@@ -152,6 +152,8 @@ with fresh, known zero headroom, including pinned, inherited, and fallback model
 Skipped models do not consume an attempt or claim a parallel model identity.
 If every candidate is exhausted or already claimed, the worker returns an error
 without calling a provider. A later positive reading makes the provider eligible again.
+Child workers resolve bare IDs through the parent's registry and pass the full
+provider/model to Pi; unresolved bare IDs and unspecified CLI defaults fail before spawn.
 
 Snapshots are read at spawn time from
 `<getAgentDir()>/cache/usage-bar/<provider>-v3.json`, written by `pi-usage-bar`.

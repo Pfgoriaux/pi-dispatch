@@ -17,6 +17,8 @@ import { createRequire } from "node:module";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { resolveWorkerModel } from "./model.ts";
 import { workerTools } from "./linkup.ts";
 import { workerSystemPrompt } from "./worker-prompt.ts";
 import { ToolHealth } from "./tool-health.ts";
@@ -45,6 +47,8 @@ export interface RunWorkerProcOptions {
 	onWarning?: (warning: string) => void;
 	onAttempt?: (model: string, thinking: string, attempt: number) => void;
 	thinking?: string;
+	/** Parent registry resolves bare IDs before the child can choose a provider. */
+	registry?: ModelRegistry;
 	/** Parent model as `provider/id`; used when the agent spec says "inherit". */
 	model?: string;
 	/** Per-task model override (tier-expanded `provider/id`); wins over agent frontmatter. */
@@ -146,8 +150,12 @@ export async function runWorkerProc(
 ): Promise<WorkerResult> {
 	const started = Date.now();
 	const spec = options.modelOverride?.trim() || agent.model;
-	const model = spec && spec !== "inherit" ? spec : options.model;
-	if (!model) return runOneProc(agent, task, options);
+	const selected = spec && spec !== "inherit" ? spec : options.model;
+	const resolved = options.registry ? resolveWorkerModel(options.registry, selected, undefined) : undefined;
+	const model = resolved ? `${resolved.provider}/${resolved.id}` : selected;
+	if (!model?.includes("/")) {
+		return { agent: agent.name, task, status: "error", text: "", error: "Child workers require a resolved provider/model identity", ms: Date.now() - started, attempts: 0 };
+	}
 	const thinking = options.thinking && THINKING_LEVELS.has(options.thinking)
 		? options.thinking : (agent.thinking ?? "off");
 	let candidates = withProviderFallbacks([{
