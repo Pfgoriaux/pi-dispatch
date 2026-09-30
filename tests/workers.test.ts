@@ -212,7 +212,8 @@ console.log(JSON.stringify({type: "message_end", message: {role: "assistant", co
 		args[args.indexOf("--exclude-tools") + 1],
 		"dispatch,pr_review,feature_plan",
 	);
-	assert.equal(args[args.indexOf("--model") + 1], "parent/model");
+	assert.equal(args[args.indexOf("--provider") + 1], "parent");
+	assert.equal(args[args.indexOf("--model") + 1], "model");
 	assert.equal(args[args.indexOf("--thinking") + 1], "high");
 	assert.deepEqual(args.slice(-2), ["--", "--not-a-flag"]);
 	fs.writeFileSync(bin, "#!/usr/bin/env node\n", { mode: 0o700 });

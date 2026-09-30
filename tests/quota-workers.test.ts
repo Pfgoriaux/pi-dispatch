@@ -101,7 +101,7 @@ test("child workers route tier choices but preserve concrete pins and direct Cod
 	const bin = path.join(root, "fake-pi");
 	fs.writeFileSync(bin, `#!/usr/bin/env node
 const args = process.argv.slice(2);
-const model = args[args.indexOf('--model') + 1];
+const model = args[args.indexOf('--provider') + 1] + '/' + args[args.indexOf('--model') + 1];
 console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:model}],stopReason:'stop'}}));
 `, { mode: 0o700 });
 	process.env.PI_DISPATCH_PI_BIN = bin;

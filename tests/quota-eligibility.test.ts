@@ -29,7 +29,14 @@ const sol = "openai-codex/gpt-6.1-sol";
 const nw = "aperture/neuralwatt/kimi-k3";
 const sy = "aperture/synthetic/hf:moonshotai/Kimi-K3";
 const agent: AgentConfig = { name: "eligibility-fixture", description: "test", model: opus, tools: [], thinking: "high", systemPrompt: "fixture", source: "bundled", filePath: "fixture" };
-const registry = { find: (provider: string, id: string) => ({ provider, id }) } as ModelRegistry;
+const catalog = [opus, astra, sol, nw, sy].map(spec => {
+	const slash = spec.indexOf("/");
+	return { provider: spec.slice(0, slash), id: spec.slice(slash + 1) };
+});
+const registry = {
+	find: (provider: string, id: string) => catalog.find(model => model.provider === provider && model.id === id),
+	getAll: () => catalog, getAvailable: () => catalog,
+} as ModelRegistry;
 const snapshot = (remaining: number, updatedAt = Date.now()) => ({ updatedAt, limits: [{ label: "week", remaining, unit: "%" as const }] });
 function quota(provider: string, remaining: number, updatedAt = Date.now()) {
 	writeFileSync(join(cache, `${provider}-v3.json`), JSON.stringify(snapshot(remaining, updatedAt)));
@@ -92,7 +99,7 @@ test("global low-quota fallback never selects a zero-headroom provider", () => {
 
 const bin = join(root, "fake-pi");
 writeFileSync(bin, `#!/usr/bin/env node
-const model = process.argv[process.argv.indexOf('--model') + 1];
+const model = process.argv[process.argv.indexOf('--provider') + 1] + '/' + process.argv[process.argv.indexOf('--model') + 1];
 console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:model}],stopReason:'stop'}}));
 `, { mode: 0o700 });
 process.env.PI_DISPATCH_PI_BIN = bin;
@@ -119,6 +126,21 @@ test("child resolves bare IDs before quota checks and pins the actual provider",
 	assert.equal(result.status, "ok");
 	assert.equal(result.text, astra);
 	assert.equal(result.attempts, 1);
+});
+
+test("child rejects CLI-only case aliases and slash-containing bare IDs", async () => {
+	quota("claude", 0);
+	const slashRegistry = { ...registry, getAll: () => [{ provider: "anthropic", id: "custom/opus" }] } as any;
+	for (const modelOverride of ["Anthropic/claude-opus-5-5", "custom/opus", "anthropic/unknown-model"]) {
+		const calls: string[] = [];
+		const result = await runWorkerProc(agent, "test", { cwd: root, modelOverride, registry: slashRegistry,
+			onAttempt: model => calls.push(model),
+		});
+		assert.equal(result.status, "error");
+		assert.equal(result.attempts, 0);
+		assert.deepEqual(calls, []);
+	}
+	assert.match(exhaustedQuotaReason("Anthropic/claude-opus-5-5")!, /claude quota exhausted/);
 });
 
 test("child refuses unknown provider identity instead of using CLI defaults", async () => {
@@ -152,7 +174,7 @@ test("child fallback checks updated quota before its next attempt", async () => 
 	quota("codex", 50);
 	writeFileSync(bin, `#!/usr/bin/env node
 const fs = require('node:fs');
-const model = process.argv[process.argv.indexOf('--model') + 1];
+const model = process.argv[process.argv.indexOf('--provider') + 1] + '/' + process.argv[process.argv.indexOf('--model') + 1];
 if (model === ${JSON.stringify(nw)}) {
   fs.writeFileSync(${JSON.stringify(join(cache, "synthetic-v3.json"))}, JSON.stringify({updatedAt:Date.now(),limits:[{label:'week',remaining:0,unit:'%'}]}));
   process.exit(1);

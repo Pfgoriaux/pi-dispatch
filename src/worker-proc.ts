@@ -152,7 +152,7 @@ export async function runWorkerProc(
 	const spec = options.modelOverride?.trim() || agent.model;
 	const selected = spec && spec !== "inherit" ? spec : options.model;
 	const resolved = options.registry ? resolveWorkerModel(options.registry, selected, undefined) : undefined;
-	const model = resolved ? `${resolved.provider}/${resolved.id}` : selected;
+	const model = options.registry ? resolved && `${resolved.provider}/${resolved.id}` : selected;
 	if (!model?.includes("/")) {
 		return { agent: agent.name, task, status: "error", text: "", error: "Child workers require a resolved provider/model identity", ms: Date.now() - started, attempts: 0 };
 	}
@@ -253,7 +253,10 @@ async function runOneProc(
 		options.thinking && THINKING_LEVELS.has(options.thinking)
 			? options.thinking
 			: (agent.thinking ?? "off");
-	if (model) args.push("--model", model);
+	if (model) {
+		const slash = model.indexOf("/");
+		args.push("--provider", model.slice(0, slash), "--model", model.slice(slash + 1));
+	}
 	args.push("--thinking", thinking);
 	options.onAttempt?.(model ?? "child default", thinking, 1);
 	const systemPrompt = workerSystemPrompt(agent, web.warning);

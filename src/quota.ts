@@ -41,7 +41,7 @@ export function validQuotaSnapshot(value: unknown, now = Date.now()): value is Q
 }
 
 export function quotaProvider(spec: string): string {
-	const provider = spec.replace(/^aperture\//, "").split("/")[0];
+	const provider = spec.replace(/^aperture\//i, "").split("/")[0].toLowerCase();
 	if (provider === "openai-codex") return "codex";
 	if (provider === "anthropic") return "claude";
 	return provider;
