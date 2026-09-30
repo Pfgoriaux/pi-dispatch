@@ -249,6 +249,19 @@ process.exitCode = 1;
 	assert.match(result.error!, /fixture provider error/);
 });
 
+test("cancellation from the final quota-skip warning wins in both tiers", async () => {
+	quota("codex", 0);
+	for (const tier of ["sdk", "child"]) {
+		const controller = new AbortController();
+		const options = { signal: controller.signal, onWarning: () => controller.abort() };
+		const result = tier === "sdk"
+			? await runWorker(agent, "test", { ...options, registry, fallbackModel: undefined, modelSpec: sol })
+			: await runWorkerProc(agent, "test", { ...options, cwd: root, modelOverride: sol });
+		assert.equal(result.status, "aborted");
+		assert.equal(result.attempts, 0);
+	}
+});
+
 test("child flags preserve provider-prefixed IDs through the installed CLI resolver", async () => {
 	const models = [{ provider: "p", id: "p/foo" }, { provider: "p", id: "z/foo" }];
 	const prefixedRegistry = { find: (provider: string, id: string) => models.find(model => model.provider === provider && model.id === id) } as ModelRegistry;
@@ -265,4 +278,8 @@ console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content
 	});
 	assert.equal(resolved.error, undefined);
 	assert.equal(resolved.model.id, "p/foo");
+	models.push({ provider: "p", id: "foo" });
+	const colliding = await runWorkerProc(agent, "test", { cwd: root, modelOverride: "p/p/foo", registry: prefixedRegistry });
+	assert.equal(colliding.status, "error");
+	assert.equal(colliding.attempts, 0);
 });

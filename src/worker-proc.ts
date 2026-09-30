@@ -18,7 +18,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { resolveWorkerModel } from "./model.ts";
+import { resolveChildModel } from "./child-model.ts";
 import { workerTools } from "./linkup.ts";
 import { workerSystemPrompt } from "./worker-prompt.ts";
 import { ToolHealth } from "./tool-health.ts";
@@ -154,7 +154,7 @@ export async function runWorkerProc(
 	}
 	const spec = options.modelOverride?.trim() || agent.model;
 	const selected = spec && spec !== "inherit" ? spec : options.model;
-	const resolved = options.registry ? resolveWorkerModel(options.registry, selected, undefined) : undefined;
+	const resolved = options.registry ? resolveChildModel(options.registry, selected) : undefined;
 	const model = options.registry ? resolved && `${resolved.provider}/${resolved.id}` : selected;
 	if (!model?.includes("/")) {
 		return { agent: agent.name, task, status: "error", text: "", error: "Child workers require a resolved provider/model identity", ms: Date.now() - started, attempts: 0 };
@@ -175,7 +175,7 @@ export async function runWorkerProc(
 			result = { agent: agent.name, task, status: "aborted", text: "", error: "Aborted before next attempt", ms: 0, attempts: attempts.length };
 			break;
 		}
-		if (options.registry && !resolveWorkerModel(options.registry, candidate.modelSpec, undefined)) {
+		if (options.registry && !resolveChildModel(options.registry, candidate.modelSpec)) {
 			const reason = `No model available for candidate "${candidate.modelSpec}"`;
 			options.onWarning?.(reason);
 			if (attempts.length === 0) result = { ...result, error: reason };
@@ -202,6 +202,7 @@ export async function runWorkerProc(
 	}
 	return {
 		...result,
+		status: options.signal?.aborted ? "aborted" : result.status,
 		attempts: attempts.length,
 		usage: sumUsage(attempts.map(attempt => ({ role: "assistant", usage: attempt.usage }))),
 		ms: Date.now() - started,

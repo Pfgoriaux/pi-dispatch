@@ -18,6 +18,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./types.ts";
 import { runWorkerProc } from "./worker-proc.ts";
 import { dirtyLines, gitRun, gitThrow } from "./worktree.ts";
@@ -34,6 +35,7 @@ export interface MergeOutcome {
 
 export interface MergeOptions {
 	signal?: AbortSignal;
+	registry?: ModelRegistry;
 	/** Parent model as `provider/id` (merge agent inherits it). */
 	model?: string;
 	onBoundary?: () => void;
@@ -117,6 +119,7 @@ async function runMergeAgent(
 			cwd: repoRoot,
 			signal: options.signal,
 			model: options.model,
+			registry: options.registry,
 			onBoundary: options.onBoundary,
 		});
 		if (result.status !== "ok") {

@@ -155,8 +155,10 @@ exhaustion skips the prompt without failed-attempt accounting or cooldown penalt
 the phase's early model reservation remains in place.
 If every candidate is exhausted or already claimed, the worker returns an error
 without calling a provider. A later positive reading makes the provider eligible again.
-Child workers resolve bare IDs through the parent's registry and pass the full
-provider/model to Pi; unresolved bare IDs and unspecified CLI defaults fail before spawn.
+Child workers resolve bare IDs through the parent's registry, prefer the sole
+authenticated match when several providers share an ID, and pass the canonical
+provider and full model spec to Pi. Ambiguous IDs, unresolved defaults, and model
+IDs the CLI cannot pin exactly fail before spawn. Merge children use the same registry checks.
 
 Snapshots are read at spawn time from
 `<getAgentDir()>/cache/usage-bar/<provider>-v3.json`, written by `pi-usage-bar`.

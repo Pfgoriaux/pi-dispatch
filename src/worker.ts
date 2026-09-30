@@ -391,7 +391,7 @@ export async function runWorker(
 	// All candidates exhausted (or all failed to resolve).
 	return {
 		...base,
-		status: "error",
+		status: options.signal?.aborted ? "aborted" : "error",
 		text: "",
 		error:
 			lastError ??

@@ -91,6 +91,18 @@ test('conflict resolution uses real git with simulated merge worker',async()=>{
  assert.equal(fs.readFileSync(path.join(dir,'shared.txt'),'utf8'),'parent\nworker\n'); assert.equal(git(dir,'status','--porcelain'),'');
  await removeWorktree(dir,w.path,{branch:w.branch});
 });
+test('merge children validate fallback routes against the supplied registry',async(t)=>{
+ const {dir,w}=await conflicted(), head=git(dir,'rev-parse','HEAD');
+ const cache=path.join(process.env.PI_CODING_AGENT_DIR!,'cache','usage-bar'); fs.mkdirSync(cache,{recursive:true});
+ const quota=path.join(cache,'claude-v3.json'); fs.writeFileSync(quota,JSON.stringify({updatedAt:Date.now(),limits:[{label:'week',remaining:0,unit:'%'}]}));
+ t.after(()=>fs.rmSync(quota,{force:true}));
+ fake(`require('fs').writeFileSync('spawned.txt','unexpected child');`+final);
+ const registry={find:(provider:string,id:string)=>provider==='anthropic'?{provider,id}:undefined} as any;
+ const result=await mergeWorktreeBranches(dir,[w.branch],{model:'anthropic/claude-opus-5-5',registry});
+ assert.equal(result.merged.length,0); assert.match(result.failed[0].error,/No model available/);
+ assert.ok(!fs.existsSync(path.join(dir,'spawned.txt'))); assert.equal(git(dir,'rev-parse','HEAD'),head);
+ await removeWorktree(dir,w.path,{deleteBranch:false});
+});
 test('unresolved conflict markers abort merge and preserve parent',async()=>{
  const {dir,w}=await conflicted(), head=git(dir,'rev-parse','HEAD'); fake(final);
  const result=await mergeWorktreeBranches(dir,[w.branch],{model:'fake/model'}); assert.equal(result.merged.length,0); assert.match(result.failed[0].error,/markers remain/);

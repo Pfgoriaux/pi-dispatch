@@ -812,6 +812,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 									[worktree.branch],
 									{
 										signal,
+										registry: ctx.modelRegistry,
 										model: ctx.model
 											? `${ctx.model.provider}/${ctx.model.id}`
 											: undefined,
