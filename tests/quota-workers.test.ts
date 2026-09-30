@@ -87,10 +87,12 @@ test("Claude exhaustion cannot route a second worker to an already claimed Astra
 		claimModel: diversity.worker(), signal: controller.signal, onWarning: w => warnings.push(w),
 		onAttempt: model => { calls.push(model); controller.abort(); },
 	});
-	assert.deepEqual(calls, [opus]);
+	assert.deepEqual(calls, []);
 	assert.ok(warnings.some(w => w.startsWith("Quota routing:")));
 	assert.ok(warnings.some(w => w.includes(`Skipped ${astra}`)));
-	assert.equal(result.status, "aborted");
+	assert.ok(warnings.some(w => w.includes(`Skipped ${opus}: claude quota exhausted`)));
+	assert.equal(result.status, "error");
+	assert.equal(result.attempts, 0);
 	for (const provider of ["claude", "codex"]) fs.rmSync(path.join(cache, `${provider}-v3.json`));
 });
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -10,6 +10,16 @@ import { runWorker } from "../src/worker.ts";
 import { ModelDiversity } from "../src/model-diversity.ts";
 import { runWorkerProc } from "../src/worker-proc.ts";
 import type { AgentConfig } from "../src/types.ts";
+
+// Mocked provider failures must not depend on the operator's live quota cache.
+const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-fallback-agent-"));
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+process.env.PI_CODING_AGENT_DIR = agentDir;
+after(() => {
+	if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	fs.rmSync(agentDir, { recursive: true, force: true });
+});
 
 const codexSol = "openai-codex/gpt-6.1-sol";
 const synthetic = "aperture/synthetic/hf:moonshotai/Kimi-K3";

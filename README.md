@@ -147,6 +147,11 @@ A healthy tie (at least 50% remaining) prefers Synthetic. Different model
 families keep their roster priority, and Codex stays the terminal fallback.
 Concrete per-task/frontmatter model pins, `inherit`, and `DISPATCH_DIVERSE_*_MODEL`
 overrides retain their provider order and existing failure fallbacks.
+Every model attempt in both worker tiers checks the latest cache and skips providers
+with fresh, known zero headroom, including pinned, inherited, and fallback models.
+Skipped models do not consume an attempt or claim a parallel model identity.
+If every candidate is exhausted or already claimed, the worker returns an error
+without calling a provider. A later positive reading makes the provider eligible again.
 
 Snapshots are read at spawn time from
 `<getAgentDir()>/cache/usage-bar/<provider>-v3.json`, written by `pi-usage-bar`.

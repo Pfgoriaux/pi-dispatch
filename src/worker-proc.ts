@@ -21,7 +21,7 @@ import { workerTools } from "./linkup.ts";
 import { workerSystemPrompt } from "./worker-prompt.ts";
 import { ToolHealth } from "./tool-health.ts";
 import { withProviderFallbacks } from "./roster.ts";
-import { quotaCandidates } from "./quota.ts";
+import { exhaustedQuotaReason, quotaCandidates } from "./quota.ts";
 import { dirtyLines } from "./worktree.ts";
 import { stopWorker } from "./process-tree.ts";
 import {
@@ -158,11 +158,17 @@ export async function runWorkerProc(
 		candidates = quotaCandidates(candidates, options.onWarning);
 	}
 	const attempts: WorkerResult[] = [];
-	let result!: WorkerResult;
+	let result: WorkerResult = { agent: agent.name, task, status: "error", text: "", error: "No eligible model candidates", ms: 0, attempts: 0 };
 	for (const candidate of candidates) {
 		if (options.signal?.aborted) {
 			result = { agent: agent.name, task, status: "aborted", text: "", error: "Aborted before next attempt", ms: 0, attempts: attempts.length };
 			break;
+		}
+		const quotaReason = exhaustedQuotaReason(candidate.modelSpec);
+		if (quotaReason) {
+			options.onWarning?.(quotaReason);
+			if (attempts.length === 0) result = { ...result, error: quotaReason };
+			continue;
 		}
 		let toolsStarted = false;
 		result = await runOneProc(agent, task, {

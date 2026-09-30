@@ -37,7 +37,7 @@ import {
 	type RankedCandidate,
 } from "./roster.ts";
 import { THINKING_LEVELS } from "./types.ts";
-import { quotaCandidates } from "./quota.ts";
+import { exhaustedQuotaReason, quotaCandidates } from "./quota.ts";
 import { ToolHealth } from "./tool-health.ts";
 import type { AgentConfig, WorkerResult } from "./types.ts";
 
@@ -317,6 +317,12 @@ export async function runWorker(
 		}
 
 		const resolvedSpec = `${model.provider}/${model.id}`;
+		const resolvedQuotaReason = exhaustedQuotaReason(resolvedSpec);
+		if (resolvedQuotaReason) {
+			options.onWarning?.(resolvedQuotaReason);
+			lastError ??= resolvedQuotaReason;
+			continue;
+		}
 		if (options.claimModel && !options.claimModel(resolvedSpec)) {
 			const reason = `Skipped ${resolvedSpec}: model already used by another worker in this phase`;
 			options.onWarning?.(reason);
