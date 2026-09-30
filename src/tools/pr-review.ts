@@ -568,6 +568,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 							thinking?: string;
 							steerByQuota?: boolean;
 							excludeModels?: string[];
+							onAttempt?: () => void;
 							agent?: string;
 						},
 					) =>
@@ -592,22 +593,28 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 										excludeModels: extra.excludeModels,
 										claimModel: reviewModels.worker(),
 										...progress.options(index),
+										onAttempt: (model, thinking, attempt) => {
+											extra.onAttempt?.();
+											progress.options(index).onAttempt?.(model, thinking, attempt);
+										},
 									},
 								),
 							signal,
 						);
 
 					const reviewerCtx = { cwd: ctx.cwd, diffFile, intent: params.intent };
-					// Phase 1: 6 parallel reviewers (1 security + 4 code + 1 slop)
+					// Let security claim its first model before other roles can take it.
+					// Completion also releases the gate if no model resolves or the call aborts.
+					let startOthers!: () => void;
+					const securityStarted = new Promise<void>(resolve => { startOthers = resolve; });
+					const securityReview = reviewOne(0, securityTask({ ...reviewerCtx, deepsecPath }), {
+						onAttempt: startOthers,
+					}).finally(startOthers);
+					await securityStarted;
+
+					// Phase 1: up to 6 parallel reviewers (1 security + 4 code + 1 slop)
 					const [sec, astra, opus, glm, kimi, slop] = await Promise.all([
-						reviewOne(
-							0,
-							securityTask({
-								...reviewerCtx,
-								deepsecPath,
-							}),
-							{}, // security-reviewer agent is precise-tier via frontmatter
-						),
+						securityReview,
 						// Astra and Opus are deliberately distinct top-tier models. Each
 						// excludes the other so failover never duplicates a reviewer.
 						reviewOne(1, codeTask({ ...reviewerCtx, reviewer: "Codex Astra" }), {

@@ -520,7 +520,7 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 				// ─────────────────────────────────────────────────────────────────
 
 				const councilOutputs = councilResults.map((r, i) => ({
-					label: `${SCOUT_MODELS[i].label} [actual model: ${r.model ?? scoutResults[i].model ?? "unavailable"}]`,
+					label: `${SCOUT_MODELS[i].label} [actual model: ${(r.status === "ok" ? r : scoutResults[i]).model ?? "unavailable"}]`,
 					conclusion:
 						r.status === "ok"
 							? truncateText(r.text || "(no output)", 2500).text

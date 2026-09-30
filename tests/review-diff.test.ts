@@ -129,10 +129,11 @@ test("workflow credit fallbacks never duplicate models within parallel phases", 
 	});
 	let tool: any;
 	const prompts: string[] = [];
+	let failCouncil = false;
 	t.mock.method(ModelRuntime.prototype, "hasConfiguredAuth", () => true);
 	t.mock.method(ModelRuntime.prototype, "streamSimple", (model: Model<Api>, context: unknown) => {
 		prompts.push(JSON.stringify(context));
-		const failed = model.provider !== "openai-codex";
+		const failed = model.provider !== "openai-codex" || (failCouncil && JSON.stringify(context).includes("Review your initial findings"));
 		const message: AssistantMessage = {
 			role: "assistant", api: model.api, provider: model.provider, model: model.id,
 			content: failed ? [] : [{ type: "text", text: "No findings." }],
@@ -170,6 +171,7 @@ test("workflow credit fallbacks never duplicate models within parallel phases", 
 		assert.equal(successful.length, 2, "Astra and Sol succeed; duplicate fallback workers stop");
 	};
 	assertDistinct(result.details.items.slice(0, 6));
+	assert.ok(result.details.items[0].attempts > 0, "security starts before other roles claim all its candidates");
 
 	registerFeaturePlanTool({ registerTool: (value: unknown) => { tool = value; } } as unknown as ExtensionAPI);
 	const plan = await tool.execute("test", { idea: "test distinct model fallback", herdr: false }, undefined, undefined, {
@@ -180,6 +182,17 @@ test("workflow credit fallbacks never duplicate models within parallel phases", 
 	assertDistinct(plan.details.items.slice(5, 10));
 	assert.ok(plan.details.items.slice(5, 10).filter((r: WorkerResult) => r.attempts === 0).every((r: WorkerResult) => r.error?.startsWith("Skipped:")));
 	assert.match(plan.content[0].text, /actual model:/);
+
+	failCouncil = true;
+	const fallback = await tool.execute("test", { idea: "test retained scout attribution", herdr: false }, undefined, undefined, {
+		cwd: path.resolve(import.meta.dirname, ".."), isProjectTrusted: () => false, modelRegistry: registry,
+	});
+	const labels = ["Opus 5.5", "Astra", "DeepSeek 4.1", "Kimi 3", "GLM 5.3"];
+	fallback.details.items.slice(0, 5).forEach((scout: WorkerResult, i: number) => {
+		if (scout.status !== "ok") return;
+		assert.equal(fallback.details.items[5 + i].status, "error");
+		assert.ok(fallback.content[0].text.includes(`## ${labels[i]} [actual model: ${scout.model}]`));
+	});
 });
 
 test("PR fix schema advertises opt-in commits", () => {
