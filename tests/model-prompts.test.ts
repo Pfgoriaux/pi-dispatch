@@ -8,6 +8,10 @@ import { AgentSession, DefaultResourceLoader, SettingsManager, type ModelRegistr
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { runWorker } from "../src/worker.ts";
 
+import { isolateAgentDir } from "./isolated-agent-dir.ts";
+
+isolateAgentDir();
+
 test("worker adapts the resolved model on every fallback without changing role or task", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-prompts-"));
   const previous = process.env.DISPATCH_LINKUP_PACKAGE_DIR;

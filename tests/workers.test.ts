@@ -11,6 +11,10 @@ import { rankCandidates, markCooldown, withProviderFallbacks, type RankedCandida
 import { shellQuote } from "../src/panes.ts";
 import type { AgentConfig } from "../src/types.ts";
 
+import { isolateAgentDir } from "./isolated-agent-dir.ts";
+
+isolateAgentDir();
+
 const agent: AgentConfig = {
 	name: "scout",
 	description: "test",

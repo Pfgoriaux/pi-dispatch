@@ -143,6 +143,25 @@ test("child rejects CLI-only case aliases and slash-containing bare IDs", async 
 	assert.match(exhaustedQuotaReason("Anthropic/claude-opus-5-5")!, /claude quota exhausted/);
 });
 
+test("child cancellation wins over unresolved and unspecified identities", async () => {
+	for (const model of [undefined, "unknown"]) {
+		const result = await runWorkerProc({ ...agent, model }, "test", { cwd: root, signal: AbortSignal.abort() });
+		assert.equal(result.status, "aborted");
+		assert.equal(result.attempts, 0);
+	}
+});
+
+test("child validates generated fallbacks against the parent registry", async () => {
+	quota("claude", 0);
+	quota("codex", 40);
+	const onlyOpus = { ...registry, find: (provider: string, id: string) => provider === "anthropic" ? registry.find(provider, id) : undefined } as ModelRegistry;
+	const calls: string[] = [];
+	const result = await runWorkerProc(agent, "test", { cwd: root, registry: onlyOpus, onAttempt: model => calls.push(model) });
+	assert.deepEqual(calls, []);
+	assert.equal(result.status, "error");
+	assert.equal(result.attempts, 0);
+});
+
 test("child refuses unknown provider identity instead of using CLI defaults", async () => {
 	for (const config of [{ ...agent, model: undefined }, { ...agent, model: "claude-opus-5-5" }]) {
 		const calls: string[] = [];
@@ -185,4 +204,19 @@ console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content
 	assert.equal(result.status, "ok");
 	assert.equal(result.text, sol);
 	assert.equal(result.attempts, 2, `must skip ${sy}`);
+});
+
+test("unregistered fallbacks preserve the last child provider error", async () => {
+	quota("claude", 50);
+	quota("codex", 50);
+	writeFileSync(bin, `#!/usr/bin/env node
+console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[],stopReason:'error',errorMessage:'fixture provider error'}}));
+process.exitCode = 1;
+`, { mode: 0o700 });
+	const onlyOpus = { ...registry, find: (provider: string, id: string) => provider === "anthropic" ? registry.find(provider, id) : undefined } as ModelRegistry;
+	const result = await runWorkerProc(agent, "test", { cwd: root, registry: onlyOpus });
+	assert.equal(result.status, "error");
+	assert.equal(result.attempts, 1);
+	assert.equal(result.model, opus);
+	assert.match(result.error!, /fixture provider error/);
 });

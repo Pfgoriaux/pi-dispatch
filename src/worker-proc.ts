@@ -149,6 +149,9 @@ export async function runWorkerProc(
 	options: RunWorkerProcOptions,
 ): Promise<WorkerResult> {
 	const started = Date.now();
+	if (options.signal?.aborted) {
+		return { agent: agent.name, task, status: "aborted", text: "", error: "Aborted before model selection", ms: 0, attempts: 0 };
+	}
 	const spec = options.modelOverride?.trim() || agent.model;
 	const selected = spec && spec !== "inherit" ? spec : options.model;
 	const resolved = options.registry ? resolveWorkerModel(options.registry, selected, undefined) : undefined;
@@ -171,6 +174,12 @@ export async function runWorkerProc(
 		if (options.signal?.aborted) {
 			result = { agent: agent.name, task, status: "aborted", text: "", error: "Aborted before next attempt", ms: 0, attempts: attempts.length };
 			break;
+		}
+		if (options.registry && !resolveWorkerModel(options.registry, candidate.modelSpec, undefined)) {
+			const reason = `No model available for candidate "${candidate.modelSpec}"`;
+			options.onWarning?.(reason);
+			if (attempts.length === 0) result = { ...result, error: reason };
+			continue;
 		}
 		const quotaReason = exhaustedQuotaReason(candidate.modelSpec);
 		if (quotaReason) {

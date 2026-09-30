@@ -7,6 +7,10 @@ import { AgentSession, ModelRuntime, type ModelRegistry } from "@earendil-works/
 import { runWorker } from "../src/worker.ts";
 import type { AgentConfig } from "../src/types.ts";
 
+import { isolateAgentDir } from "./isolated-agent-dir.ts";
+
+isolateAgentDir();
+
 const agent: AgentConfig = {
 	name: "loop-fixture", description: "test", tools: ["read"], model: "fake/loop",
 	systemPrompt: "fixture", source: "bundled", filePath: "fixture",
