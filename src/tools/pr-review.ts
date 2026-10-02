@@ -414,43 +414,37 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 		name: "pr_review",
 		label: "PR Review",
 		description:
-			"Review a pull request by fanning it out to 6 parallel LLM reviewers: " +
-			"security (precise tier), Codex Astra, Opus 5.5, GLM 5.3, Kimi 3, and a slop detector (GLM 5.3). " +
-			"Kimi routes between neuralwatt/synthetic based on quota headroom. " +
-			"Opus 5.5 then verifies all code review findings before the aggregator distills them. " +
-			"Optionally fix validated findings in a git worktree that merges back automatically. " +
-			"No Herdr needed. The fix step requires a committed-clean, trusted git repo root.",
+			"Review a PR or diff with 6 parallel reviewers (security, Astra, Opus 5.5, GLM 5.3, Kimi 3, slop), " +
+			"Opus 5.5 verification, and an aggregator. fix:true fixes validated findings in a worktree that merges back.",
 		promptSnippet:
-			"Run a 6-model PR review (security + Astra/Opus/GLM/Kimi + slop detector), Opus verification pass, aggregate findings, optionally fix",
+			"Multi-model PR review with optional fixes",
 		promptGuidelines: [
-			"pr_review: Use when the user asks to review a pull request, a diff, or a branch, and on your own, without asking, once a PR you opened is ready: review it, fix validated findings on its branch, then hand it to the user.",
-			"pr_review: The fix step runs in a git worktree and merges back; it requires a committed-clean repo root and explicit user intent to change code.",
-			"pr_review: Pass intent with the user's original request and your summary of what the changes should achieve, so reviewers can assess implementation vs. intent.",
+			"pr_review: Use when the user asks for a review, or on a PR you opened that changes 100+ lines or touches auth, data, migrations, or infrastructure. Self-review smaller PRs.",
+			"pr_review: fix:true requires explicit user intent to change code and a clean repo root.",
+			"pr_review: Pass intent: the user's request and what the change should do.",
 		],
 		parameters: Type.Object({
 			herdr: Type.Optional(
 				Type.Boolean({
-					description: "Show worker viewer tabs inside Herdr (default true).",
+					description: "Herdr viewer tabs (default true inside Herdr)",
 				}),
 			),
 			pr: Type.Optional(
 				Type.String({
 					description:
-						"PR identifier: a GitHub PR number (via gh), a git rev-range like 'main...feature', or a branch to compare against HEAD. " +
-						"Omit to use '<origin-default-branch>...HEAD'.",
+						"GitHub PR number, rev-range ('main...feature'), or branch vs HEAD. Default: '<origin-default>...HEAD'",
 				}),
 			),
 			fix: Type.Optional(
 				Type.Boolean({
 					description:
-						"After reviewing, launch a writer worker to fix the validated findings in a worktree (default false; requires explicit authorization for commits and merge-back).",
+						"Fix validated findings in a worktree and merge back (default false; needs authorization to commit and merge)",
 				}),
 			),
 			intent: Type.Optional(
 				Type.String({
 					description:
-						"Context for reviewers: the user's original request and the agent's summary of what the changes should achieve. " +
-						"Helps reviewers assess whether the implementation matches the intent.",
+						"The user's request and what the change should do",
 				}),
 			),
 		}),

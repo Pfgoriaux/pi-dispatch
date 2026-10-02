@@ -65,31 +65,28 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 		name: "feature_plan",
 		label: "Feature Plan (Architect + Challenger)",
 		description:
-			"Plan a feature before coding. An OpenAI architect (Astra) discovers the code and drafts a design, " +
-			"a cheap DeepSeek 4.1 pre-mortem asks why it would break in 3 months, an Anthropic challenger (Opus 5.5) " +
-			"reviews the design, and the architect returns task contracts for GLM/Kimi writers plus product decisions only. " +
-			"Read-only: never modifies the repository.",
+			"Read-only feature planning: Astra drafts a design, DeepSeek runs a 3-month pre-mortem, Opus 5.5 challenges it, " +
+			"and Astra returns product decisions and task contracts.",
 		promptSnippet:
-			"Plan a feature: Astra architect, DeepSeek pre-mortem, Opus challenger, worker-ready task contracts, read-only",
+			"Plan a feature with architect, pre-mortem, and challenger models",
 		promptGuidelines: [
-			"feature_plan: Use BEFORE coding, when the user wants to discover, scope, or plan a feature. Read-only, no Herdr needed.",
-			"feature_plan: Do NOT use for syntax, lookups, small fixes, or bugs with a known root cause.",
-			"feature_plan: Show the plan and its 'Decisions for you' to the user before implementing. To execute an approved plan, dispatch each task's contract verbatim to writer with the task's Executor as model; run dependent tasks in order.",
+			"feature_plan: Use when the user asks to plan or scope a feature. Not for small changes or bugs.",
+			"feature_plan: Show the plan and its decisions to the user before implementing. Execute by dispatching each task contract verbatim to writer with its Executor as model, in dependency order.",
 		],
 		parameters: Type.Object({
 			herdr: Type.Optional(
 				Type.Boolean({
-					description: "Show worker viewer tabs inside Herdr (default true).",
+					description: "Herdr viewer tabs (default true inside Herdr)",
 				}),
 			),
 			idea: Type.String({
 				description:
-					"The feature idea to discover & plan, in the user's own words (can be rough/long)",
+					"The feature idea in the user's words",
 			}),
 			focus: Type.Optional(
 				Type.String({
 					description:
-						"Optional scope hint: a directory, module, or keyword to orient the exploration toward (e.g. 'packages/api')",
+						"Directory, module, or keyword to explore first",
 				}),
 			),
 		}),

@@ -24,8 +24,7 @@ export function architectDraftTask(c: PlanContext): string {
 	return [
 		...header(c, "You are the architect for this feature. Discover the relevant code, then design the implementation."),
 		"",
-		"Orient with ls/find/grep, then open the relevant files: instructions, data model, existing flows, and tests.",
-		"Never assert a constraint, pattern, or risk you have not verified in the code.",
+		"Read the relevant instructions, data model, flows, and tests before designing.",
 		"",
 		"Return a draft design (Markdown, under ~150 lines and 10 KB):",
 		"## Goal",
