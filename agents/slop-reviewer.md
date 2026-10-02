@@ -2,7 +2,7 @@
 name: slop-reviewer
 description: Fluff and slop detector — finds unnecessary documentation, low-value tests, speculative additions, and AI-generated padding
 tools: read, grep, find, ls, bash
-# Effort tier (expanded by src/profiles.ts). pr_review pins its slop seat to GLM 5.3.
+# Effort tier (expanded by src/profiles.ts).
 model: balanced
 ---
 

@@ -90,27 +90,13 @@ export const DIVERSE_PAIR: readonly [string, string] = [
 ];
 
 /**
- * PR review roster: models across providers for diverse perspectives.
- * NOT effort-based 
- *
- * The goal is catching different types of issues:
- *   - Opus 5.5: Nuanced correctness, safety, subtle bugs
- *   - Astra: Implementation details, API contracts, code quality
- *   - Kimi 3: Cross-file patterns, long-range dependencies
- *   - GLM 5.3: Pragmatic view, obvious issues
- *   - GLM 5.3: Slop detection (fluff, unnecessary docs, low-value tests)
+ * PR review roster: two top models from different providers, so failover and
+ * blind spots are not shared, plus a cheap pre-mortem.
  */
 export const REVIEW_MODELS = {
-	/** Codex Astra - top-tier model */
-	astra: envModel("DISPATCH_REVIEW_ASTRA_MODEL") ?? "openai-codex/gpt-6-astra",
-	/** Opus 5.5 - top-tier model */
 	opus: envModel("DISPATCH_REVIEW_OPUS_MODEL") ?? "anthropic/claude-opus-5-5",
-	/** GLM 5.3 - Neuralwatt only, Codex 6.1 Sol fallback */
-	glm: envModel("DISPATCH_REVIEW_GLM_MODEL") ?? "aperture/neuralwatt/glm-5.3",
-	/** Kimi 3 - neuralwatt/synthetic quota-routed */
-	kimi: envModel("DISPATCH_REVIEW_KIMI_MODEL") ?? "aperture/neuralwatt/kimi-k3",
-	/** GLM 5.3 - slop/fluff detection (balanced tier, not quota-routed) */
-	slop: envModel("DISPATCH_REVIEW_SLOP_MODEL") ?? "aperture/neuralwatt/glm-5.3",
+	astra: envModel("DISPATCH_REVIEW_ASTRA_MODEL") ?? "openai-codex/gpt-6-astra",
+	preMortem: envModel("DISPATCH_REVIEW_PREMORTEM_MODEL") ?? "aperture/neuralwatt/deepseek-v4.1-flash",
 } as const;
 
 /** True when a frontmatter `model` value names a tier. */

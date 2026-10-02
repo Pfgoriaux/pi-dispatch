@@ -26,15 +26,26 @@ live in `details` (UI-only). Raw worker transcripts are not returned to the pare
 
 "Review a PR" without leaving dispatch. Resolves the diff (GitHub PR number
 via `gh`, a git rev-range, a branch vs HEAD, or default `<origin/base>...HEAD`),
-then runs up to six in-process reviewers in parallel:
+then runs four read-only steps:
 
-- `security-reviewer` on the `precise` tier (uses an operator-installed `deepsec` executable outside the checkout, manual review otherwise; repository-local scanners are never selected automatically)
-- four `reviewer` passes pinned to `REVIEW_MODELS`: Codex Astra, Opus 5.5, GLM 5.3, and Kimi 3 (quota-routed between Neuralwatt and Synthetic). The Astra and Opus passes never fail over to each other; each falls back to 6.1 Sol. Each review is labeled with its actual model and any failed attempts. All parallel review roles share a model-identity guard: a model already attempted by one worker cannot run in another, including through quota routing or fallback. Workers skip duplicate candidates and stop if no unique candidate remains. Security claims its first model before the other roles start, so code reviewers cannot consume all its candidates before its first attempt.
-- a `slop-reviewer` pass on GLM 5.3
+```text
+pr_review
+├─ parallel
+│  ├─ Opus 5.5 (`reviewer`): correctness + security; runs an operator-installed `deepsec` outside the checkout if found
+│  ├─ Codex Astra (`reviewer`): correctness + scope (unrequested docs, tests, abstractions)
+│  └─ DeepSeek 4.1 Flash (`scout`): pre-mortem, "this merged; why did it break 3 months later?"
+└─ `reviewer` (balanced tier): check each finding against the code, merge duplicates, return one report and a verdict
+```
 
-Opus 5.5 then verifies the code review findings. The `aggregator` distills the findings into one prioritized report, and when
-`fix: true` is explicitly requested, a `writer` fixes the findings in a git
-worktree whose branch merges back automatically. The fix step requires a trusted, committed-clean repo root at the
+Opus and Astra exclude each other on failover. The three parallel steps share a
+model-identity guard, so quota routing or fallback never runs one model twice.
+Each report is labeled with its actual model and failed attempts. If both code
+reviewers fail, the tool stops. If verification fails, the unverified reports
+are returned. Override models with `DISPATCH_REVIEW_OPUS_MODEL`,
+`DISPATCH_REVIEW_ASTRA_MODEL`, and `DISPATCH_REVIEW_PREMORTEM_MODEL`.
+
+When `fix: true` is explicitly requested and verification succeeds, a `writer`
+fixes the findings in a git worktree whose branch merges back automatically. The fix step requires a trusted, committed-clean repo root at the
 session cwd and authorization for commits and automatic merge-back. `fix` defaults
 to **false**. Invalid diffs fail before reviewers start; empty diffs skip model calls.
 Fixes require the reviewed head to match the checkout; the checkout is rechecked
