@@ -77,7 +77,7 @@ interface DispatchParams {
 }
 
 const TaskItemSchema = Type.Object({
-	agent: Type.String({ description: "Exact agent name from the current Dispatch agents roster" }),
+	agent: Type.String({ description: "Agent name from the Dispatch agents roster" }),
 	task: Type.String({ description: "Self-contained task description" }),
 	cwd: Type.Optional(
 		Type.String({
@@ -94,13 +94,13 @@ const TaskItemSchema = Type.Object({
 	herdr: Type.Optional(
 		Type.Boolean({
 			description:
-				"Show this worker in a viewer tab under the calling Herdr workspace (default true inside Herdr; false opts out)",
+				"false disables this task's Herdr viewer tab",
 		}),
 	),
 	model: Type.Optional(
 		Type.String({
 			description:
-				"Effort tier (cheap/balanced/precise/long) or explicit provider/id model for this task. Overrides the agent's roster and frontmatter — use e.g. model:'long' for a long-context writing task",
+				"Tier (cheap/balanced/precise/long) or provider/id; overrides the agent's model",
 		}),
 	),
 });
@@ -200,33 +200,26 @@ function sumUsages(results: WorkerResult[]) {
 
 export default function dispatchExtension(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", (event, ctx) => ({
-		systemPrompt: `${event.systemPrompt}\n\n## Dispatch agents\nUse only exact names from this current roster; never invent an agent name from a skill's generic role labels. For research use scout; for ideation use planner, unless an installed custom role is a better match.\n${agentRosterHelp(discoverAgents(ctx).agents)}`,
+		systemPrompt: `${event.systemPrompt}\n\n## Dispatch agents\nUse these exact names; never invent an agent name (skill role labels are not agent names):\n${agentRosterHelp(discoverAgents(ctx).agents)}`,
 	}));
 
 	pi.registerTool({
 		name: "dispatch",
 		label: "Dispatch",
 		description:
-			"Spawn parallel sub-agents without polluting the main context. " +
-			"Workers run in isolated sessions and only their final reports return here. " +
-			"Choose an exact agent name from the current Dispatch agents roster in your system context. " +
-			"Modes: single (agent+task), parallel (tasks array), chain (sequential pipeline with {previous} placeholder). " +
-			"Parallel results are distilled by an aggregator agent before returning. " +
-			"Tasks with worktree:true run in isolated git worktrees (write tier) whose branches merge back automatically; " +
-			"worktree:true is only honored in tasks[] and chain[] modes — single mode always runs in-process.",
+			"Run agents from the Dispatch agents roster in isolated sessions; only final reports return. " +
+			"Modes: single (agent+task), parallel (tasks; an aggregator merges reports), chain (sequential; {previous} inserts the prior output). " +
+			"worktree:true (tasks/chain only) runs each task in a git worktree and merges its branch back automatically.",
 		promptSnippet:
-			"Fan out work to specialized sub-agents (research, review, confined writes) with context isolation",
+			"Delegate parallel or context-heavy work to sub-agents",
 		promptGuidelines: [
-			"dispatch: Use on your own judgment, no user approval needed, when the task breaks down across multiple agents: parallel exploration, multi-file research, multi-perspective review — worker transcripts never enter the main context.",
-			"dispatch: Make each task self-contained: include the goal, concrete paths/symbols, and the desired output shape. Workers start with no prior conversation.",
-			"dispatch: Prefer parallel tasks over one giant task; N small workers beat one big one (max 8).",
-			"dispatch: For tasks that create or edit files, use the writer agent with worktree:true — each runs in its own git worktree and its branch merges back automatically into the current branch after all workers finish, so run it from a feature branch, never main. Requires a committed-clean repo root; writer returns a change summary, not diffs.",
-			"dispatch: Do NOT use for trivial single questions a direct read/grep answers faster.",
-			"dispatch: Herdr viewers open automatically inside Herdr; set herdr:false to opt out. Viewers are tabs in the calling workspace, not worker execution terminals.",
+			"dispatch: Use only for 3+ independent areas worked in parallel, output that would flood your context, or when the user asks for sub-agents or multiple perspectives. Otherwise do the work yourself.",
+			"dispatch: Tasks must be self-contained: goal, paths, constraints, output shape. Workers see no conversation.",
+			"dispatch: For file edits use tasks:[{agent:'writer', worktree:true}] from a feature branch with a committed-clean repo root, only when the user authorized commits and merges. Single mode always runs in-process, without isolation.",
 		],
 		parameters: Type.Object({
 			agent: Type.Optional(
-				Type.String({ description: "Exact agent name from the current Dispatch agents roster (single mode)" }),
+				Type.String({ description: "Agent name (single mode)" }),
 			),
 			task: Type.Optional(
 				Type.String({ description: "Task description (single mode)" }),
@@ -239,31 +232,31 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 			chain: Type.Optional(
 				Type.Array(TaskItemSchema, {
 					description:
-						"Sequential pipeline; reference prior output via {previous} (chain mode, max 8 steps)",
+						"Sequential steps (max 8)",
 				}),
 			),
 			aggregate: Type.Optional(
 				Type.Boolean({
 					description:
-						"Distill parallel results through the aggregator agent (default: true for parallel)",
+						"Merge parallel reports with the aggregator (default true)",
 				}),
 			),
 			herdr: Type.Optional(
 				Type.Boolean({
 					description:
-						"Show Herdr viewer tabs (default true inside Herdr); per-task values override this.",
+						"false disables Herdr viewer tabs",
 				}),
 			),
 			persist: Type.Optional(
 				Type.Boolean({
 					description:
-						"Persist worker sessions (opt-in) so they can be resumed later via the resume param",
+						"Keep worker sessions for resume",
 				}),
 			),
 			resume: Type.Optional(
 				Type.String({
 					description:
-						"sessionId of a persisted worker session to continue: resumes that worker's full context and prompts it with task",
+						"Persisted sessionId to continue with task",
 				}),
 			),
 		}),

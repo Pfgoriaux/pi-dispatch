@@ -1,11 +1,6 @@
 # pi-dispatch
 
-Hybrid multi-agent dispatch extension for the [pi coding agent](https://github.com/badlogic/pi-mono): one `dispatch` tool fans work out to N parallel sub-agents without blowing up the master's context — plus two workflow tools built on the same engine: `pr_review` and `feature_plan` (both consolidated here from the retired pi-pr-swarm and pi-feature-swarm packages).
-
-Best practices merged from three sources:
-- **[aliou/pi-harness](https://github.com/aliou/pi-harness)** agent-kit — in-process hermetic sub-agents via `createAgentSession()`, strict context firewall, shared model-runtime pattern
-- **Official pi example** (`examples/extensions/subagent/`) — `single | parallel | chain` modes, frontmatter agent definitions
-- **Herdr orchestration pattern** — fan-out to N diverse agents, then a separate **aggregator agent** distills the raw outputs before anything reaches the master (double firewall)
+Pi extension that runs sub-agents in isolated sessions and returns only their final reports. It provides `dispatch`, `pr_review`, and `feature_plan`.
 
 ## How it works
 
@@ -39,8 +34,7 @@ then runs up to six in-process reviewers in parallel:
 
 Opus 5.5 then verifies the code review findings. The `aggregator` distills the findings into one prioritized report, and when
 `fix: true` is explicitly requested, a `writer` fixes the findings in a git
-worktree whose branch merges back automatically. Unlike the old swarm this
-needs no Herdr; the fix step requires a trusted, committed-clean repo root at the
+worktree whose branch merges back automatically. The fix step requires a trusted, committed-clean repo root at the
 session cwd and authorization for commits and automatic merge-back. `fix` defaults
 to **false**. Invalid diffs fail before reviewers start; empty diffs skip model calls.
 Fixes require the reviewed head to match the checkout; the checkout is rechecked
@@ -48,23 +42,28 @@ before writing and merging so findings cannot silently target another revision.
 
 ## feature_plan
 
-"What would implementing X entail?" — Five diverse scouts (Opus 5.5, Astra,
-DeepSeek 4.1, Kimi 3, GLM 5.3) explore the repository from the technical-risk
-lens. After the initial scout phase, each scout sees the others' conclusions
-in a council phase to refine their views. Fable 5.1 then drafts the final plan.
-Each parallel phase uses distinct model identities, including provider aliases
-for Kimi and DeepSeek. Quota routing and retries cannot duplicate another
-worker's model. Fewer scouts run when no unique candidate remains; at least
-two must succeed. The council uses a fresh guard, so models can return in
-that later phase. Planning and review verification are separate phases too.
+"What would implementing X entail?" Four sequential read-only steps:
 
-Model routing:
-- **Opus 5.5 & Astra**: top-tier models with quota-aware counterpart routing
-- **DeepSeek 4.1**: Flash, quota-aware neuralwatt/synthetic routing, then
-  Sonnet 5.5 as fallback; uses a simplified
-  "find the simplest solution" prompt
-- **Kimi 3**: quota-aware neuralwatt/synthetic routing
-- **GLM 5.3**: neuralwatt only (no synthetic counterpart for plain GLM)
+```text
+feature_plan
+├─ Architect (Astra): discover the code, draft the design
+├─ Pre-mortem (DeepSeek 4.1 Flash): most likely failure in 3 months
+├─ Challenger (Opus 5.5): review the draft, informed by the pre-mortem
+└─ Architect (the draft's model): resolve the challenge, return the plan
+```
+
+Each step receives the earlier outputs in full, up to the 12 KB text cap. With
+default models, architect and challenger use Astra, Opus 5.5, then Sol 6.1, never
+the same model; the final step never uses the challenger's model. The pre-mortem
+falls back to Synthetic DeepSeek, Sonnet 5.5, then Sol 6.1. A failed draft stops
+the run. A failed pre-mortem or challenge is passed on as unavailable; a failed
+final step returns the draft, pre-mortem, and challenge instead.
+Override models with `DISPATCH_ARCHITECT_MODEL`, `DISPATCH_PREMORTEM_MODEL`, and
+`DISPATCH_CHALLENGER_MODEL`.
+
+The plan lists product decisions, then task contracts. The tool does not execute
+them; after approval, dispatch each contract to `writer` with `worktree: true` and
+the task's `Executor` as `model`.
 
 Read-only, no Herdr needed.
 
@@ -94,8 +93,7 @@ in the sibling `pi-model-prompts` directory. No provider settings are changed.
 
 Configure ranked model rosters with automatic failover in
 `~/.pi/agent/settings/subagent-models.json` (JSON, `<agentName> → array of candidates`).
-The file shape accepts `aliou/pi-harness`-style roster entries; selection semantics
-here are deterministic ranking, not weighted random sampling:
+Candidates are ranked by weight, not sampled:
 
 ```json
 {
@@ -242,8 +240,6 @@ are still absent. Do not overlap write dispatches in the same repository.
 Cancellation snapshots and signals the owned process tree on POSIX, including
 detached tool groups, with a force-stop after a grace period. This is best-effort,
 not containment: already reparented/daemonized processes can escape the snapshot.
-The [historical audit](docs/audit-2026-09-06.md) describes earlier behavior; the
-safety rules below and regression tests describe the current implementation.
 
 Tasks marked `worktree: true` in parallel or chain mode run a child `pi` process
 in a separate Git worktree. This mode commits worker changes and merges branches
@@ -285,8 +281,7 @@ Frontmatter markdown, byte-compatible with the official example. Discovery: bund
 Before each main-agent turn, dispatch adds the current names, descriptions, and
 sources to its system context. This uses the same discovery and trust rules as
 execution, so installed custom roles and overrides are visible before a call.
-Generic role labels in skills are not agent names: use an exact roster name
-(`scout` for research, `planner` for ideation, or an appropriate custom role).
+Generic role labels in skills are not agent names; use an exact roster name.
 
 Bundled: `scout` (read-only recon — tier `cheap`), `reviewer` (code review — `balanced`), `planner` (implementation plans — `long`), `aggregator` (fan-in specialist, no local tools — `balanced`), `security-reviewer` (application security — `precise`), `writer` (worktree write tier — implements, commits, and reports a summary — `precise`; dispatch with `model:'long'` for long-context writing tasks). Tier names in agent frontmatter `model:` expand via `src/profiles.ts`; see [Effort tiers](#effort-tiers).
 
@@ -315,19 +310,6 @@ Or install the published Git repository: `pi install git:github.com/Pfgoriaux/pi
 
 Requires pi ≥ 0.84 (exported `createAgentSession`, `DefaultResourceLoader.noExtensions`, `parseFrontmatter`, `getAgentDir`).
 
-## Status
-
-- [x] Phase 0 — spikes (see `docs/spikes-phase0.md`): concurrent in-process workers, hermetic loaders, abort/partial results
-- [x] Phase 1 — MVP: dispatch tool, modes, frontmatter agents, rendering, abort propagation
-- [x] Phase 2 — aggregator double firewall + weighted model rosters with failover/cooldowns
-- [x] Phase 3 — write tier (child `pi` processes in git worktrees + merge agent)
-- [x] Phase 4 — Herdr observability (env-gated notifications), resumable worker sessions (opt-in), packaging
-
-See also: "Model rosters", "Write tier (worktrees)", and "Resumable sessions & Herdr observability" below.
-
-Historical design plan: [docs/plan.md](docs/plan.md). It records superseded
-choices; use this README and the source for current behavior.
-
 ## Resumable sessions & Herdr observability
 
 **Persist + resume (in-process tier, opt-in):** `dispatch({ ..., persist: true })`
@@ -335,7 +317,7 @@ stores SDK worker sessions under `~/.pi/agent/pi-dispatch/sessions` (indexed in
 `index.json`). Write-tier child sessions are not persisted through this mechanism.
 The tool result lists the persisted sessionIds; continue any of them with full
 worker context via `dispatch({ resume: "<sessionId>", task: "continue..." })`.
-Workers without `persist` stay in-memory exactly as before.
+Workers without `persist` stay in memory.
 
 **Herdr:** when pi-dispatch runs inside a Herdr-managed pane (`HERDR_ENV=1`),
 every completed dispatch fires a native notification (ok/failed counts,
@@ -412,32 +394,11 @@ live in `src/profiles.ts` and are overridable with
 Tasks may also pick a model directly: `tasks: [{agent: "writer", model: "long", task}]`
 accepts a tier name or an explicit `provider/id` and skips the agent's roster —
 the standard way to run long-context writes on Kimi-3 while `writer` defaults
-to `precise` (Opus 5.5). The feature-plan Opus override is `DISPATCH_OPUS55_MODEL`.
+to `precise` (Opus 5.5).
 
 ### Rosters as failover
 
 `~/.pi/agent/settings/subagent-models.json` rosters win over frontmatter tiers,
 so they are tuned tier-aligned: each agent's heaviest-weight entry is its tier
-model, lowerweights are failover ladders. Keep it that way when editing — the
+model, lower weights are failover ladders. Keep it that way when editing — the
 roster exists for cooldowns and failover, not for overriding effort intent.
-
-## Acknowledgments
-
-[aliou/pi-harness](https://github.com/aliou/pi-harness) informed the roster file
-format and failure handling. This implementation sorts by descending weight,
-fails over after a failed attempt, and keys cooldowns by provider/model. Sharing
-a file format does not imply identical runtime semantics.
-
-
-## The pi extension family
-
-Three packages, one workflow: fan out, review, plan, protect, verify.
-
-| Package | Job |
-|---|---|
-| [pi-dispatch](https://github.com/Pfgoriaux/pi-dispatch) | parallel sub-agent fan-out, merge-back, effort tiers, pr_review + feature_plan, Herdr worker viewers |
-| [pi-repo-check](https://github.com/Pfgoriaux/pi-repo-check) | repository hygiene gate |
-| [pi-worktree-guard](https://github.com/Pfgoriaux/pi-worktree-guard) | write-safety guard |
-
-`pi-feature-swarm` and `pi-pr-swarm` were consolidated into pi-dispatch
-(their tools live on as `feature_plan` and `pr_review`) and retired.
