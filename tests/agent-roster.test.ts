@@ -56,6 +56,7 @@ test("the live roster is advertised before dispatch, respects trust, and refresh
 
 	const dispatch = tools.find((tool) => tool.name === "dispatch")!;
 	assert.match(dispatch.description, /Dispatch agents roster/);
+	assert.match(untrusted, /skill role labels are not agent names/);
 	await assert.rejects(
 		() => dispatch.execute("fixture", { tasks: Array.from({ length: 5 }, () => ({ agent: "researcher", task: "fixture" })) }, undefined, undefined, context(false)),
 		(error: Error) => {

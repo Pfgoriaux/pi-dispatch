@@ -34,8 +34,7 @@ then runs up to six in-process reviewers in parallel:
 
 Opus 5.5 then verifies the code review findings. The `aggregator` distills the findings into one prioritized report, and when
 `fix: true` is explicitly requested, a `writer` fixes the findings in a git
-worktree whose branch merges back automatically. Unlike the old swarm this
-needs no Herdr; the fix step requires a trusted, committed-clean repo root at the
+worktree whose branch merges back automatically. The fix step requires a trusted, committed-clean repo root at the
 session cwd and authorization for commits and automatic merge-back. `fix` defaults
 to **false**. Invalid diffs fail before reviewers start; empty diffs skip model calls.
 Fixes require the reviewed head to match the checkout; the checkout is rechecked
@@ -48,23 +47,23 @@ before writing and merging so findings cannot silently target another revision.
 ```text
 feature_plan
 ├─ Architect (Astra): discover the code, draft the design
-├─ Pre-mortem (DeepSeek 4.1 Flash): "if this breaks in 3 months, why?"
+├─ Pre-mortem (DeepSeek 4.1 Flash): most likely failure in 3 months
 ├─ Challenger (Opus 5.5): review the draft, informed by the pre-mortem
 └─ Architect (the draft's model): resolve the challenge, return the plan
 ```
 
-Each step receives the earlier outputs in full, up to the 12 KB text cap. The
-architect and challenger fall back to their cross-provider peer, then Sol 6.1;
-the pre-mortem falls back to Synthetic DeepSeek, Sonnet 5.5, then Sol 6.1. The
-challenger never runs on the architect's model, and the final step never runs on
-the challenger's. A failed pre-mortem or challenge is passed on as unavailable;
-a failed final step returns the draft, pre-mortem, and challenge instead.
+Each step receives the earlier outputs in full, up to the 12 KB text cap. With
+default models, architect and challenger use Astra, Opus 5.5, then Sol 6.1, never
+the same model; the final step never uses the challenger's model. The pre-mortem
+falls back to Synthetic DeepSeek, Sonnet 5.5, then Sol 6.1. A failed draft stops
+the run. A failed pre-mortem or challenge is passed on as unavailable; a failed
+final step returns the draft, pre-mortem, and challenge instead.
 Override models with `DISPATCH_ARCHITECT_MODEL`, `DISPATCH_PREMORTEM_MODEL`, and
 `DISPATCH_CHALLENGER_MODEL`.
 
-The plan lists product decisions for the human, then task contracts. The tool
-does not execute them: dispatch each contract to `writer` with the task's
-`Executor` as `model`.
+The plan lists product decisions, then task contracts. The tool does not execute
+them; after approval, dispatch each contract to `writer` with `worktree: true` and
+the task's `Executor` as `model`.
 
 Read-only, no Herdr needed.
 

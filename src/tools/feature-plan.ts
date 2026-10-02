@@ -65,18 +65,17 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 		name: "feature_plan",
 		label: "Feature Plan (Architect + Challenger)",
 		description:
-			"Read-only feature planning: Astra drafts a design, DeepSeek runs a 3-month pre-mortem, Opus 5.5 challenges it, " +
-			"and Astra returns product decisions and task contracts.",
+			"Read-only feature planning: architect draft, pre-mortem, independent challenge, then a plan of product decisions and task contracts.",
 		promptSnippet:
-			"Plan a feature with architect, pre-mortem, and challenger models",
+			"Plan a feature (read-only)",
 		promptGuidelines: [
 			"feature_plan: Use when the user asks to plan or scope a feature. Not for small changes or bugs.",
-			"feature_plan: Show the plan and its decisions to the user before implementing. Execute by dispatching each task contract verbatim to writer with its Executor as model, in dependency order.",
+			"feature_plan: Show the plan and its decisions to the user. Once approved, execute with dispatch tasks:[{agent:'writer', worktree:true, model:<Executor>, task:<contract verbatim>}]; independent tasks in one call, dependent tasks in later calls. Never execute a truncated plan.",
 		],
 		parameters: Type.Object({
 			herdr: Type.Optional(
 				Type.Boolean({
-					description: "Herdr viewer tabs (default true inside Herdr)",
+					description: "false disables Herdr viewer tabs",
 				}),
 			),
 			idea: Type.String({
@@ -129,13 +128,13 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 				results.push(result);
 				return result;
 			};
-			const finish = (text: string, aggregated: boolean) => ({
+			const finish = (text: string, aggregated: boolean, truncated = false) => ({
 				content: [{ type: "text" as const, text }],
 				details: {
 					mode: "chain",
 					items: results,
 					aggregated,
-					truncated: false,
+					truncated,
 					total: STEPS.length,
 				} satisfies DispatchDetails,
 				usage: sumWorkerUsage(results),
@@ -173,7 +172,8 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 					{ spec: draft.model ?? architectModel(), excludeModels: challenge.model ? [challenge.model] : undefined },
 				);
 				if (final.status !== "ok") return finish(fallbackPlan(results), false);
-				return finish(truncateText(final.text).text, true);
+				const plan = truncateText(final.text);
+				return finish(plan.text, true, plan.truncated);
 			} finally {
 				await progress.end();
 			}

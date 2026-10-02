@@ -414,19 +414,18 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 		name: "pr_review",
 		label: "PR Review",
 		description:
-			"Review a PR or diff with 6 parallel reviewers (security, Astra, Opus 5.5, GLM 5.3, Kimi 3, slop), " +
-			"Opus 5.5 verification, and an aggregator. fix:true fixes validated findings in a worktree that merges back.",
+			"Review a PR or diff with 6 parallel reviewers, a verification pass, and an aggregator. fix:true fixes validated findings in a worktree that merges back.",
 		promptSnippet:
 			"Multi-model PR review with optional fixes",
 		promptGuidelines: [
 			"pr_review: Use when the user asks for a review, or on a PR you opened that changes 100+ lines or touches auth, data, migrations, or infrastructure. Self-review smaller PRs.",
-			"pr_review: fix:true requires explicit user intent to change code and a clean repo root.",
-			"pr_review: Pass intent: the user's request and what the change should do.",
+			"pr_review: fix:true requires explicit user intent to change code and a trusted, committed-clean repo root.",
+			"pr_review: Always pass intent.",
 		],
 		parameters: Type.Object({
 			herdr: Type.Optional(
 				Type.Boolean({
-					description: "Herdr viewer tabs (default true inside Herdr)",
+					description: "false disables Herdr viewer tabs",
 				}),
 			),
 			pr: Type.Optional(

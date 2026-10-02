@@ -94,7 +94,7 @@ const TaskItemSchema = Type.Object({
 	herdr: Type.Optional(
 		Type.Boolean({
 			description:
-				"Herdr viewer tab for this task (default true inside Herdr)",
+				"false disables this task's Herdr viewer tab",
 		}),
 	),
 	model: Type.Optional(
@@ -200,7 +200,7 @@ function sumUsages(results: WorkerResult[]) {
 
 export default function dispatchExtension(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", (event, ctx) => ({
-		systemPrompt: `${event.systemPrompt}\n\n## Dispatch agents\nUse these exact names; never invent an agent name:\n${agentRosterHelp(discoverAgents(ctx).agents)}`,
+		systemPrompt: `${event.systemPrompt}\n\n## Dispatch agents\nUse these exact names; never invent an agent name (skill role labels are not agent names):\n${agentRosterHelp(discoverAgents(ctx).agents)}`,
 	}));
 
 	pi.registerTool({
@@ -213,9 +213,9 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 		promptSnippet:
 			"Delegate parallel or context-heavy work to sub-agents",
 		promptGuidelines: [
-			"dispatch: Do the work yourself by default. Dispatch only for 3+ independent areas worked in parallel, output that would flood your context, or when the user asks for sub-agents or multiple perspectives. Never dispatch work a few tool calls finish.",
+			"dispatch: Use only for 3+ independent areas worked in parallel, output that would flood your context, or when the user asks for sub-agents or multiple perspectives. Otherwise do the work yourself.",
 			"dispatch: Tasks must be self-contained: goal, paths, constraints, output shape. Workers see no conversation.",
-			"dispatch: For file edits use writer with worktree:true from a feature branch with a clean repo root.",
+			"dispatch: For file edits use tasks:[{agent:'writer', worktree:true}] from a feature branch with a committed-clean repo root, only when the user authorized commits and merges. Single mode always runs in-process, without isolation.",
 		],
 		parameters: Type.Object({
 			agent: Type.Optional(
@@ -232,7 +232,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 			chain: Type.Optional(
 				Type.Array(TaskItemSchema, {
 					description:
-						"Sequential steps; {previous} inserts the prior output (max 8)",
+						"Sequential steps (max 8)",
 				}),
 			),
 			aggregate: Type.Optional(
@@ -244,7 +244,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 			herdr: Type.Optional(
 				Type.Boolean({
 					description:
-						"Herdr viewer tabs (default true inside Herdr)",
+						"false disables Herdr viewer tabs",
 				}),
 			),
 			persist: Type.Optional(

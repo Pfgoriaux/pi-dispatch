@@ -1,5 +1,3 @@
-/** Task prompts for feature_plan's architect → pre-mortem → challenger → final plan flow. */
-
 export interface PlanContext {
 	cwd: string;
 	idea: string;
@@ -19,12 +17,10 @@ function header(c: PlanContext, goal: string): string[] {
 	return lines;
 }
 
-/** Architect draft: discover the code, then design the feature. */
 export function architectDraftTask(c: PlanContext): string {
 	return [
 		...header(c, "You are the architect for this feature. Discover the relevant code, then design the implementation."),
 		"",
-		"Read the relevant instructions, data model, flows, and tests before designing.",
 		"",
 		"Return a draft design (Markdown, under ~150 lines and 10 KB):",
 		"## Goal",
@@ -37,7 +33,6 @@ export function architectDraftTask(c: PlanContext): string {
 	].join("\n");
 }
 
-/** Cheap pre-mortem: the single most likely failure cause three months out. */
 export function preMortemTask(c: PlanContext, draft: string): string {
 	return [
 		...header(c, "Run a pre-mortem on this feature design."),
@@ -55,7 +50,6 @@ export function preMortemTask(c: PlanContext, draft: string): string {
 	].join("\n");
 }
 
-/** Design challenger: independent review of the draft, informed by the pre-mortem. */
 export function challengerTask(c: PlanContext, draft: string, preMortem: string): string {
 	return [
 		...header(c, "Challenge this feature design. You are an independent reviewer, not its author."),
@@ -68,7 +62,7 @@ export function challengerTask(c: PlanContext, draft: string, preMortem: string)
 		"",
 		"Check the design against the actual code. Look for wrong assumptions, missing failure paths, migration and compatibility risks,",
 		"interface contracts that workers could misread, and a simpler approach that meets the same goal.",
-		"Report only issues that would cause incorrect behavior, rework, or a failed check. Omit style preferences.",
+		"Report only issues that would cause incorrect behavior, rework, or a failed check.",
 		"",
 		"Return (under ~120 lines):",
 		"## Verdict (sound / sound with changes / rethink)",
@@ -91,7 +85,6 @@ const TASK_CONTRACT = [
 	"- Escalate when: <findings that require the architect, not a worker redesign>",
 ];
 
-/** Architect finalize: resolve the challenge and produce worker-ready task contracts. */
 export function architectFinalTask(c: PlanContext, draft: string, preMortem: string, challenge: string): string {
 	return [
 		...header(c, "You are the architect. Finalize your design into an execution plan."),
@@ -114,12 +107,12 @@ export function architectFinalTask(c: PlanContext, draft: string, preMortem: str
 		"",
 		"# Feature plan: <short title>",
 		"## Goal",
-		"## Decisions for you (product decisions only; write \"None\" if there are none)",
+		"## Decisions for you (\"None\" if empty)",
 		"## Scope (in, out, unchanged)",
-		"## Architecture (boundaries, interfaces, data changes, invariants)",
-		"## Challenge resolution (each issue: accepted or rejected, one line why)",
-		"## Final verification (checks and observable behavior after all tasks)",
 		"## Execution tasks",
 		...TASK_CONTRACT,
+		"## Final verification (checks and observable behavior after all tasks)",
+		"## Architecture (boundaries, interfaces, data changes, invariants)",
+		"## Challenge resolution (each issue: accepted or rejected, one line why)",
 	].join("\n");
 }
