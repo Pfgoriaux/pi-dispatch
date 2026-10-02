@@ -42,6 +42,11 @@ Opus and Astra exclude each other on failover and share a model-identity guard,
 so quota routing or fallback never gives both reviewers the same model. The
 pre-mortem and slop steps stay outside the guard and cannot take a reviewer's
 last fallback.
+Every `pr_review` and `feature_plan` step ends its chain with GLM 5.3 on
+Neuralwatt (`aperture/neuralwatt/glm-5.3`), then on Synthetic
+(`synthetic/hf:zai-org/GLM-5.3`), so the workflows keep running when Anthropic
+and OpenAI credits run out. Both routes count as one model in the guard, so
+only one code reviewer can use GLM.
 Each report is labeled with its actual model and failed attempts. If both code
 reviewers fail, the tool stops. If verification fails, the unverified reports
 are returned. Override models with `DISPATCH_REVIEW_OPUS_MODEL`,
@@ -69,7 +74,8 @@ feature_plan
 Each step receives the earlier outputs in full, up to the 12 KB text cap. With
 default models, architect and challenger use Astra, Opus 5.5, then Sol 6.1, never
 the same model; the final step never uses the challenger's model. The pre-mortem
-falls back to Synthetic DeepSeek, Sonnet 5.5, then Sol 6.1. A failed draft stops
+falls back to Synthetic DeepSeek, Sonnet 5.5, then Sol 6.1. Every step then
+falls back to GLM 5.3 on Neuralwatt, then Synthetic. A failed draft stops
 the run. A failed pre-mortem or challenge is passed on as unavailable; a failed
 final step returns the draft, pre-mortem, and challenge instead.
 Override models with `DISPATCH_ARCHITECT_MODEL`, `DISPATCH_PREMORTEM_MODEL`, and

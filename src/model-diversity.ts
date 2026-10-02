@@ -1,8 +1,12 @@
 import { quotaFamily } from "./roster.ts";
 
+// GLM 5.3 has no Aperture counterpart pair, but both routes serve one model.
+const GLM_ROUTES = new Set(["neuralwatt/glm-5.3", "synthetic/hf:zai-org/GLM-5.3"]);
+
 /** Provider aliases for the same model count as one voice; Opus and Astra do not. */
 export function modelIdentity(spec: string): string {
 	const route = spec.replace(/^aperture\//, "");
+	if (GLM_ROUTES.has(route)) return "glm-5.3";
 	if (route.startsWith("neuralwatt/") || route.startsWith("synthetic/")) {
 		return quotaFamily(spec) ?? route;
 	}

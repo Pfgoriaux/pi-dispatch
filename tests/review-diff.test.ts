@@ -243,9 +243,10 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 	assert.notEqual(modelIdentity(swapped[2].model!), modelIdentity(swapped[0].model!));
 
 	// The final step falls back, but never onto the challenger's model.
-	fail = (provider, step) => provider === "openai-codex" && step === "FINAL-TEXT";
+	fail = (_provider, step) => step === "FINAL-TEXT";
 	const noFinal = await runPlan();
 	assert.ok(!calls.some(c => c.step === "FINAL-TEXT" && c.provider === "anthropic"));
+	assert.deepEqual(calls.filter(c => c.step === "FINAL-TEXT").map(c => c.provider), ["openai-codex", "openai-codex", "aperture", "synthetic"]);
 	assert.equal(noFinal.details.aggregated, false);
 	assert.match(noFinal.content[0].text, /## Architect draft\n\nDRAFT-TEXT[\s\S]*PREMORTEM-TEXT[\s\S]*CHALLENGE-TEXT/);
 
@@ -253,6 +254,11 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 	const noChallenge = await runPlan();
 	assert.equal(noChallenge.content[0].text, "FINAL-TEXT", "final plan still runs without a challenge");
 	assert.match(promptOf("FINAL-TEXT"), /DESIGN CHALLENGE:\\n\(unavailable:/);
+
+	// Anthropic and OpenAI out of credits: GLM drafts and finalizes; the challenger cannot reuse it.
+	fail = (provider) => provider === "anthropic" || provider === "openai-codex";
+	const glm = (await runPlan()).details.items as WorkerResult[];
+	assert.deepEqual([glm[0].model, glm[2].status, glm[3].model], ["aperture/neuralwatt/glm-5.3", "error", "aperture/neuralwatt/glm-5.3"]);
 
 	fail = (_provider, step) => step === "DRAFT-TEXT";
 	const noDraft = await runPlan();

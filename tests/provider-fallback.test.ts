@@ -288,3 +288,40 @@ test("excluding every candidate fails without calling a model", async (t) => {
 	assert.equal(result.status, "error");
 	assert.match(result.error!, /excluded/);
 });
+
+const glmNeuralwatt = "aperture/neuralwatt/glm-5.3";
+const glmSynthetic = "synthetic/hf:zai-org/GLM-5.3";
+const lastResorts = [glmNeuralwatt, glmSynthetic];
+
+test("workflow last resorts run GLM on Neuralwatt, then Synthetic, after Anthropic and OpenAI", async (t) => {
+	const calls: string[] = [];
+	const registry = mockModels(t, [opus, codexSol, glmNeuralwatt], calls);
+	const result = await runWorker(agent, "test", {
+		registry, fallbackModel: undefined, modelSpec: opus, excludeModels: [astra], fallbackModels: lastResorts,
+	});
+	assert.deepEqual(calls, [opus, codexSol, glmNeuralwatt, glmSynthetic]);
+	assert.equal(result.status, "ok");
+	assert.equal(result.model, glmSynthetic);
+});
+
+test("workflow last resorts are not retried when already in the chain", async (t) => {
+	const calls: string[] = [];
+	const registry = mockModels(t, [glmNeuralwatt, codexSol, glmSynthetic], calls);
+	await runWorker(agent, "test", {
+		registry, fallbackModel: undefined, modelSpec: glmNeuralwatt, fallbackModels: lastResorts,
+	});
+	assert.deepEqual(calls, [glmNeuralwatt, codexSol, glmSynthetic]);
+});
+
+test("parallel reviewers cannot both fall back to GLM through different providers", async (t) => {
+	const calls: string[] = [];
+	const registry = mockModels(t, [opus, astra, codexSol], calls);
+	const pool = new ModelDiversity();
+	const [first, second] = await Promise.all([[opus, astra], [astra, opus]].map(([modelSpec, peer]) => runWorker(agent, "test", {
+		registry, fallbackModel: undefined, modelSpec, excludeModels: [peer],
+		fallbackModels: lastResorts, claimModel: pool.worker(),
+	})));
+	assert.deepEqual([first.status, second.status].sort(), ["error", "ok"]);
+	assert.equal(calls.filter(model => model === glmNeuralwatt).length, 1);
+	assert.equal(calls.filter(model => model === glmSynthetic).length, 0);
+});
