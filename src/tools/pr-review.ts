@@ -4,7 +4,7 @@
  * Four in-process workers run in parallel:
  *   1. Opus 5.5: correctness + security
  *   2. Codex Astra: correctness
- *   3. DeepSeek 4.1 Flash: pre-mortem, "why did this break 3 months later?"
+ *   3. DeepSeek 4.1 Flash (medium thinking): pre-mortem, "why did this break 3 months later?"
  *   4. slop-reviewer (balanced tier): doc rules and unneeded additions
  * A reviewer on the balanced tier then checks each finding against the code
  * and returns one deduplicated report. fix:true hands it to a worktree writer.
@@ -343,7 +343,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					const runStep = (
 						index: number,
 						task: string,
-						model: { spec?: string; excludeModels?: string[]; steerByQuota?: boolean; claim?: boolean },
+						model: { spec?: string; excludeModels?: string[]; steerByQuota?: boolean; claim?: boolean; thinking?: string },
 					) =>
 						progress.run(
 							index,
@@ -353,7 +353,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 									fallbackModel: ctx.model,
 									cwd: ctx.cwd,
 									signal,
-									thinking: "high",
+									thinking: model.thinking ?? "high",
 									modelSpec: model.spec,
 									excludeModels: [...WORKFLOW_EXCLUDED_MODELS, ...(model.excludeModels ?? [])],
 									fallbackModels: WORKFLOW_FALLBACK_MODELS,
@@ -380,6 +380,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 						runStep(2, preMortemTask(reviewerCtx), {
 							spec: REVIEW_MODELS.preMortem,
 							steerByQuota: true,
+							thinking: "medium",
 						}),
 						runStep(3, slopTask(reviewerCtx), {}),
 					]);
