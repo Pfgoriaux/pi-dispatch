@@ -33,7 +33,7 @@ pr_review
 ├─ parallel
 │  ├─ Opus 5.5 (`reviewer`): correctness + security
 │  ├─ Codex Astra (`reviewer`): correctness
-│  ├─ DeepSeek 4.1 Flash (`scout`): pre-mortem, "this merged; why did it break 3 months later?"
+│  ├─ DeepSeek 4.1 Flash (`scout`, medium thinking): pre-mortem, "this merged; why did it break 3 months later?"
 │  └─ `slop-reviewer` (balanced tier): checks added docs against its documentation rules and the code; flags unneeded tests and additions
 └─ `reviewer` (balanced tier): check each finding against the code, merge duplicates, return one report and a verdict
 ```
