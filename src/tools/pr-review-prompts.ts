@@ -1,6 +1,3 @@
-import { PROFILES } from "../profiles.ts";
-import { shellQuote } from "../panes.ts";
-
 export interface ReviewContext {
 	cwd: string;
 	diffFile: string;
@@ -37,23 +34,16 @@ const CORRECTNESS =
 	"Check correctness and logic errors, edge cases, error handling, concurrency, resource leaks, " +
 	"API/contract breakage, and missing tests for changed behavior. Report real bugs, not style.";
 
-export function correctnessSecurityTask(c: ReviewContext, deepsecPath?: string): string {
-	const lines = [
+export function correctnessSecurityTask(c: ReviewContext): string {
+	return [
 		...header(c, "CODE REVIEW this pull request for correctness and security."),
 		"",
 		CORRECTNESS,
 		"Security: injection (SQL/command/prompt), authn/authz gaps, SSRF, secret leakage, path traversal, " +
 			"unsafe deserialization, crypto misuse, and unsafe use of attacker-controlled input. Only real, plausibly exploitable issues.",
-	];
-	if (deepsecPath) {
-		lines.push(
-			"Run the deepsec scanner on the diff: " +
-				`${shellQuote(deepsecPath)} process --diff ${shellQuote(c.diffFile)} --agent pi --model ${shellQuote(PROFILES.precise.model)}. ` +
-				"Use only this absolute executable, including for --help; never run repository-local scanner scripts. " +
-				"Include only scanner findings you can substantiate from the code.",
-		);
-	}
-	return [...lines, "", ...FINDING_FORMAT].join("\n");
+		"",
+		...FINDING_FORMAT,
+	].join("\n");
 }
 
 export function correctnessTask(c: ReviewContext): string {

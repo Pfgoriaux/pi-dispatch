@@ -2,7 +2,7 @@
  * pr_review — multi-model PR review on top of the dispatch engine.
  *
  * Four in-process workers run in parallel:
- *   1. Opus 5.5: correctness + security (deepsec if an approved executable exists)
+ *   1. Opus 5.5: correctness + security
  *   2. Codex Astra: correctness
  *   3. DeepSeek 4.1 Flash: pre-mortem, "why did this break 3 months later?"
  *   4. slop-reviewer (balanced tier): doc rules and unneeded additions
@@ -87,18 +87,6 @@ async function which(pi: ExtensionAPI, bin: string): Promise<boolean> {
 	} catch {
 		return false;
 	}
-}
-
-/** Only operator-installed executables outside the checkout may run during review. */
-export async function findScanner(pi: ExtensionAPI, repoRoot: string): Promise<string | undefined> {
-	try {
-		const result = await pi.exec("bash", ["-lc", "command -v deepsec"], { cwd: repoRoot, timeout: 10000 });
-		const selected = result.stdout.trim();
-		if (result.code !== 0 || result.killed || !path.isAbsolute(selected) || /[\r\n]/.test(selected)) return undefined;
-		const [scanner, root] = await Promise.all([realpath(selected), realpath(repoRoot)]);
-		if (scanner === root || scanner.startsWith(root + path.sep) || !fs.statSync(scanner).isFile()) return undefined;
-		return scanner;
-	} catch { return undefined; }
 }
 
 async function defaultBaseRef(
@@ -340,12 +328,6 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 						details: undefined,
 					};
 
-				// ---- deepsec detection ----
-				const deepsecPath = await findScanner(pi, repoRoot);
-				emit(
-					`pr_review: ${label} · ${deepsecPath ? "operator-installed deepsec detected" : "no approved deepsec executable — manual security review"}`,
-				);
-
 				// ---- review fan-out (context firewall per reviewer) ----
 				emit("pr_review: 2 code reviewers, pre-mortem, and slop review, then verification…");
 				const progress = new DispatchProgress(
@@ -383,7 +365,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					const reviewerCtx = { cwd: ctx.cwd, diffFile, intent: params.intent };
 					// Opus and Astra exclude each other so failover never duplicates a reviewer.
 					const [opus, astra, preMortem, slop] = await Promise.all([
-						runStep(0, correctnessSecurityTask(reviewerCtx, deepsecPath), {
+						runStep(0, correctnessSecurityTask(reviewerCtx), {
 							spec: REVIEW_MODELS.opus,
 							excludeModels: [REVIEW_MODELS.astra],
 							claim: true,

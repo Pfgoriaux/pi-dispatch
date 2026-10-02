@@ -34,8 +34,7 @@ processes in Git worktrees. Usage and current behavior: [README.md](README.md).
   Never force-delete dirty or locked worktrees; retained directories are recovery
   data. Age alone is not permission to remove a worktree. Write workers must pass
   the clean-worktree check before merge-back; merge agents intentionally do not.
-- PR fixes must match the reviewed head. Never auto-select repository-local
-  scanner scripts during read-only review; only resolved external executables qualify.
+- PR fixes must match the reviewed head.
 - In-process failed-tool cutoffs are model-attempt failures, not user aborts;
   keep failover, usage accounting, and parent-cancellation precedence intact.
   Viewer logs must not echo unregistered tool names: malformed names may contain
