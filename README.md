@@ -56,23 +56,20 @@ feature_plan
 ├─ Pre-mortem (DeepSeek 4.1 Flash): "if this breaks in 3 months, why?"
 ├─ Challenger (Opus 5.5): review the draft, informed by the pre-mortem
 └─ Architect (the draft's model): resolve the challenge, return the plan
-   ├─ Execution tasks: Executor, Depends on, Owns, Behavior, Contracts, Verify, Escalate when
-   └─ Decisions for you: product decisions only
 ```
 
 Each step receives the earlier outputs in full, up to the 12 KB text cap. The
-architect and challenger fall back to their cross-provider peer, then Sol 6.1,
-so the default planners stay on OpenAI and Anthropic. They share one diversity pool: the
-challenger never runs on the architect's model. A failed pre-mortem or
-challenge is passed on as unavailable; a failed final step returns the draft,
-pre-mortem, and challenge instead. Override models with
-`DISPATCH_ARCHITECT_MODEL`, `DISPATCH_PREMORTEM_MODEL`, and
+architect and challenger fall back to their cross-provider peer, then Sol 6.1;
+the pre-mortem falls back to Synthetic DeepSeek, Sonnet 5.5, then Sol 6.1. The
+challenger never runs on the architect's model, and the final step never runs on
+the challenger's. A failed pre-mortem or challenge is passed on as unavailable;
+a failed final step returns the draft, pre-mortem, and challenge instead.
+Override models with `DISPATCH_ARCHITECT_MODEL`, `DISPATCH_PREMORTEM_MODEL`, and
 `DISPATCH_CHALLENGER_MODEL`.
 
-The tool does not execute the plan. Each task names its executor: `long`
-(Kimi 3) by default, GLM 5.3 for small bounded tasks, or `precise` (Opus 5.5)
-for auth, migrations, concurrency, or shared interfaces. Dispatch the task
-contract to `writer` with that model.
+The plan lists product decisions for the human, then task contracts. The tool
+does not execute them: dispatch each contract to `writer` with the task's
+`Executor` as `model`.
 
 Read-only, no Herdr needed.
 

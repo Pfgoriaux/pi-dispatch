@@ -1,27 +1,13 @@
 /**
- * feature_plan — feature discovery & planning on top of the dispatch engine.
- *
- * Flow (sequential, each step sees the previous outputs):
- *   1. Architect (Astra) discovers the code and drafts a design.
- *   2. Pre-mortem (DeepSeek 4.1 Flash, cheap): "if this breaks in 3 months, why?"
- *   3. Challenger (Opus 5.5) reviews the draft, informed by the pre-mortem.
- *   4. The same architect resolves the challenge into worker-ready task
- *      contracts and lists only product decisions for the human.
- *
- * Architect and challenger stay on OpenAI/Anthropic: their fallbacks are the
- * cross-provider peer, then Sol 6.1. A shared ModelDiversity pool keeps the
- * challenger off the architect's model. Execution is not part of this tool;
- * each task names its executor model for writer dispatch.
- *
- * Context firewall unchanged: worker transcripts never leave their sessions;
- * the parent only sees the final plan.
+ * feature_plan — architect draft → cheap pre-mortem → challenger → architect final plan.
+ * Architect and challenger share one ModelDiversity pool, and the final step excludes
+ * the challenger's model, so fallbacks never merge the two roles.
  */
 
 import { Type } from "@earendil-works/pi-ai";
-import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { agentRosterHelp, discoverAgents } from "../agents.ts";
-import { runWorker, truncateText } from "../worker.ts";
+import { runWorker, sumWorkerUsage, truncateText } from "../worker.ts";
 import type { AgentConfig, DispatchDetails, WorkerResult } from "../types.ts";
 import { DispatchProgress } from "../progress.ts";
 import { renderDispatchResult } from "../render.ts";
@@ -52,20 +38,15 @@ const STEPS = [
 
 interface StepModel {
 	spec: string;
-	/** Reorder exact provider peers by quota headroom (DeepSeek NeuralWatt/Synthetic). */
 	steerByQuota?: boolean;
 	claimModel?: (spec: string) => boolean;
+	excludeModels?: string[];
 }
 
 /** Model-visible text of a step, or a marker the next step can reason about. */
 function outputOf(r: WorkerResult): string {
 	if (r.status !== "ok") return `(unavailable: ${truncateText(r.error ?? r.status).text})`;
 	return truncateText(r.text || "(no output)").text;
-}
-
-function modelLine(results: WorkerResult[]): string {
-	const roles = ["architect", "pre-mortem", "challenger", "final"];
-	return results.map((r, i) => `${roles[i]}: ${r.model ?? "unavailable"}`).join(", ");
 }
 
 /** Shown when the final step fails: the material the architect would have resolved. */
@@ -75,7 +56,7 @@ function fallbackPlan(results: WorkerResult[]): string {
 		"## Architect draft", outputOf(draft),
 		"## Pre-mortem", outputOf(preMortem),
 		"## Design challenge", outputOf(challenge),
-		`feature_plan: final architect step failed; unresolved inputs shown above. ${truncateText(final.error ?? "").text}`,
+		`feature_plan: final architect step did not finish; unresolved inputs shown above. ${truncateText(final.error ?? final.status).text}`,
 	].join("\n\n");
 }
 
@@ -97,10 +78,13 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 		],
 		parameters: Type.Object({
 			herdr: Type.Optional(
-				Type.Boolean({ description: "Show worker viewer tabs inside Herdr (default true)." }),
+				Type.Boolean({
+					description: "Show worker viewer tabs inside Herdr (default true).",
+				}),
 			),
 			idea: Type.String({
-				description: "The feature idea to discover & plan, in the user's own words (can be rough/long)",
+				description:
+					"The feature idea to discover & plan, in the user's own words (can be rough/long)",
 			}),
 			focus: Type.Optional(
 				Type.String({
@@ -139,6 +123,7 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 							modelSpec: model.spec,
 							steerByQuota: model.steerByQuota ?? false,
 							claimModel: model.claimModel,
+							excludeModels: model.excludeModels,
 							thinking: "high",
 							...progress.options(index),
 						}),
@@ -156,21 +141,21 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 					truncated: false,
 					total: STEPS.length,
 				} satisfies DispatchDetails,
-				usage: sumUsage(results),
+				usage: sumWorkerUsage(results),
 			});
 
 			try {
 				await progress.open(ctx.cwd, signal);
 				const c: PlanContext = { cwd: ctx.cwd, idea: params.idea, focus: params.focus?.trim() ?? "" };
-				// Architect and challenger share one pool so fallbacks never give both the same model.
 				const designers = new ModelDiversity();
 
 				const draft = await step(planner, architectDraftTask(c), {
 					spec: architectModel(),
 					claimModel: designers.worker(),
 				});
+				if (signal?.aborted) return finish("feature_plan: aborted during the architect draft.", false);
 				if (draft.status !== "ok") {
-					return finish(`feature_plan: architect draft failed. ${outputOf(draft)}`, false);
+					return finish(`feature_plan: architect draft failed. ${truncateText(draft.error ?? "").text}`, false);
 				}
 				const draftText = outputOf(draft);
 
@@ -182,47 +167,20 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 					spec: challengerModel(),
 					claimModel: designers.worker(),
 				});
-				if (signal?.aborted) return finish("Aborted before the final plan.", false);
+				if (signal?.aborted) return finish("feature_plan: aborted before the final plan.", false);
 
-				// Pin the model that wrote the draft so the same architect owns the final plan.
+				// Same model as the draft; never the challenger's, even on fallback.
 				const final = await step(
 					planner,
 					architectFinalTask(c, draftText, outputOf(preMortem), outputOf(challenge)),
-					{ spec: draft.model ?? architectModel() },
+					{ spec: draft.model ?? architectModel(), excludeModels: challenge.model ? [challenge.model] : undefined },
 				);
-				const body = final.status === "ok" ? truncateText(final.text).text : fallbackPlan(results);
-				return finish(`${body}\n\n_Models: ${modelLine(results)}_`, final.status === "ok");
+				if (final.status !== "ok") return finish(fallbackPlan(results), false);
+				return finish(truncateText(final.text).text, true);
 			} finally {
 				await progress.end();
 			}
 		},
 		renderResult: renderDispatchResult as never,
 	});
-}
-
-/** Sum two Usage objects; missing values count as 0. */
-function sumTwo(a: Usage, b: Usage): Usage {
-	return {
-		input: a.input + b.input,
-		output: a.output + b.output,
-		cacheRead: (a.cacheRead ?? 0) + (b.cacheRead ?? 0),
-		cacheWrite: (a.cacheWrite ?? 0) + (b.cacheWrite ?? 0),
-		totalTokens: a.totalTokens + b.totalTokens,
-		cost: {
-			input: a.cost.input + b.cost.input,
-			output: a.cost.output + b.cost.output,
-			cacheRead: (a.cost.cacheRead ?? 0) + (b.cost.cacheRead ?? 0),
-			cacheWrite: (a.cost.cacheWrite ?? 0) + (b.cost.cacheWrite ?? 0),
-			total: a.cost.total + b.cost.total,
-		},
-	};
-}
-
-/** Sum usage across finished workers (undefined until one reports usage). */
-function sumUsage(results: WorkerResult[]): Usage | undefined {
-	let acc: Usage | undefined;
-	for (const r of results) {
-		if (r.usage) acc = acc ? sumTwo(acc, r.usage) : r.usage;
-	}
-	return acc;
 }

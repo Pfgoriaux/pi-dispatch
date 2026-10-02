@@ -129,11 +129,10 @@ test("workflow credit fallbacks never duplicate models within parallel phases", 
 	});
 	let tool: any;
 	const prompts: string[] = [];
-	let failStep: string | undefined;
 	t.mock.method(ModelRuntime.prototype, "hasConfiguredAuth", () => true);
 	t.mock.method(ModelRuntime.prototype, "streamSimple", (model: Model<Api>, context: unknown) => {
 		prompts.push(JSON.stringify(context));
-		const failed = model.provider !== "openai-codex" || (failStep !== undefined && JSON.stringify(context).includes(failStep));
+		const failed = model.provider !== "openai-codex";
 		const message: AssistantMessage = {
 			role: "assistant", api: model.api, provider: model.provider, model: model.id,
 			content: failed ? [] : [{ type: "text", text: "No findings." }],
@@ -173,44 +172,98 @@ test("workflow credit fallbacks never duplicate models within parallel phases", 
 	assertDistinct(result.details.items.slice(0, 6));
 	assert.ok(result.details.items[0].attempts > 0, "security starts before other roles claim all its candidates");
 
+});
+
+test("feature_plan passes each step forward and keeps architect and challenger apart", async (t) => {
+	const previousHerdr = process.env.HERDR_ENV;
+	delete process.env.HERDR_ENV;
+	t.after(() => {
+		if (previousHerdr === undefined) delete process.env.HERDR_ENV;
+		else process.env.HERDR_ENV = previousHerdr;
+	});
+	const steps = [["Finalize your design", "FINAL-TEXT"], ["Challenge this feature design", "CHALLENGE-TEXT"],
+		["Run a pre-mortem", "PREMORTEM-TEXT"], ["You are the architect for this feature", "DRAFT-TEXT"]];
+	let fail = (_provider: string, _step: string) => false;
+	let onStep = (_step: string) => {};
+	const calls: { provider: string; step: string; prompt: string }[] = [];
+	t.mock.method(ModelRuntime.prototype, "hasConfiguredAuth", () => true);
+	t.mock.method(ModelRuntime.prototype, "streamSimple", (model: Model<Api>, context: unknown) => {
+		const prompt = JSON.stringify(context);
+		const step = steps.find(([marker]) => prompt.includes(marker))![1];
+		calls.push({ provider: model.provider, step, prompt });
+		onStep(step);
+		const failed = fail(model.provider, step);
+		const message: AssistantMessage = {
+			role: "assistant", api: model.api, provider: model.provider, model: model.id,
+			content: failed ? [] : [{ type: "text", text: step }],
+			stopReason: failed ? "error" : "stop", errorMessage: failed ? "402 insufficient credits" : undefined,
+			timestamp: Date.now(),
+			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.01 } },
+		};
+		const stream = createAssistantMessageEventStream();
+		if (failed) stream.push({ type: "error", reason: "error", error: message });
+		else stream.push({ type: "done", reason: "stop", message });
+		return stream;
+	});
+	const registry = {
+		find: (provider: string, id: string) => ({
+			provider, id, api: "openai-completions", name: id, reasoning: false, input: ["text"],
+			contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		}),
+		getRegisteredNativeProvider: () => undefined,
+		getApiKeyForProvider: async () => undefined,
+	} as unknown as ModelRegistry;
+	let tool: any;
 	registerFeaturePlanTool({ registerTool: (value: unknown) => { tool = value; } } as unknown as ExtensionAPI);
-	const runPlan = async () => {
-		prompts.length = 0;
-		return tool.execute("test", { idea: "test architect flow", herdr: false }, undefined, undefined, {
+	const runPlan = (signal?: AbortSignal) => {
+		calls.length = 0;
+		return tool.execute("test", { idea: "test architect flow", herdr: false }, signal, undefined, {
 			cwd: path.resolve(import.meta.dirname, ".."), isProjectTrusted: () => false, modelRegistry: registry,
 		});
 	};
-	const promptWith = (marker: string) => prompts.filter(p => p.includes(marker)).at(-1) ?? "";
+	const promptOf = (step: string) => calls.find(c => c.step === step)?.prompt ?? "";
 
 	const plan = await runPlan();
 	const [draft, preMortem, challenge, final] = plan.details.items as WorkerResult[];
-	assert.equal(plan.details.items.length, 4);
-	assert.equal(draft.model, "openai-codex/gpt-6-astra", "architect defaults to Astra");
-	assert.equal(final.model, draft.model, "the draft's architect writes the final plan");
-	assert.notEqual(modelIdentity(challenge.model!), modelIdentity(draft.model!), "challenger never shares the architect's model");
-	assert.equal(preMortem.status, "ok");
-	assert.match(promptWith("Run a pre-mortem"), /Three months later it broke/);
-	assert.match(promptWith("Challenge this feature design"), /PRE-MORTEM/);
-	assert.match(promptWith("Finalize your design"), /Decisions for you/);
+	assert.deepEqual([draft.model, challenge.model, final.model], ["openai-codex/gpt-6-astra", "anthropic/claude-opus-5-5", "openai-codex/gpt-6-astra"]);
+	assert.match(preMortem.model!, /deepseek/i);
+	assert.match(promptOf("PREMORTEM-TEXT"), /DRAFT-TEXT/);
+	assert.match(promptOf("CHALLENGE-TEXT"), /DRAFT-TEXT[\s\S]*PREMORTEM-TEXT/);
+	assert.match(promptOf("FINAL-TEXT"), /DRAFT-TEXT[\s\S]*PREMORTEM-TEXT[\s\S]*CHALLENGE-TEXT/);
+	assert.equal(plan.content[0].text, "FINAL-TEXT");
 	assert.equal(plan.details.aggregated, true);
-	assert.match(plan.content[0].text, /Models: architect: openai-codex\/gpt-6-astra/);
+	assert.equal(plan.usage.totalTokens, 8);
 
-	failStep = "Challenge this feature design";
-	const noChallenge = await runPlan();
-	assert.equal(noChallenge.details.items[2].status, "error");
-	assert.equal(noChallenge.details.items[3].status, "ok", "final plan still runs without a challenge");
-	assert.match(promptWith("Finalize your design"), /DESIGN CHALLENGE:\\n\(unavailable:/);
+	// Architect fails over to Opus; the challenger must not reuse it.
+	fail = (provider, step) => provider === "openai-codex" && step === "DRAFT-TEXT";
+	const swapped = (await runPlan()).details.items as WorkerResult[];
+	assert.equal(swapped[0].model, "anthropic/claude-opus-5-5");
+	assert.notEqual(modelIdentity(swapped[2].model!), modelIdentity(swapped[0].model!));
 
-	failStep = "Finalize your design";
+	// The final step falls back, but never onto the challenger's model.
+	fail = (provider, step) => provider === "openai-codex" && step === "FINAL-TEXT";
 	const noFinal = await runPlan();
+	assert.ok(!calls.some(c => c.step === "FINAL-TEXT" && c.provider === "anthropic"));
 	assert.equal(noFinal.details.aggregated, false);
-	assert.match(noFinal.content[0].text, /## Architect draft[\s\S]*## Pre-mortem[\s\S]*## Design challenge/);
-	assert.match(noFinal.content[0].text, /final architect step failed/);
+	assert.match(noFinal.content[0].text, /## Architect draft\n\nDRAFT-TEXT[\s\S]*PREMORTEM-TEXT[\s\S]*CHALLENGE-TEXT/);
 
-	failStep = "You are the architect for this feature";
+	fail = (_provider, step) => step === "CHALLENGE-TEXT";
+	const noChallenge = await runPlan();
+	assert.equal(noChallenge.content[0].text, "FINAL-TEXT", "final plan still runs without a challenge");
+	assert.match(promptOf("FINAL-TEXT"), /DESIGN CHALLENGE:\\n\(unavailable:/);
+
+	fail = (_provider, step) => step === "DRAFT-TEXT";
 	const noDraft = await runPlan();
 	assert.equal(noDraft.details.items.length, 1, "no downstream steps without a draft");
 	assert.match(noDraft.content[0].text, /architect draft failed/);
+
+	fail = () => false;
+	const controller = new AbortController();
+	onStep = (step) => { if (step === "DRAFT-TEXT") controller.abort(); };
+	const aborted = await runPlan(controller.signal);
+	assert.equal(aborted.details.items.length, 1);
+	assert.match(aborted.content[0].text, /aborted during the architect draft/);
 });
 
 test("PR fix schema advertises opt-in commits", () => {
