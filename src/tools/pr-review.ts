@@ -23,7 +23,7 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { agentRosterHelp, discoverAgents } from "../agents.ts";
-import { REVIEW_MODELS, WORKFLOW_FALLBACK_MODELS } from "../profiles.ts";
+import { REVIEW_MODELS, WORKFLOW_EXCLUDED_MODELS, WORKFLOW_FALLBACK_MODELS } from "../profiles.ts";
 import { runWorker, sumWorkerUsage, truncateText } from "../worker.ts";
 import { ModelDiversity } from "../model-diversity.ts";
 import { runWorkerProc } from "../worker-proc.ts";
@@ -355,7 +355,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 									signal,
 									thinking: "high",
 									modelSpec: model.spec,
-									excludeModels: model.excludeModels,
+									excludeModels: [...WORKFLOW_EXCLUDED_MODELS, ...(model.excludeModels ?? [])],
 									fallbackModels: WORKFLOW_FALLBACK_MODELS,
 									steerByQuota: model.steerByQuota,
 									claimModel: model.claim ? pool.worker() : undefined,

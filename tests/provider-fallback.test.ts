@@ -293,13 +293,13 @@ const glmNeuralwatt = "aperture/neuralwatt/glm-5.3";
 const glmSynthetic = "synthetic/hf:zai-org/GLM-5.3";
 const lastResorts = [glmNeuralwatt, glmSynthetic];
 
-test("workflow last resorts run GLM on Neuralwatt, then Synthetic, after Anthropic and OpenAI", async (t) => {
+test("workflow last resorts run GLM on Neuralwatt, then Synthetic, with Sol excluded", async (t) => {
 	const calls: string[] = [];
-	const registry = mockModels(t, [opus, codexSol, glmNeuralwatt], calls);
+	const registry = mockModels(t, [opus, glmNeuralwatt], calls);
 	const result = await runWorker(agent, "test", {
-		registry, fallbackModel: undefined, modelSpec: opus, excludeModels: [astra], fallbackModels: lastResorts,
+		registry, fallbackModel: undefined, modelSpec: opus, excludeModels: [astra, codexSol], fallbackModels: lastResorts,
 	});
-	assert.deepEqual(calls, [opus, codexSol, glmNeuralwatt, glmSynthetic]);
+	assert.deepEqual(calls, [opus, glmNeuralwatt, glmSynthetic]);
 	assert.equal(result.status, "ok");
 	assert.equal(result.model, glmSynthetic);
 });

@@ -12,7 +12,7 @@ import type { AgentConfig, DispatchDetails, WorkerResult } from "../types.ts";
 import { DispatchProgress } from "../progress.ts";
 import { renderDispatchResult } from "../render.ts";
 import { ModelDiversity } from "../model-diversity.ts";
-import { WORKFLOW_FALLBACK_MODELS } from "../profiles.ts";
+import { WORKFLOW_EXCLUDED_MODELS, WORKFLOW_FALLBACK_MODELS } from "../profiles.ts";
 import {
 	architectDraftTask,
 	architectFinalTask,
@@ -120,7 +120,7 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 							modelSpec: model.spec,
 							steerByQuota: model.steerByQuota ?? false,
 							claimModel: model.claimModel,
-							excludeModels: model.excludeModels,
+							excludeModels: [...WORKFLOW_EXCLUDED_MODELS, ...(model.excludeModels ?? [])],
 							fallbackModels: WORKFLOW_FALLBACK_MODELS,
 							thinking: "high",
 							...progress.options(index),

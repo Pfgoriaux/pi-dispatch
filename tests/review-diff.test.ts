@@ -129,10 +129,13 @@ test("workflow credit fallbacks never duplicate models within parallel phases", 
 	});
 	let tool: any;
 	const prompts: string[] = [];
+	const models: string[] = [];
 	t.mock.method(ModelRuntime.prototype, "hasConfiguredAuth", () => true);
 	t.mock.method(ModelRuntime.prototype, "streamSimple", (model: Model<Api>, context: unknown) => {
 		prompts.push(JSON.stringify(context));
-		const failed = model.provider !== "openai-codex" || model.id.includes("astra");
+		models.push(`${model.provider}/${model.id}`);
+		// Anthropic and OpenAI are out of credits; only GLM answers.
+		const failed = !/glm-5\.3/i.test(model.id);
 		const message: AssistantMessage = {
 			role: "assistant", api: model.api, provider: model.provider, model: model.id,
 			content: failed ? [] : [{ type: "text", text: "No findings." }],
@@ -164,7 +167,8 @@ test("workflow credit fallbacks never duplicate models within parallel phases", 
 	assert.match(result.content[0].text, /# PR review/);
 	assert.match(result.content[0].text, /No findings|Fix skipped/);
 	const [opus, astra, preMortem, slop] = result.details.items as WorkerResult[];
-	assert.equal([opus, astra].filter(r => r.status === "ok").length, 1, "only one code reviewer may take the shared Sol fallback");
+	assert.equal([opus, astra].filter(r => r.status === "ok").length, 1, "only one code reviewer may take the shared GLM fallback");
+	assert.ok(!models.some(m => m.includes("gpt-6.1-sol")), "workflows never use Sol");
 	assert.equal(preMortem.status, "ok", "pre-mortem falls back outside the reviewer guard");
 	assert.equal(slop.status, "ok", "slop falls back outside the reviewer guard");
 	assert.equal(result.details.items.length, 5, "four parallel steps, then one verify-aggregate step");
@@ -244,9 +248,10 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 
 	// The final step falls back, but never onto the challenger's model.
 	fail = (_provider, step) => step === "FINAL-TEXT";
+	// Sol is excluded from every workflow step.
 	const noFinal = await runPlan();
 	assert.ok(!calls.some(c => c.step === "FINAL-TEXT" && c.provider === "anthropic"));
-	assert.deepEqual(calls.filter(c => c.step === "FINAL-TEXT").map(c => c.provider), ["openai-codex", "openai-codex", "aperture", "synthetic"]);
+	assert.deepEqual(calls.filter(c => c.step === "FINAL-TEXT").map(c => c.provider), ["openai-codex", "aperture", "synthetic"]);
 	assert.equal(noFinal.details.aggregated, false);
 	assert.match(noFinal.content[0].text, /## Architect draft\n\nDRAFT-TEXT[\s\S]*PREMORTEM-TEXT[\s\S]*CHALLENGE-TEXT/);
 
