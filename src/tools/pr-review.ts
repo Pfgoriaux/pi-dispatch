@@ -1,10 +1,11 @@
 /**
  * pr_review — multi-model PR review on top of the dispatch engine.
  *
- * Three in-process workers run in parallel:
+ * Four in-process workers run in parallel:
  *   1. Opus 5.5: correctness + security (deepsec if an approved executable exists)
- *   2. Codex Astra: correctness + scope (unrequested additions)
+ *   2. Codex Astra: correctness
  *   3. DeepSeek 4.1 Flash: pre-mortem, "why did this break 3 months later?"
+ *   4. slop-reviewer (balanced tier): doc rules and unneeded additions
  * A reviewer on the balanced tier then checks each finding against the code
  * and returns one deduplicated report. fix:true hands it to a worktree writer.
  *
@@ -30,10 +31,11 @@ import { notifyDispatchDone } from "../herdr.ts";
 import { DispatchProgress } from "../progress.ts";
 import { renderDispatchResult } from "../render.ts";
 import {
-	correctnessScopeTask,
 	correctnessSecurityTask,
+	correctnessTask,
 	fixTask,
 	preMortemTask,
+	slopTask,
 	verifyAggregateTask,
 } from "./pr-review-prompts.ts";
 import { pinFixHead, assertFixHead } from "./review-target.ts";
@@ -206,8 +208,9 @@ const oneLine = (text: string) => truncateText(text, 300).text.replace(/\s+/g, "
 
 const STEPS = [
 	{ agent: "reviewer", task: "Review: correctness + security (Opus 5.5)" },
-	{ agent: "reviewer", task: "Review: correctness + scope (Codex Astra)" },
+	{ agent: "reviewer", task: "Review: correctness (Codex Astra)" },
 	{ agent: "scout", task: "Pre-mortem: 3-month failure (DeepSeek 4.1 Flash)" },
+	{ agent: "slop-reviewer", task: "Slop: docs rules and unneeded additions" },
 	{ agent: "reviewer", task: "Verify and aggregate" },
 ];
 const FIX_STEP = { agent: "writer", task: "Fix explicitly authorized findings" };
@@ -232,7 +235,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 		name: "pr_review",
 		label: "PR Review",
 		description:
-			"Review a PR or diff with two code reviewers (Opus 5.5, Codex Astra) and a 3-month pre-mortem in parallel, then one pass that verifies findings against the code. fix:true fixes validated findings in a worktree that merges back.",
+			"Review a PR or diff with two code reviewers (Opus 5.5, Codex Astra), a 3-month pre-mortem, and a slop review in parallel, then one pass that verifies findings against the code. fix:true fixes validated findings in a worktree that merges back.",
 		promptSnippet:
 			"Multi-model PR review with optional fixes",
 		promptGuidelines: [
@@ -272,6 +275,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 			const required = [
 				"reviewer",
 				"scout",
+				"slop-reviewer",
 				"writer",
 			];
 			const missing = required.filter((n) => !byName.has(n));
@@ -343,7 +347,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 				);
 
 				// ---- review fan-out (context firewall per reviewer) ----
-				emit("pr_review: 2 reviewers + pre-mortem, then verification…");
+				emit("pr_review: 2 code reviewers, pre-mortem, and slop review, then verification…");
 				const progress = new DispatchProgress(
 					"parallel",
 					[...STEPS, ...(wantFix ? [FIX_STEP] : [])].map((item) => ({ ...item, herdr: params.herdr })),
@@ -378,13 +382,13 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 
 					const reviewerCtx = { cwd: ctx.cwd, diffFile, intent: params.intent };
 					// Opus and Astra exclude each other so failover never duplicates a reviewer.
-					const [opus, astra, preMortem] = await Promise.all([
+					const [opus, astra, preMortem, slop] = await Promise.all([
 						runStep(0, correctnessSecurityTask(reviewerCtx, deepsecPath), {
 							spec: REVIEW_MODELS.opus,
 							excludeModels: [REVIEW_MODELS.astra],
 							claim: true,
 						}),
-						runStep(1, correctnessScopeTask(reviewerCtx), {
+						runStep(1, correctnessTask(reviewerCtx), {
 							spec: REVIEW_MODELS.astra,
 							excludeModels: [REVIEW_MODELS.opus],
 							claim: true,
@@ -394,8 +398,9 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 							steerByQuota: true,
 							claim: true,
 						}),
+						runStep(3, slopTask(reviewerCtx), { claim: true }),
 					]);
-					const reviews = [opus, astra, preMortem];
+					const reviews = [opus, astra, preMortem, slop];
 
 					if (signal?.aborted) {
 						return {
@@ -423,10 +428,11 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 
 					const reports = [
 						report(opus, "Correctness + security reviewer"),
-						report(astra, "Correctness + scope reviewer"),
+						report(astra, "Correctness reviewer"),
 						report(preMortem, "Pre-mortem"),
+						report(slop, "Slop reviewer"),
 					];
-					const aggregateResult = await runStep(3, verifyAggregateTask({ cwd: ctx.cwd, label, reports }), {});
+					const aggregateResult = await runStep(4, verifyAggregateTask({ cwd: ctx.cwd, label, reports }), {});
 					const findings =
 						aggregateResult.status === "ok"
 							? truncateText(aggregateResult.text || "(no output)").text

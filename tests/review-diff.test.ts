@@ -169,11 +169,11 @@ test("workflow credit fallbacks never duplicate models within parallel phases", 
 		assert.equal(new Set(identities).size, identities.length);
 		assert.equal(successful.length, 2, "Astra and Sol succeed; duplicate fallback workers stop");
 	};
-	assertDistinct(result.details.items.slice(0, 3));
-	assert.equal(result.details.items.length, 4, "two reviewers, pre-mortem, then one verify-aggregate step");
-	assert.equal(result.details.items[3].status, "ok");
+	assertDistinct(result.details.items.slice(0, 4));
+	assert.equal(result.details.items.length, 5, "four parallel steps, then one verify-aggregate step");
+	assert.equal(result.details.items[4].status, "ok");
 	const verifyPrompt = prompts.find(p => p.includes("VERIFY and AGGREGATE")) ?? "";
-	for (const label of ["Correctness + security reviewer", "Correctness + scope reviewer", "Pre-mortem"])
+	for (const label of ["Correctness + security reviewer", "Correctness reviewer", "Pre-mortem", "Slop reviewer"])
 		assert.ok(verifyPrompt.includes(`### ${label} [actual model:`), `verify step receives ${label}`);
 
 });

@@ -26,18 +26,19 @@ live in `details` (UI-only). Raw worker transcripts are not returned to the pare
 
 "Review a PR" without leaving dispatch. Resolves the diff (GitHub PR number
 via `gh`, a git rev-range, a branch vs HEAD, or default `<origin/base>...HEAD`),
-then runs four read-only steps:
+then runs five read-only steps:
 
 ```text
 pr_review
 ├─ parallel
 │  ├─ Opus 5.5 (`reviewer`): correctness + security; runs an operator-installed `deepsec` outside the checkout if found
-│  ├─ Codex Astra (`reviewer`): correctness + scope (unrequested docs, tests, abstractions)
-│  └─ DeepSeek 4.1 Flash (`scout`): pre-mortem, "this merged; why did it break 3 months later?"
+│  ├─ Codex Astra (`reviewer`): correctness
+│  ├─ DeepSeek 4.1 Flash (`scout`): pre-mortem, "this merged; why did it break 3 months later?"
+│  └─ `slop-reviewer` (balanced tier): checks added docs against its documentation rules and the code; flags unneeded tests and additions
 └─ `reviewer` (balanced tier): check each finding against the code, merge duplicates, return one report and a verdict
 ```
 
-Opus and Astra exclude each other on failover. The three parallel steps share a
+Opus and Astra exclude each other on failover. The four parallel steps share a
 model-identity guard, so quota routing or fallback never runs one model twice.
 Each report is labeled with its actual model and failed attempts. If both code
 reviewers fail, the tool stops. If verification fails, the unverified reports

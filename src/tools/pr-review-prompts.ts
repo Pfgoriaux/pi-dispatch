@@ -56,16 +56,22 @@ export function correctnessSecurityTask(c: ReviewContext, deepsecPath?: string):
 	return [...lines, "", ...FINDING_FORMAT].join("\n");
 }
 
-export function correctnessScopeTask(c: ReviewContext): string {
+export function correctnessTask(c: ReviewContext): string {
 	return [
-		...header(c, "CODE REVIEW this pull request for correctness and scope."),
+		...header(c, "CODE REVIEW this pull request for correctness."),
 		"",
 		CORRECTNESS,
-		"Scope: flag additions the intent does not need: speculative abstractions or config, docs that restate the code, " +
-			"tests that only assert types or the happy path, roadmaps and TODOs, and catch blocks that swallow errors. " +
-			"Tests for real edge cases and docs for non-obvious decisions are not slop.",
 		"",
 		...FINDING_FORMAT,
+	].join("\n");
+}
+
+export function slopTask(c: ReviewContext): string {
+	return [
+		...header(c, "SLOP REVIEW this pull request: unverified or unnecessary docs, low-value tests, speculative additions, and padding."),
+		"",
+		"Apply the documentation rules from your instructions to every added or changed Markdown line, and verify its factual claims against the code.",
+		"Return your findings as your FINAL ANSWER in the output format from your instructions.",
 	].join("\n");
 }
 
@@ -94,11 +100,12 @@ export function verifyAggregateTask(c: { cwd: string; label: string; reports: Re
 		...c.reports.map((r) => `### ${r.label}\n${r.text}`),
 		"",
 		"For each finding, open the cited file and line and check that the issue exists as described.",
-		"Keep confirmed findings, merge duplicates (note when both reviewers found it), and rank by severity.",
+		"Keep confirmed findings, merge duplicates (note when two reviewers found it), and rank by severity.",
 		"The pre-mortem comes from a cheap model: keep its risk only if the code supports it.",
 		"",
 		"Return ONE report as your FINAL ANSWER in Markdown:",
-		"## Findings (confirmed, by severity, same format as the reviewers, with file:line)",
+		"## Findings (confirmed bugs and security issues, by severity, with file:line)",
+		"## Slop (confirmed slop findings, with the fix)",
 		"## 3-month risk (the substantiated pre-mortem risk, or \"None\")",
 		"## Rejected (one line each: finding, evidence it is false)",
 		"## Verdict (one line: approve / approve-with-fixes / request-changes)",
