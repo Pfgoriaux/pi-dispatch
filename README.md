@@ -48,23 +48,31 @@ before writing and merging so findings cannot silently target another revision.
 
 ## feature_plan
 
-"What would implementing X entail?" — Five diverse scouts (Opus 5.5, Astra,
-DeepSeek 4.1, Kimi 3, GLM 5.3) explore the repository from the technical-risk
-lens. After the initial scout phase, each scout sees the others' conclusions
-in a council phase to refine their views. Fable 5.1 then drafts the final plan.
-Each parallel phase uses distinct model identities, including provider aliases
-for Kimi and DeepSeek. Quota routing and retries cannot duplicate another
-worker's model. Fewer scouts run when no unique candidate remains; at least
-two must succeed. The council uses a fresh guard, so models can return in
-that later phase. Planning and review verification are separate phases too.
+"What would implementing X entail?" Four sequential read-only steps:
 
-Model routing:
-- **Opus 5.5 & Astra**: top-tier models with quota-aware counterpart routing
-- **DeepSeek 4.1**: Flash, quota-aware neuralwatt/synthetic routing, then
-  Sonnet 5.5 as fallback; uses a simplified
-  "find the simplest solution" prompt
-- **Kimi 3**: quota-aware neuralwatt/synthetic routing
-- **GLM 5.3**: neuralwatt only (no synthetic counterpart for plain GLM)
+```text
+feature_plan
+├─ Architect (Astra): discover the code, draft the design
+├─ Pre-mortem (DeepSeek 4.1 Flash): "if this breaks in 3 months, why?"
+├─ Challenger (Opus 5.5): review the draft, informed by the pre-mortem
+└─ Architect (the draft's model): resolve the challenge, return the plan
+   ├─ Execution tasks: Executor, Depends on, Owns, Behavior, Contracts, Verify, Escalate when
+   └─ Decisions for you: product decisions only
+```
+
+Each step receives the earlier outputs in full, up to the 12 KB text cap. The
+architect and challenger fall back to their cross-provider peer, then Sol 6.1,
+so the default planners stay on OpenAI and Anthropic. They share one diversity pool: the
+challenger never runs on the architect's model. A failed pre-mortem or
+challenge is passed on as unavailable; a failed final step returns the draft,
+pre-mortem, and challenge instead. Override models with
+`DISPATCH_ARCHITECT_MODEL`, `DISPATCH_PREMORTEM_MODEL`, and
+`DISPATCH_CHALLENGER_MODEL`.
+
+The tool does not execute the plan. Each task names its executor: `long`
+(Kimi 3) by default, GLM 5.3 for small bounded tasks, or `precise` (Opus 5.5)
+for auth, migrations, concurrency, or shared interfaces. Dispatch the task
+contract to `writer` with that model.
 
 Read-only, no Herdr needed.
 
@@ -412,7 +420,7 @@ live in `src/profiles.ts` and are overridable with
 Tasks may also pick a model directly: `tasks: [{agent: "writer", model: "long", task}]`
 accepts a tier name or an explicit `provider/id` and skips the agent's roster —
 the standard way to run long-context writes on Kimi-3 while `writer` defaults
-to `precise` (Opus 5.5). The feature-plan Opus override is `DISPATCH_OPUS55_MODEL`.
+to `precise` (Opus 5.5).
 
 ### Rosters as failover
 

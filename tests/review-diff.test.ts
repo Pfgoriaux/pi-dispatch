@@ -129,11 +129,11 @@ test("workflow credit fallbacks never duplicate models within parallel phases", 
 	});
 	let tool: any;
 	const prompts: string[] = [];
-	let failCouncil = false;
+	let failStep: string | undefined;
 	t.mock.method(ModelRuntime.prototype, "hasConfiguredAuth", () => true);
 	t.mock.method(ModelRuntime.prototype, "streamSimple", (model: Model<Api>, context: unknown) => {
 		prompts.push(JSON.stringify(context));
-		const failed = model.provider !== "openai-codex" || (failCouncil && JSON.stringify(context).includes("Review your initial findings"));
+		const failed = model.provider !== "openai-codex" || (failStep !== undefined && JSON.stringify(context).includes(failStep));
 		const message: AssistantMessage = {
 			role: "assistant", api: model.api, provider: model.provider, model: model.id,
 			content: failed ? [] : [{ type: "text", text: "No findings." }],
@@ -174,25 +174,43 @@ test("workflow credit fallbacks never duplicate models within parallel phases", 
 	assert.ok(result.details.items[0].attempts > 0, "security starts before other roles claim all its candidates");
 
 	registerFeaturePlanTool({ registerTool: (value: unknown) => { tool = value; } } as unknown as ExtensionAPI);
-	const plan = await tool.execute("test", { idea: "test distinct model fallback", herdr: false }, undefined, undefined, {
-		cwd: path.resolve(import.meta.dirname, ".."), isProjectTrusted: () => false, modelRegistry: registry,
-	});
-	assert.equal(plan.details.items.length, 11);
-	assertDistinct(plan.details.items.slice(0, 5));
-	assertDistinct(plan.details.items.slice(5, 10));
-	assert.ok(plan.details.items.slice(5, 10).filter((r: WorkerResult) => r.attempts === 0).every((r: WorkerResult) => r.error?.startsWith("Skipped:")));
-	assert.match(plan.content[0].text, /actual model:/);
+	const runPlan = async () => {
+		prompts.length = 0;
+		return tool.execute("test", { idea: "test architect flow", herdr: false }, undefined, undefined, {
+			cwd: path.resolve(import.meta.dirname, ".."), isProjectTrusted: () => false, modelRegistry: registry,
+		});
+	};
+	const promptWith = (marker: string) => prompts.filter(p => p.includes(marker)).at(-1) ?? "";
 
-	failCouncil = true;
-	const fallback = await tool.execute("test", { idea: "test retained scout attribution", herdr: false }, undefined, undefined, {
-		cwd: path.resolve(import.meta.dirname, ".."), isProjectTrusted: () => false, modelRegistry: registry,
-	});
-	const labels = ["Opus 5.5", "Astra", "DeepSeek 4.1", "Kimi 3", "GLM 5.3"];
-	fallback.details.items.slice(0, 5).forEach((scout: WorkerResult, i: number) => {
-		if (scout.status !== "ok") return;
-		assert.equal(fallback.details.items[5 + i].status, "error");
-		assert.ok(fallback.content[0].text.includes(`## ${labels[i]} [actual model: ${scout.model}]`));
-	});
+	const plan = await runPlan();
+	const [draft, preMortem, challenge, final] = plan.details.items as WorkerResult[];
+	assert.equal(plan.details.items.length, 4);
+	assert.equal(draft.model, "openai-codex/gpt-6-astra", "architect defaults to Astra");
+	assert.equal(final.model, draft.model, "the draft's architect writes the final plan");
+	assert.notEqual(modelIdentity(challenge.model!), modelIdentity(draft.model!), "challenger never shares the architect's model");
+	assert.equal(preMortem.status, "ok");
+	assert.match(promptWith("Run a pre-mortem"), /Three months later it broke/);
+	assert.match(promptWith("Challenge this feature design"), /PRE-MORTEM/);
+	assert.match(promptWith("Finalize your design"), /Decisions for you/);
+	assert.equal(plan.details.aggregated, true);
+	assert.match(plan.content[0].text, /Models: architect: openai-codex\/gpt-6-astra/);
+
+	failStep = "Challenge this feature design";
+	const noChallenge = await runPlan();
+	assert.equal(noChallenge.details.items[2].status, "error");
+	assert.equal(noChallenge.details.items[3].status, "ok", "final plan still runs without a challenge");
+	assert.match(promptWith("Finalize your design"), /DESIGN CHALLENGE:\\n\(unavailable:/);
+
+	failStep = "Finalize your design";
+	const noFinal = await runPlan();
+	assert.equal(noFinal.details.aggregated, false);
+	assert.match(noFinal.content[0].text, /## Architect draft[\s\S]*## Pre-mortem[\s\S]*## Design challenge/);
+	assert.match(noFinal.content[0].text, /final architect step failed/);
+
+	failStep = "You are the architect for this feature";
+	const noDraft = await runPlan();
+	assert.equal(noDraft.details.items.length, 1, "no downstream steps without a draft");
+	assert.match(noDraft.content[0].text, /architect draft failed/);
 });
 
 test("PR fix schema advertises opt-in commits", () => {
