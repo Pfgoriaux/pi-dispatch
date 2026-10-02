@@ -89,10 +89,7 @@ export const DIVERSE_PAIR: readonly [string, string] = [
 	envModel("DISPATCH_DIVERSE_1_MODEL") ?? "aperture/neuralwatt/kimi-k3",
 ];
 
-/**
- * PR review roster: two top models from different providers, so failover and
- * blind spots are not shared, plus a cheap pre-mortem.
- */
+/** PR review models. Opus and Astra exclude each other on failover. */
 export const REVIEW_MODELS = {
 	opus: envModel("DISPATCH_REVIEW_OPUS_MODEL") ?? "anthropic/claude-opus-5-5",
 	astra: envModel("DISPATCH_REVIEW_ASTRA_MODEL") ?? "openai-codex/gpt-6-astra",

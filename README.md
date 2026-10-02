@@ -38,8 +38,10 @@ pr_review
 └─ `reviewer` (balanced tier): check each finding against the code, merge duplicates, return one report and a verdict
 ```
 
-Opus and Astra exclude each other on failover. The four parallel steps share a
-model-identity guard, so quota routing or fallback never runs one model twice.
+Opus and Astra exclude each other on failover and share a model-identity guard,
+so quota routing or fallback never gives both reviewers the same model. The
+pre-mortem and slop steps stay outside the guard and cannot take a reviewer's
+last fallback.
 Each report is labeled with its actual model and failed attempts. If both code
 reviewers fail, the tool stops. If verification fails, the unverified reports
 are returned. Override models with `DISPATCH_REVIEW_OPUS_MODEL`,

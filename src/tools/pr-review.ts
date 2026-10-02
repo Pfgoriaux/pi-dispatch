@@ -195,9 +195,9 @@ export async function resolveDiff(
 const oneLine = (text: string) => truncateText(text, 300).text.replace(/\s+/g, " ");
 
 const STEPS = [
-	{ agent: "reviewer", task: "Review: correctness + security (Opus 5.5)" },
-	{ agent: "reviewer", task: "Review: correctness (Codex Astra)" },
-	{ agent: "scout", task: "Pre-mortem: 3-month failure (DeepSeek 4.1 Flash)" },
+	{ agent: "reviewer", task: "Review: correctness + security" },
+	{ agent: "reviewer", task: "Review: correctness" },
+	{ agent: "scout", task: "Pre-mortem: 3-month failure" },
 	{ agent: "slop-reviewer", task: "Slop: docs rules and unneeded additions" },
 	{ agent: "reviewer", task: "Verify and aggregate" },
 ];
@@ -337,7 +337,8 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 				);
 				try {
 					await progress.open(ctx.cwd, signal);
-					// One pool: fallbacks never give two parallel roles the same model.
+					// The two code reviewers share one pool so fallback never gives them the same model.
+					// Pre-mortem and slop stay out of it: they must not take a reviewer's last fallback.
 					const pool = new ModelDiversity();
 					const runStep = (
 						index: number,
@@ -378,9 +379,8 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 						runStep(2, preMortemTask(reviewerCtx), {
 							spec: REVIEW_MODELS.preMortem,
 							steerByQuota: true,
-							claim: true,
 						}),
-						runStep(3, slopTask(reviewerCtx), { claim: true }),
+						runStep(3, slopTask(reviewerCtx), {}),
 					]);
 					const reviews = [opus, astra, preMortem, slop];
 
@@ -414,7 +414,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 						report(preMortem, "Pre-mortem"),
 						report(slop, "Slop reviewer"),
 					];
-					const aggregateResult = await runStep(4, verifyAggregateTask({ cwd: ctx.cwd, label, reports }), {});
+					const aggregateResult = await runStep(4, verifyAggregateTask({ cwd: ctx.cwd, label, diffFile, reports }), {});
 					const findings =
 						aggregateResult.status === "ok"
 							? truncateText(aggregateResult.text || "(no output)").text
@@ -498,6 +498,8 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					} else if (!wantFix) {
 						fixReport =
 							"\n\n(Fix skipped: fix=false. Ask to fix the findings, or run dispatch writer when ready.)";
+					} else if (!fixRequested) {
+						fixReport = "\n\n(Fix skipped: verification did not finish, so no findings are validated.)";
 					}
 
 					// ---- notification & result ----

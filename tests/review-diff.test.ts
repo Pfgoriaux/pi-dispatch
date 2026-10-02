@@ -132,7 +132,7 @@ test("workflow credit fallbacks never duplicate models within parallel phases", 
 	t.mock.method(ModelRuntime.prototype, "hasConfiguredAuth", () => true);
 	t.mock.method(ModelRuntime.prototype, "streamSimple", (model: Model<Api>, context: unknown) => {
 		prompts.push(JSON.stringify(context));
-		const failed = model.provider !== "openai-codex";
+		const failed = model.provider !== "openai-codex" || model.id.includes("astra");
 		const message: AssistantMessage = {
 			role: "assistant", api: model.api, provider: model.provider, model: model.id,
 			content: failed ? [] : [{ type: "text", text: "No findings." }],
@@ -163,13 +163,10 @@ test("workflow credit fallbacks never duplicate models within parallel phases", 
 	});
 	assert.match(result.content[0].text, /# PR review/);
 	assert.match(result.content[0].text, /No findings|Fix skipped/);
-	const assertDistinct = (items: WorkerResult[]) => {
-		const successful = items.filter(r => r.status === "ok");
-		const identities = successful.map(r => modelIdentity(r.model!));
-		assert.equal(new Set(identities).size, identities.length);
-		assert.equal(successful.length, 2, "Astra and Sol succeed; duplicate fallback workers stop");
-	};
-	assertDistinct(result.details.items.slice(0, 4));
+	const [opus, astra, preMortem, slop] = result.details.items as WorkerResult[];
+	assert.equal([opus, astra].filter(r => r.status === "ok").length, 1, "only one code reviewer may take the shared Sol fallback");
+	assert.equal(preMortem.status, "ok", "pre-mortem falls back outside the reviewer guard");
+	assert.equal(slop.status, "ok", "slop falls back outside the reviewer guard");
 	assert.equal(result.details.items.length, 5, "four parallel steps, then one verify-aggregate step");
 	assert.equal(result.details.items[4].status, "ok");
 	const verifyPrompt = prompts.find(p => p.includes("VERIFY and AGGREGATE")) ?? "";
