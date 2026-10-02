@@ -96,6 +96,19 @@ export const REVIEW_MODELS = {
 	preMortem: envModel("DISPATCH_REVIEW_PREMORTEM_MODEL") ?? "aperture/neuralwatt/deepseek-v4.1-flash",
 } as const;
 
+/**
+ * Last resort for every pr_review and feature_plan step, tried after the
+ * step's own chain: GLM 5.3 on Neuralwatt, then on Synthetic.
+ * Aperture has no Synthetic GLM 5.3 route, so the second spec is direct.
+ */
+export const WORKFLOW_FALLBACK_MODELS: readonly string[] = [
+	"aperture/neuralwatt/glm-5.3",
+	"synthetic/hf:zai-org/GLM-5.3",
+];
+
+/** Never used by pr_review or feature_plan steps, including as Codex's terminal fallback. */
+export const WORKFLOW_EXCLUDED_MODELS: readonly string[] = ["openai-codex/gpt-6.1-sol"];
+
 /** True when a frontmatter `model` value names a tier. */
 export function isProfileTier(spec: string | undefined): spec is ProfileTier {
 	return !!spec && PROFILE_TIERS.has(spec);

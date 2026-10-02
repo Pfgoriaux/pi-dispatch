@@ -165,6 +165,17 @@ export function withoutModels(candidates: RankedCandidate[], excluded: readonly 
 	return candidates.filter((c) => !ids.has(routeId(c.modelSpec)));
 }
 
+/** Append last-resort specs not already in the chain, keeping their order. */
+export function withLastResorts(candidates: RankedCandidate[], specs: readonly string[] = [], thinking: string): RankedCandidate[] {
+	const present = new Set(candidates.map((c) => routeId(c.modelSpec)));
+	const extra = specs.filter((spec) => !present.has(routeId(spec))).map((modelSpec) => ({
+		modelSpec,
+		thinking,
+		entry: { provider: modelSpec.slice(0, modelSpec.indexOf("/")), model: modelSpec.slice(modelSpec.indexOf("/") + 1), thinking, weight: 1 },
+	}));
+	return [...candidates, ...extra];
+}
+
 /** Exact-model equivalence only; unknown models must never be guessed. */
 export function quotaFamily(spec: string): string | undefined {
 	const route = routeId(spec);

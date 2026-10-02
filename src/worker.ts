@@ -32,6 +32,7 @@ import {
 	loadRosterConfig,
 	markCooldown,
 	resolveCandidates,
+	withLastResorts,
 	withProviderFallbacks,
 	withoutModels,
 	type RankedCandidate,
@@ -65,6 +66,8 @@ export interface RunWorkerOptions {
 	steerByQuota?: boolean;
 	/** Model specs never tried, not even as failover (keeps parallel workers on distinct models). */
 	excludeModels?: readonly string[];
+	/** Model specs tried after every other candidate, in order (workflow last resort). */
+	fallbackModels?: readonly string[];
 	/** Synchronous phase-wide claim, checked against the resolved model on every attempt. */
 	claimModel?: (spec: string) => boolean;
 	/** Thinking level forced alongside modelSpec (defaults to "high"). */
@@ -288,6 +291,7 @@ export async function runWorker(
 			},
 		}]));
 	}
+	candidates = withLastResorts(candidates, options.fallbackModels, thinking!);
 	// Last, so quota routing and parent inheritance cannot reintroduce an excluded model.
 	candidates = withoutModels(candidates, options.excludeModels);
 	if (candidates.length === 0) {
