@@ -52,9 +52,6 @@ modules own their respective behavior; the workflow tools `pr_review` and
 Agent frontmatter `model:` names an effort tier (`cheap`/`balanced`/`precise`/`long`)
 expanded by `src/profiles.ts` (env-overridable) — see the Effort tiers section
 in [README.md](README.md).
-Read [spikes-phase0.md](docs/spikes-phase0.md) only when investigating the pi SDK
-version-specific behavior measured there.
-
 Pi loads `src/index.ts` directly. Run `npm ci --ignore-scripts`, then
 `npm run check` for TypeScript and deterministic regression tests. These use
 mocked commands/models and disposable Git fixtures; they do not call providers or
