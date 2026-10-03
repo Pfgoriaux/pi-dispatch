@@ -26,6 +26,10 @@ test("fixes require the reviewed head and refuse a moved checkout", async (t) =>
 	assert.equal(await pinFixHead(pi, cwd, "HEAD~1...HEAD"), head);
 	assert.equal(await pinFixHead(pi, cwd, "other"), head);
 	assert.equal(await pinFixHead(pi, cwd, "42"), head);
+	const viewed: string[][] = [];
+	const urlPi = { exec: async (_cmd: string, args: string[]) => { viewed.push(args); return { code: 0, stdout: head, stderr: "", killed: false }; } } as unknown as ExtensionAPI;
+	assert.equal(await pinFixHead(urlPi, cwd, "https://github.com/acme/widget/pull/42"), head);
+	assert.deepEqual(viewed[0].slice(0, 5), ["pr", "view", "42", "-R", "acme/widget"]);
 	await assert.rejects(() => pinFixHead(pi, cwd, "HEAD...other"), /differs/);
 	const differentPr = { exec: async () => ({ code: 0, stdout: base, stderr: "", killed: false }) } as unknown as ExtensionAPI;
 	await assert.rejects(() => pinFixHead(differentPr, cwd, "42"), /differs/);

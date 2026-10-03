@@ -8,7 +8,9 @@ export interface PrRef {
 }
 
 const PR_URL = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)(?:[/?#].*)?$/i;
-const REMOTE_REPO = /github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/i;
+/** `git remote -v` fetch line for a github.com https or scp-style ssh URL. */
+const REMOTE_LINE = /^(\S+)\s+(?:https:\/\/(?:[^@/\s]+@)?|ssh:\/\/git@|git@)github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/? \(fetch\)$/i;
+const OID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
 /** gh's error when GitHub refuses a diff over 20,000 lines or 300 files. */
 const TOO_LARGE = /too_large|HTTP 406|diff exceeded the maximum/i;
 
@@ -36,22 +38,24 @@ function runner(pi: ExtensionAPI, cwd: string, signal?: AbortSignal): Run {
 	};
 }
 
-/** Name of the session remote that points at `repo` on GitHub, if any. */
+/** Name of the session remote that fetches `repo` from GitHub, if any. */
 async function remoteFor(run: Run, repo: string): Promise<string | undefined> {
-	const lines = (await run("git", ["remote", "-v"])).split("\n");
 	const want = repo.toLowerCase();
-	const line = lines.find((l) => REMOTE_REPO.exec(l.split(/\s+/)[1] ?? "")?.[1].toLowerCase() === want);
-	return line?.split(/\s+/)[0];
+	for (const line of (await run("git", ["remote", "-v"])).split("\n")) {
+		const match = REMOTE_LINE.exec(line.trim());
+		if (match?.[2].toLowerCase() === want) return match[1];
+	}
+	return undefined;
 }
 
 /** Reviewers read the session checkout, so a PR from another repo cannot be reviewed here. */
 async function requireRemote(run: Run, repo: string): Promise<string> {
 	const remote = await remoteFor(run, repo);
 	if (remote) return remote;
-	throw new Error(
+	throw new Error(truncateText(
 		`pr_review: the PR belongs to ${repo}, but the session repo has no remote for it. ` +
 			`Run pr_review from a checkout of ${repo}; reviewers verify findings against the session's code.`,
-	);
+	).text);
 }
 
 /**
@@ -73,12 +77,13 @@ async function fetchedDiff(run: Run, ref: PrRef): Promise<string> {
 	const view = await run("gh", ["pr", "view", ref.number, ...repoArgs(ref), "--json", "url,baseRefName,headRefOid"]);
 	const info = JSON.parse(view) as { url: string; baseRefName: string; headRefOid: string };
 	const remote = await requireRemote(run, parsePrRef(info.url)?.repo ?? info.url);
-	const fetchOid = async (src: string) => {
-		await run("git", ["fetch", "--no-tags", "--quiet", remote, src], 300000);
-		return (await run("git", ["rev-parse", "--verify", "FETCH_HEAD^{commit}"])).trim();
-	};
-	const base = await fetchOid(`refs/heads/${info.baseRefName}`);
-	const head = await fetchOid(`refs/pull/${ref.number}/head`);
-	if (head !== info.headRefOid) throw new Error("pr_review: the PR head moved while fetching; retry.");
-	return run("git", ["diff", "--no-ext-diff", "--no-textconv", `${base}...${head}`, "--"], 120000);
+	// Exact SHAs, not FETCH_HEAD, so a concurrent fetch cannot swap either side.
+	const base = (await run("git", ["ls-remote", "--", remote, `refs/heads/${info.baseRefName}`])).split(/\s/)[0];
+	const head = info.headRefOid;
+	if (!OID.test(base) || !OID.test(head)) throw new Error("pr_review: cannot resolve the PR base and head commits.");
+	await run("git", ["fetch", "--no-tags", "--quiet", "--", remote, base, head], 300000);
+	const diff = await run("git", ["diff", "--no-ext-diff", "--no-textconv", `${base}...${head}`, "--"], 120000);
+	if (diff.trim()) return diff;
+	// A merged PR's head is already in its base, so the local diff is empty.
+	throw new Error(`pr_review: the local diff of PR #${ref.number} is empty; for a merged PR, pass a rev-range instead.`);
 }

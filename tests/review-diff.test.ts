@@ -100,35 +100,52 @@ const TOO_LARGE = { code: 1, stderr: "could not find pull request diff: HTTP 406
 const REMOTES = { stdout: "origin\tgit@github.com:Pfgoriaux/cassian.git (fetch)\norigin\tgit@github.com:Pfgoriaux/cassian.git (push)\n" };
 const VIEW = { stdout: JSON.stringify({ url: "https://github.com/Pfgoriaux/cassian/pull/127", baseRefName: "main", headRefOid: "b".repeat(40) }) };
 
-test("a diff GitHub refuses as too large is fetched and diffed locally", async (t) => {
+const BASE = "a".repeat(40);
+const HEAD = "b".repeat(40);
+const LARGE_PR = (diff: string) => ({
+	"gh diff": TOO_LARGE,
+	"gh view": VIEW,
+	"git remote": REMOTES,
+	"git ls-remote": { stdout: `${BASE}\trefs/heads/main\n` },
+	"git fetch": {},
+	"git diff": { stdout: diff },
+});
+
+test("a diff GitHub refuses as too large is fetched by SHA and diffed locally", async (t) => {
 	const dir = fixture(t);
-	const { pi, calls } = fakeExec({
-		"gh diff": TOO_LARGE,
-		"gh view": VIEW,
-		"git remote": REMOTES,
-		"git fetch": {},
-		"git rev-parse": [{ stdout: "a".repeat(40) + "\n" }, { stdout: "b".repeat(40) + "\n" }],
-		"git diff": { stdout: "diff --git a/x b/x\n" },
-	});
+	const { pi, calls } = fakeExec(LARGE_PR("diff --git a/x b/x\n"));
 	const result = await resolveDiff(pi, "https://github.com/Pfgoriaux/cassian/pull/127/files", dir, dir);
 	assert.equal(result.label, "Pfgoriaux/cassian PR #127");
 	assert.equal(fs.readFileSync(result.diffFile, "utf8"), "diff --git a/x b/x\n");
-	const fetches = calls.filter(([cmd, sub]) => cmd === "git" && sub === "fetch").map((c) => c.at(-1));
-	assert.deepEqual(fetches, ["refs/heads/main", "refs/pull/127/head"]);
+	const call = (sub: string) => calls.find(([cmd, s]) => cmd === "git" && s === sub)!.slice(1);
+	assert.deepEqual(call("ls-remote"), ["ls-remote", "--", "origin", "refs/heads/main"]);
+	assert.deepEqual(call("fetch"), ["fetch", "--no-tags", "--quiet", "--", "origin", BASE, HEAD]);
+	assert.ok(call("diff").includes(`${BASE}...${HEAD}`));
 	assert.ok(calls.some((c) => c[0] === "gh" && c[2] === "diff" && c.includes("-R") && c.includes("Pfgoriaux/cassian")));
-	assert.ok(calls.some((c) => c[1] === "diff" && c.includes(`${"a".repeat(40)}...${"b".repeat(40)}`)));
 });
 
-test("the local fallback refuses a PR head that moved during the fetch", async (t) => {
+test("an empty local diff of a large PR is an error, not an empty review", async (t) => {
 	const dir = fixture(t);
-	const { pi } = fakeExec({
-		"gh diff": TOO_LARGE,
-		"gh view": VIEW,
-		"git remote": REMOTES,
-		"git fetch": {},
-		"git rev-parse": [{ stdout: "a".repeat(40) }, { stdout: "c".repeat(40) }],
+	const { pi } = fakeExec(LARGE_PR(""));
+	await assert.rejects(resolveDiff(pi, "127", dir, dir), /local diff of PR #127 is empty/);
+});
+
+test("only a github.com fetch URL selects the remote", async (t) => {
+	const dir = fixture(t);
+	const url = "https://github.com/Pfgoriaux/cassian/pull/1";
+	for (const remotes of [
+		"origin\thttps://evilgithub.com/Pfgoriaux/cassian.git (fetch)\n",
+		"origin\thttps://example.com/x.git (fetch)\norigin\tgit@github.com:Pfgoriaux/cassian.git (push)\n",
+	]) {
+		const { pi } = fakeExec({ "git remote": { stdout: remotes } });
+		await assert.rejects(resolveDiff(pi, url, dir, dir), /no remote for it/);
+	}
+	const { pi, calls } = fakeExec({
+		"git remote": { stdout: "upstream\tssh://git@github.com/pfgoriaux/Cassian (fetch)\n" },
+		"gh diff": { stdout: "diff --git a/x b/x\n" },
 	});
-	await assert.rejects(resolveDiff(pi, "127", dir, dir), /head moved/);
+	assert.equal((await resolveDiff(pi, url, dir, dir)).empty, false);
+	assert.ok(calls.some(([cmd]) => cmd === "gh"));
 });
 
 test("a PR URL from another repo is refused before calling GitHub", async (t) => {
