@@ -263,13 +263,12 @@ not containment: already reparented/daemonized processes can escape the snapshot
 
 Tasks marked `worktree: true` in parallel or chain mode run a child `pi` process
 in a separate Git worktree. This mode commits worker changes and merges branches
-back automatically; use it only with authorization for those effects. It also
-updates and commits `.gitignore` bookkeeping when needed.
+back automatically; use it only with authorization for those effects.
 
 ```
 master agent
  └─ dispatch({ tasks: [{agent: "writer", task, worktree: true} × N] })
-      ├─ git worktree add .dispatch/worktrees/t1 -b dispatch/<runId>/t1
+      ├─ git worktree add <worktree root>/dispatch-<runId>-t1 -b dispatch/<runId>/t1
       ├─ child pi #1 (cwd = worktree 1) ─ commits on its branch
       ├─ child pi #2 (cwd = worktree 2) ─ commits on its branch
       └─ after ALL finish: sequential `git merge --no-edit` per branch,
@@ -278,10 +277,14 @@ master agent
 ```
 
 - **Requires** a committed-clean git repo root (`git status --porcelain` empty) and the session cwd to be the repo root; per-task `cwd` is not allowed for worktree tasks.
-- `.dispatch/` is added to `.gitignore` on first use; merge bookkeeping can commit
-  that change automatically. Startup prunes only missing-worktree metadata;
-  it never deletes existing directories by age. Dirty and locked worktrees remain
-  under `.dispatch/worktrees/` for manual inspection/recovery.
+- Worktree root: repos inside the workspace (the parent of `PI_WORKTREE_ROOT`,
+  default `~/eden/.worktrees`) mirror their main checkout's path under it, so
+  `~/eden/products/app` uses `~/eden/.worktrees/products/app/`. Other repos use
+  `<repo>/.dispatch/worktrees/`; for those, `.dispatch/` is added to `.gitignore`
+  on first use and merge bookkeeping can commit that change automatically.
+- Startup prunes only missing-worktree metadata; it never deletes existing
+  directories by age. Dirty and locked worktrees remain under the worktree root
+  for manual inspection/recovery.
 - Child pi runs `pi -p --no-session --mode json` with the agent's system prompt (`--system-prompt`), tool allowlist (`--tools`, or `--no-tools` for `tools: none`), `--exclude-tools dispatch,pr_review,feature_plan` (recursion backstop) and `PI_DISPATCH_DEPTH=<parent+1>` (max depth 2).
 - Workers' commit summaries (not diffs) return through the same context firewall and aggregator as the research tier.
 - Successful write workers must leave a clean worktree before merge-back. Uncommitted

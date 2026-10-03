@@ -11,7 +11,7 @@ import extension from '../src/index.ts';
 
 // All Git writes and fake children are confined to this disposable fixture.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-write-tier-'));
-const envKeys = ['HERDR_ENV', 'PI_CODING_AGENT_DIR', 'LINKUP_API_KEY', 'PI_DISPATCH_PI_BIN', 'PI_DISPATCH_DEPTH'];
+const envKeys = ['HERDR_ENV', 'PI_CODING_AGENT_DIR', 'LINKUP_API_KEY', 'PI_DISPATCH_PI_BIN', 'PI_DISPATCH_DEPTH', 'PI_WORKTREE_ROOT'];
 const savedEnv = new Map(envKeys.map(key => [key, process.env[key]]));
 after(() => {
  for (const [key, value] of savedEnv) {
@@ -81,6 +81,20 @@ test('first-use gitignore bookkeeping completes and parent ends clean',async()=>
  const dir=repo(); git(dir,'rm','.gitignore'); git(dir,'commit','-m','remove ignore'); ensureGitignore(dir);
  const w=await createWorktree(dir,'run','a'); commit(w.path,'a.txt','alpha'); const result=await mergeWorktreeBranches(dir,[w.branch]);
  assert.equal(result.merged.length,1); await removeWorktree(dir,w.path,{branch:w.branch}); assert.equal(git(dir,'status','--porcelain'),'');
+});
+test('repos inside the workspace get mirrored central worktrees and no gitignore edit',async()=>{
+ const ws=path.join(fs.realpathSync(root),'ws'), central=path.join(ws,'.worktrees'), app=path.join(ws,'products','app');
+ fs.mkdirSync(app,{recursive:true}); process.env.PI_WORKTREE_ROOT=central;
+ try {
+  git(app,'init','-b','main'); git(app,'config','user.name','Dispatch Test'); git(app,'config','user.email','dispatch-test@example.invalid');
+  git(app,'config','commit.gpgsign','false'); fs.writeFileSync(path.join(app,'f.txt'),'x\n'); git(app,'add','.'); git(app,'commit','-m','fixture');
+  assert.equal(ensureGitignore(app),false); assert.equal(fs.existsSync(path.join(app,'.gitignore')),false);
+  const w=await createWorktree(app,'run','a');
+  assert.equal(w.path,path.join(central,'products','app','dispatch-run-a'));
+  const nested=await createWorktree(w.path,'run','b');
+  assert.equal(nested.path,path.join(central,'products','app','dispatch-run-b'));
+  for(const x of [nested,w]) await removeWorktree(app,x.path,{branch:x.branch});
+ } finally { delete process.env.PI_WORKTREE_ROOT; }
 });
 async function conflicted() {
  const dir=repo(), w=await createWorktree(dir,'run','a'); commit(w.path,'shared.txt','worker\n'); commit(dir,'shared.txt','parent\n'); return {dir,w};
