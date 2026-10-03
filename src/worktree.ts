@@ -1,9 +1,9 @@
 /**
  * Git worktree management for the write tier.
  *
- * Each write-tier task runs in its own worktree at
- * `<repoRoot>/.dispatch/worktrees/<taskId>` on branch
- * `dispatch/<runId>/<taskId>`, so workers can commit without touching the
+ * Each write-tier task runs in its own worktree on branch
+ * `dispatch/<runId>/<taskId>`, in a directory named after the branch under
+ * `worktreeRoot()`, so workers can commit without touching the
  * parent tree. Branches merge back (see merge.ts), then the worktree is
  * removed.
  *
@@ -11,8 +11,9 @@
  * shell string) so task text can never be shell-interpreted.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
 
@@ -81,15 +82,42 @@ function safeComponent(s: string): string {
 	return trimmed.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "x";
 }
 
-export function worktreeRoot(repoRoot: string): string {
-	return path.join(repoRoot, ".dispatch", "worktrees");
+/** Central worktree folder. Its parent directory is the workspace. */
+function centralRoot(): string {
+	return process.env.PI_WORKTREE_ROOT ?? path.join(os.homedir(), "eden", ".worktrees");
+}
+
+/** Main checkout of `repoRoot`, which may itself be a linked worktree. */
+function mainCheckout(repoRoot: string): string {
+	const commonDir = execFileSync(
+		"git",
+		["-C", repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+		{ encoding: "utf-8" },
+	).trim();
+	return path.dirname(commonDir);
 }
 
 /**
- * Add `.dispatch/` to the repo's .gitignore if not already covered.
- * Returns true when the file was modified.
+ * Directory holding task worktrees. Repos inside the workspace mirror their
+ * main checkout's path under the central folder
+ * (`~/eden/products/app` -> `~/eden/.worktrees/products/app`); other repos
+ * keep worktrees in `<repoRoot>/.dispatch/worktrees`.
+ */
+export function worktreeRoot(repoRoot: string): string {
+	const central = centralRoot();
+	const rel = path.relative(path.dirname(central), mainCheckout(repoRoot));
+	if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+		return path.join(repoRoot, ".dispatch", "worktrees");
+	}
+	return path.join(central, rel);
+}
+
+/**
+ * Add `.dispatch/` to the repo's .gitignore if not already covered and task
+ * worktrees live inside the repo. Returns true when the file was modified.
  */
 export function ensureGitignore(repoRoot: string): boolean {
+	if (!worktreeRoot(repoRoot).startsWith(repoRoot + path.sep)) return false;
 	const gitignorePath = path.join(repoRoot, ".gitignore");
 	let current: string;
 	try {
@@ -199,8 +227,8 @@ export async function createWorktree(
 
 	const run = safeComponent(runId);
 	const id = safeComponent(taskId);
-	const wtPath = path.join(worktreeRoot(repoRoot), id);
 	const branch = `dispatch/${run}/${id}`;
+	const wtPath = path.join(worktreeRoot(repoRoot), branch.replaceAll("/", "-"));
 	if (fs.existsSync(wtPath)) {
 		throw new Error(`worktree path already exists: ${wtPath}`);
 	}
