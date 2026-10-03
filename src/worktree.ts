@@ -106,7 +106,7 @@ function mainCheckout(repoRoot: string): string {
 export function worktreeRoot(repoRoot: string): string {
 	const central = centralRoot();
 	const rel = path.relative(path.dirname(central), mainCheckout(repoRoot));
-	if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+	if (rel === "" || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
 		return path.join(repoRoot, ".dispatch", "worktrees");
 	}
 	return path.join(central, rel);
