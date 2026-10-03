@@ -303,7 +303,7 @@ sources to its system context. This uses the same discovery and trust rules as
 execution, so installed custom roles and overrides are visible before a call.
 Generic role labels in skills are not agent names; use an exact roster name.
 
-Bundled: `scout` (read-only recon — tier `cheap`), `reviewer` (code review — `balanced`), `planner` (implementation plans — `long`), `aggregator` (fan-in specialist, no local tools — `balanced`), `security-reviewer` (application security — `precise`), `writer` (worktree write tier — implements, commits, and reports a summary — `precise`; dispatch with `model:'long'` for long-context writing tasks). Tier names in agent frontmatter `model:` expand via `src/profiles.ts`; see [Effort tiers](#effort-tiers).
+Bundled: `scout` (read-only recon — tier `cheap`), `reviewer` (code review — `balanced`), `planner` (implementation plans — `long`), `aggregator` (fan-in specialist, no local tools — `balanced`), `security-reviewer` (application security — `precise`), `advisor` (read-only second opinion on decisions and risky or finished work — `precise`), `writer` (worktree write tier — implements, commits, and reports a summary — `precise`; dispatch with `model:'long'` for long-context writing tasks). Tier names in agent frontmatter `model:` expand via `src/profiles.ts`; see [Effort tiers](#effort-tiers).
 
 ## Install
 
