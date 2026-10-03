@@ -17,11 +17,10 @@
  * not nesting, and would misfire on legitimate parallel dispatches — removed
  * after Herdr review.)
  *
- * Per-task `cwd` is confined to the parent session's cwd subtree (realpath
- * checked) — see validateTaskCwd.
+ * Per-task `cwd` is confined to the parent session's cwd subtree or a worktree
+ * of the session's Git repository (realpath checked) — see task-cwd.ts.
  */
 
-import * as path from "node:path";
 import { realpath } from "node:fs/promises";
 import { Type } from "@earendil-works/pi-ai";
 import type {
@@ -47,6 +46,7 @@ import {
 import type { AgentConfig, DispatchDetails, WorkerResult } from "./types.ts";
 import { registerFeaturePlanTool } from "./tools/feature-plan.ts";
 import { registerPrReviewTool } from "./tools/pr-review.ts";
+import { validateTaskCwd } from "./task-cwd.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CHAIN_LENGTH = 8;
@@ -82,7 +82,7 @@ const TaskItemSchema = Type.Object({
 	cwd: Type.Optional(
 		Type.String({
 			description:
-				"Working directory for this task (must be inside the session cwd)",
+				"Working directory for this task (inside the session cwd, or a worktree of the session's Git repository)",
 		}),
 	),
 	worktree: Type.Optional(
@@ -123,36 +123,6 @@ async function mapWithConcurrency<T, R>(
 	);
 	await Promise.all(runners);
 	return results;
-}
-
-/**
- * Constrain per-task cwd to the parent session's cwd subtree. `..`, `~`, and
- * symlink escapes are rejected so a prompt-injected task cannot point workers
- * at arbitrary filesystem locations.
- */
-async function validateTaskCwd(
-	cwd: string | undefined,
-	ctx: ExtensionContext,
-): Promise<string | undefined> {
-	const raw = cwd?.trim();
-	if (!raw) return undefined;
-	const resolved = path.resolve(ctx.cwd, raw);
-	let root: string;
-	let target: string;
-	try {
-		[root, target] = await Promise.all([realpath(ctx.cwd), realpath(resolved)]);
-	} catch {
-		throw new Error(
-			`dispatch: task cwd does not exist: ${resolved} (tasks must run inside the session cwd)`,
-		);
-	}
-	if (target !== root && !target.startsWith(root + path.sep)) {
-		throw new Error(
-			`dispatch: task cwd (${resolved}) is outside the session cwd (${ctx.cwd}). ` +
-				"Run pi from the target project or use read tools with absolute paths instead.",
-		);
-	}
-	return resolved;
 }
 
 function labeledOutputs(results: WorkerResult[]): {
@@ -355,7 +325,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 
 		// Validate every per-task cwd up front (fail fast, before any worker runs).
 		const taskCwds = await Promise.all(
-			items.map((item) => validateTaskCwd(item.cwd, ctx)),
+			items.map((item) => validateTaskCwd(item.cwd, ctx.cwd)),
 		);
 
 		// ---- write tier setup (worktree tasks) ----

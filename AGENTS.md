@@ -15,7 +15,8 @@ processes in Git worktrees. Usage and current behavior: [README.md](README.md).
   reports and metadata can make the total result larger than one per-text cap.
 - Chain interpolation uses a replacer function so dollar sequences in worker
   output remain literal. Task cwd validation resolves real paths and confines
-  the starting directory to the session subtree; it is not a filesystem sandbox.
+  the starting directory to the session subtree or a checkout sharing the
+  session repository's `--git-common-dir`; it is not a filesystem sandbox.
 - In-process workers disable extension discovery, skills, and context-file loading.
   All roles get Linkup web tools when configured, in addition to their local tool
   allowlist. Model guidance from the packaged pi-model-prompts dependency is

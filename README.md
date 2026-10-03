@@ -91,6 +91,9 @@ Read-only, no Herdr needed.
 Every worker also gets Linkup search/answer/fetch when configured; only those tool
 entrypoints are added, not unrelated extensions (see below).
 Write-tier child processes use different loading behavior and exclude `dispatch`.
+A per-task `cwd` must sit inside the session cwd or in a worktree of the
+session's Git repository (same `git rev-parse --git-common-dir`), such as
+`~/eden/.worktrees/<repo>/<branch>` for a session started in the main checkout.
 Neither a cwd check nor a worktree is a filesystem sandbox; agents with `bash`
 can access paths outside their starting directory. In-process tasks must include
 applicable constraints or tell workers which instruction files to read.
