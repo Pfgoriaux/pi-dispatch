@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { gitThrow } from "../worktree.ts";
+import { parsePrRef, repoArgs } from "./pr-ref.ts";
 
 /** Pin the revision that fixes will modify, not merely the diff's label. */
 export async function pinFixHead(pi: ExtensionAPI, cwd: string, pr?: string): Promise<string> {
@@ -8,8 +9,9 @@ export async function pinFixHead(pi: ExtensionAPI, cwd: string, pr?: string): Pr
 		throw new Error("pr_review: expected a PR number or Git revision, not command options.");
 	}
 	let target: string;
-	if (/^\d+$/.test(arg)) {
-		const result = await pi.exec("gh", ["pr", "view", arg, "--json", "headRefOid", "--jq", ".headRefOid"], { cwd, timeout: 15000 });
+	const ref = parsePrRef(arg);
+	if (ref) {
+		const result = await pi.exec("gh", ["pr", "view", ref.number, ...repoArgs(ref), "--json", "headRefOid", "--jq", ".headRefOid"], { cwd, timeout: 15000 });
 		target = result.stdout.trim();
 		if (result.code !== 0 || result.killed || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(target)) {
 			throw new Error("pr_review: cannot verify the PR head; use review-only mode or a local revision range.");

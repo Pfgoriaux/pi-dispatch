@@ -77,6 +77,77 @@ test("GitHub diff uses requested cwd, checks failures, never uses undefined Git 
 	);
 });
 
+type Reply = { code?: number; stdout?: string; stderr?: string };
+
+/** Fake gh/git keyed by "cmd subcommand"; records every call. */
+function fakeExec(replies: Record<string, Reply | Reply[]>) {
+	const calls: string[][] = [];
+	const pi = {
+		exec: async (cmd: string, args: string[]) => {
+			calls.push([cmd, ...args]);
+			if (cmd === "bash") return { code: 0, stdout: "", stderr: "", killed: false };
+			const key = `${cmd} ${args[0] === "pr" ? args[1] : args[0]}`;
+			const entry = replies[key];
+			const reply = Array.isArray(entry) ? entry.shift() : entry;
+			assert.ok(reply, `unexpected call: ${key}`);
+			return { code: 0, stdout: "", stderr: "", killed: false, ...reply };
+		},
+	} as unknown as ExtensionAPI;
+	return { pi, calls };
+}
+
+const TOO_LARGE = { code: 1, stderr: "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum number of lines (20000) PullRequest.diff too_large" };
+const REMOTES = { stdout: "origin\tgit@github.com:Pfgoriaux/cassian.git (fetch)\norigin\tgit@github.com:Pfgoriaux/cassian.git (push)\n" };
+const VIEW = { stdout: JSON.stringify({ url: "https://github.com/Pfgoriaux/cassian/pull/127", baseRefName: "main", headRefOid: "b".repeat(40) }) };
+
+test("a diff GitHub refuses as too large is fetched and diffed locally", async (t) => {
+	const dir = fixture(t);
+	const { pi, calls } = fakeExec({
+		"gh diff": TOO_LARGE,
+		"gh view": VIEW,
+		"git remote": REMOTES,
+		"git fetch": {},
+		"git rev-parse": [{ stdout: "a".repeat(40) + "\n" }, { stdout: "b".repeat(40) + "\n" }],
+		"git diff": { stdout: "diff --git a/x b/x\n" },
+	});
+	const result = await resolveDiff(pi, "https://github.com/Pfgoriaux/cassian/pull/127/files", dir, dir);
+	assert.equal(result.label, "Pfgoriaux/cassian PR #127");
+	assert.equal(fs.readFileSync(result.diffFile, "utf8"), "diff --git a/x b/x\n");
+	const fetches = calls.filter(([cmd, sub]) => cmd === "git" && sub === "fetch").map((c) => c.at(-1));
+	assert.deepEqual(fetches, ["refs/heads/main", "refs/pull/127/head"]);
+	assert.ok(calls.some((c) => c[0] === "gh" && c[2] === "diff" && c.includes("-R") && c.includes("Pfgoriaux/cassian")));
+	assert.ok(calls.some((c) => c[1] === "diff" && c.includes(`${"a".repeat(40)}...${"b".repeat(40)}`)));
+});
+
+test("the local fallback refuses a PR head that moved during the fetch", async (t) => {
+	const dir = fixture(t);
+	const { pi } = fakeExec({
+		"gh diff": TOO_LARGE,
+		"gh view": VIEW,
+		"git remote": REMOTES,
+		"git fetch": {},
+		"git rev-parse": [{ stdout: "a".repeat(40) }, { stdout: "c".repeat(40) }],
+	});
+	await assert.rejects(resolveDiff(pi, "127", dir, dir), /head moved/);
+});
+
+test("a PR URL from another repo is refused before calling GitHub", async (t) => {
+	const dir = fixture(t);
+	const { pi, calls } = fakeExec({ "git remote": { stdout: "origin\thttps://github.com/Pfgoriaux/emissaire (fetch)\n" } });
+	await assert.rejects(
+		resolveDiff(pi, "https://github.com/Pfgoriaux/cassian/pull/43", dir, dir),
+		/belongs to Pfgoriaux\/cassian[\s\S]*Run pr_review from a checkout of Pfgoriaux\/cassian/,
+	);
+	assert.equal(calls.filter(([cmd]) => cmd === "gh").length, 0);
+});
+
+test("other gh failures are reported, not retried locally", async (t) => {
+	const dir = fixture(t);
+	const { pi, calls } = fakeExec({ "gh diff": { code: 1, stderr: "GraphQL: Could not resolve to a PullRequest with the number of 43." } });
+	await assert.rejects(resolveDiff(pi, "43", dir, dir), /Could not resolve/);
+	assert.equal(calls.filter(([cmd]) => cmd === "git").length, 0);
+});
+
 test("local diffs disable external drivers and mark genuine empty targets", async (t) => {
 	const dir = fixture(t);
 	const pi = {

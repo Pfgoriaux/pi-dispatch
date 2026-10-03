@@ -9,7 +9,7 @@
  * A reviewer on the balanced tier then checks each finding against the code
  * and returns one deduplicated report. fix:true hands it to a worktree writer.
  *
- * Diff resolution: GitHub PR number (gh), a git rev-range, a branch compared
+ * Diff resolution: GitHub PR number or URL (gh), a git rev-range, a branch compared
  * against HEAD, or the default origin base...HEAD.
  */
 
@@ -39,6 +39,7 @@ import {
 	verifyAggregateTask,
 } from "./pr-review-prompts.ts";
 import { pinFixHead, assertFixHead } from "./review-target.ts";
+import { githubDiff, parsePrRef, prLabel } from "./pr-ref.ts";
 import {
 	assertCleanTree,
 	createWorktree,
@@ -117,7 +118,8 @@ async function defaultBaseRef(
 
 /**
  * Resolve the diff for the requested PR. `prArg` may be:
- *   - a GitHub PR number (requires `gh`)  -> `gh pr diff <n>`
+ *   - a GitHub PR number or URL (requires `gh`) -> `gh pr diff <n>`, or a
+ *     local diff of the fetched PR head when GitHub refuses a large diff
  *   - an explicit git rev-range           -> `git diff <range>`
  *   - a single ref/branch                 -> `git diff <ref>...HEAD`
  *   - empty                               -> `git diff <originBase>...HEAD`
@@ -162,14 +164,15 @@ export async function resolveDiff(
 	let label = "";
 	let diff = "";
 
-	if (/^\d+$/.test(arg)) {
+	const pr = parsePrRef(arg);
+	if (pr) {
 		if (!(await which(pi, "gh"))) {
 			throw new Error(
-				`pr_review: PR number "${arg}" given but the gh CLI is not available. Pass a git rev-range instead.`,
+				`pr_review: PR "${arg}" given but the gh CLI is not available. Pass a git rev-range instead.`,
 			);
 		}
-		label = `PR #${arg}`;
-		diff = await checked("gh", ["pr", "diff", arg]);
+		label = prLabel(pr);
+		diff = await githubDiff(pi, pr, cwd, signal);
 	} else if (/\.{2,3}/.test(arg)) {
 		label = `range ${arg}`;
 		diff = await gitDiff(arg);
@@ -240,7 +243,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 			pr: Type.Optional(
 				Type.String({
 					description:
-						"GitHub PR number, rev-range ('main...feature'), or branch vs HEAD. Default: '<origin-default>...HEAD'",
+						"GitHub PR number or URL (in the session repo), rev-range ('main...feature'), or branch vs HEAD. Default: '<origin-default>...HEAD'",
 				}),
 			),
 			fix: Type.Optional(

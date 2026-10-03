@@ -25,7 +25,7 @@ live in `details` (UI-only). Raw worker transcripts are not returned to the pare
 ## pr_review
 
 "Review a PR" without leaving dispatch. Resolves the diff (GitHub PR number
-via `gh`, a git rev-range, a branch vs HEAD, or default `<origin/base>...HEAD`),
+or URL via `gh`, a git rev-range, a branch vs HEAD, or default `<origin/base>...HEAD`),
 then runs five read-only steps:
 
 ```text
@@ -37,6 +37,11 @@ pr_review
 │  └─ `slop-reviewer` (balanced tier): checks added docs against its documentation rules and the code; flags unneeded tests and additions
 └─ `reviewer` (balanced tier): check each finding against the code, merge duplicates, return one report and a verdict
 ```
+
+Reviewers read the session checkout, so a PR URL must belong to a repo the
+session has a GitHub remote for; other repos are refused. When GitHub refuses a
+diff as too large (over 20,000 lines or 300 files), `pr_review` fetches
+`refs/pull/<n>/head` and the base branch from that remote and diffs them locally.
 
 Opus and Astra exclude each other on failover and share a model-identity guard,
 so quota routing or fallback never gives both reviewers the same model. The
