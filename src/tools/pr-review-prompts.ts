@@ -70,13 +70,12 @@ export function preMortemTask(c: ReviewContext): string {
 		...header(c, "Run a pre-mortem on this pull request."),
 		"",
 		"Question: this change merged as is. Three months later it broke. What is the most likely reason?",
-		"Check against the actual code. Consider data growth, concurrency, upstream and dependency changes, migrations, " +
-			"config drift, operational load, and behavior no test protects.",
+		"Start with the diff. Inspect changed files, their direct callers and dependencies, and relevant tests.",
+		"Do not audit the whole repository. Expand beyond that scope only to investigate a concrete risk identified in the diff or those files.",
 		"",
-		"Return (under ~60 lines):",
-		"## Most likely failure (one paragraph, with file:line evidence)",
-		"## Runners-up (max 3, one line each)",
-		"## What would prevent it (concrete change or check)",
+		"Return at most 3 likely failures, ranked by likelihood, under 30 lines total.",
+		"For each: state the failure, cite file:line evidence, and suggest a concrete preventive change or check.",
+		"If no risk is supported by the code, return \"None\". Do not fill the quota with speculative risks.",
 	].join("\n");
 }
 

@@ -42,6 +42,10 @@ Opus and Astra exclude each other on failover and share a model-identity guard,
 so quota routing or fallback never gives both reviewers the same model. The
 pre-mortem and slop steps stay outside the guard and cannot take a reviewer's
 last fallback.
+Both workflow pre-mortems are prompted to inspect the diff or draft, affected
+files, direct callers and dependencies, and relevant tests. They expand only
+for a concrete risk and return at most three evidenced failures with preventive
+checks, or "None". These are prompt constraints, not enforced tool limits.
 `pr_review` and `feature_plan` steps never use Sol 6.1. Every step ends its
 chain with GLM 5.3 on Neuralwatt (`aperture/neuralwatt/glm-5.3`), then on
 Synthetic (`synthetic/hf:zai-org/GLM-5.3`), so the workflows keep running when

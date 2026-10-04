@@ -173,6 +173,14 @@ test("workflow credit fallbacks never duplicate models within parallel phases", 
 	assert.equal(slop.status, "ok", "slop falls back outside the reviewer guard");
 	assert.equal(result.details.items.length, 5, "four parallel steps, then one verify-aggregate step");
 	assert.equal(result.details.items[4].status, "ok");
+	const preMortemPrompt = prompts.find(p => p.includes("Run a pre-mortem")) ?? "";
+	assert.match(preMortemPrompt, /Start with the diff/);
+	assert.match(preMortemPrompt, /direct callers and dependencies, and relevant tests/);
+	assert.match(preMortemPrompt, /Do not audit the whole repository/);
+	assert.match(preMortemPrompt, /only to investigate a concrete risk/);
+	assert.match(preMortemPrompt, /at most 3 likely failures/);
+	assert.match(preMortemPrompt, /cite file:line evidence/);
+	assert.match(preMortemPrompt, /preventive change or check/);
 	const verifyPrompt = prompts.find(p => p.includes("VERIFY and AGGREGATE")) ?? "";
 	for (const label of ["Correctness + security reviewer", "Correctness reviewer", "Pre-mortem", "Slop reviewer"])
 		assert.ok(verifyPrompt.includes(`### ${label} [actual model:`), `verify step receives ${label}`);
@@ -234,6 +242,13 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 	assert.deepEqual([draft.model, challenge.model, final.model], ["openai-codex/gpt-6-astra", "anthropic/claude-opus-5-5", "openai-codex/gpt-6-astra"]);
 	assert.match(preMortem.model!, /deepseek/i);
 	assert.match(promptOf("PREMORTEM-TEXT"), /DRAFT-TEXT/);
+	assert.match(promptOf("PREMORTEM-TEXT"), /Start with the draft design/);
+	assert.match(promptOf("PREMORTEM-TEXT"), /direct callers and dependencies, and relevant tests/);
+	assert.match(promptOf("PREMORTEM-TEXT"), /Do not audit the whole repository/);
+	assert.match(promptOf("PREMORTEM-TEXT"), /only to investigate a concrete risk/);
+	assert.match(promptOf("PREMORTEM-TEXT"), /at most 3 likely failures/);
+	assert.match(promptOf("PREMORTEM-TEXT"), /cite the draft section and supporting code paths\/lines/);
+	assert.match(promptOf("PREMORTEM-TEXT"), /preventive design change or check/);
 	assert.match(promptOf("CHALLENGE-TEXT"), /DRAFT-TEXT[\s\S]*PREMORTEM-TEXT/);
 	assert.match(promptOf("FINAL-TEXT"), /DRAFT-TEXT[\s\S]*PREMORTEM-TEXT[\s\S]*CHALLENGE-TEXT/);
 	assert.equal(plan.content[0].text, "FINAL-TEXT");
