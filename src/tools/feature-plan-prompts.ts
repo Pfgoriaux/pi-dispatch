@@ -41,12 +41,12 @@ export function preMortemTask(c: PlanContext, draft: string): string {
 		draft,
 		"",
 		"Question: this feature shipped as designed. Three months later it broke. What is the most likely reason?",
-		"Check the draft against the actual code. Consider data growth, concurrency, upstream changes, migrations, config drift, and operational load.",
+		"Start with the draft design. Inspect files it proposes to change, their direct callers and dependencies, and relevant tests.",
+		"Do not audit the whole repository. Expand beyond that scope only to investigate a concrete risk identified in the draft or those files.",
 		"",
-		"Return (under ~60 lines):",
-		"## Most likely failure (one paragraph, with the code evidence behind it)",
-		"## Runners-up (max 3, one line each)",
-		"## What would prevent it (concrete design change or check)",
+		"Return at most 3 likely failures, ranked by likelihood, under 30 lines total.",
+		"For each: state the failure, cite the draft section and supporting code paths/lines where available, and suggest a concrete preventive design change or check.",
+		"If no risk is supported by the draft or code, return \"None\". Do not fill the quota with speculative risks.",
 	].join("\n");
 }
 
