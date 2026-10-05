@@ -419,13 +419,15 @@ worker's response; terminal `idle`/`done` is not task success.
 
 Watches are one-shot. After sending a continuation, register that worker again.
 Use `action: "list"` to inspect watches or `action: "clear"` to stop all watches
-without stopping workers. Missing or unknown agents produce an alert after three
-checks; a replaced session produces an alert instead of following its replacement.
+without stopping workers. A watch ends only when Pi confirms its notice entered
+the conversation; a queued notice cleared by Esc is retried when the coordinator
+goes idle. Missing or unknown agents produce an alert after three checks;
+a replaced session produces an alert instead of following its replacement.
 The watcher never sends worker prompts, grants approvals, or reads transcripts.
 
 Watches require a persistent TUI or RPC coordinator; print mode is rejected.
 Pending watches are stored in the coordinator's session and restored on reload
-in the same workspace. Forked sessions do not inherit them; tree navigation
+in the same Herdr server and workspace. Forked sessions do not inherit them; tree navigation
 clears them. No monitoring runs while Pi is closed. This is not a durable
 message queue and does not guarantee exactly-once delivery across crashes.
 Inside Herdr the tool loads with Dispatch; existing sessions need `/reload`.

@@ -1,24 +1,27 @@
+import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { herdrCommand, herdrEnabled } from "./herdr.ts";
+import { herdrCommand, herdrEnabled, type WatchedAgent } from "./herdr.ts";
 
 const ENTRY = "dispatch-herdr-watches";
 const NOTICE = "dispatch-herdr-ready";
 const MAX_WATCHES = 16;
 
-export interface WatchedAgent {
-	pane_id: string;
-	workspace_id: string;
-	terminal_id: string;
-	agent: string;
-	agent_session?: { kind: string; value: string };
-	agent_status: string;
-}
-
 export interface Watch {
+	id: string;
 	target: string;
 	identity: string;
 	failures: number;
+}
+
+interface Caller { pane: string; workspace: string; socket: string }
+
+async function getCaller(): Promise<Caller> {
+	const { pane } = await herdrCommand(["pane", "current", "--current"]);
+	if (!pane?.pane_id || !pane.workspace_id || !process.env.HERDR_SOCKET_PATH) {
+		throw new Error("Herdr caller identity is unavailable.");
+	}
+	return { pane: pane.pane_id, workspace: pane.workspace_id, socket: process.env.HERDR_SOCKET_PATH };
 }
 
 function identity(agent: WatchedAgent): string {
@@ -27,6 +30,7 @@ function identity(agent: WatchedAgent): string {
 }
 
 export async function getHerdrAgent(target: string): Promise<WatchedAgent> {
+	if (/^-|[\s\x00]/.test(target)) throw new Error("Invalid Herdr worker target.");
 	const response = await herdrCommand(["agent", "get", target]);
 	const agent = response.agent;
 	if (!agent?.pane_id || !agent.workspace_id || !agent.terminal_id || !agent.agent_status) {
@@ -40,11 +44,12 @@ export class HerdrWatcher {
 	private watches = new Map<string, Watch>();
 	private epoch = 0;
 	private polling = false;
+	private queued = new Set<string>();
 
 	constructor(
 		private readonly get: (target: string) => Promise<WatchedAgent>,
 		private readonly save: (watches: Watch[]) => void,
-		private readonly notify: (lines: string[]) => void,
+		private readonly notify: (lines: string[], ids: string[]) => void,
 	) {}
 
 	list(): Watch[] {
@@ -53,6 +58,7 @@ export class HerdrWatcher {
 
 	reset(watches: Watch[] = []): void {
 		this.epoch++;
+		this.queued.clear();
 		this.watches = new Map(watches.map(watch => [watch.target, { ...watch }]));
 	}
 
@@ -63,7 +69,7 @@ export class HerdrWatcher {
 		const additions = agents.map(agent => {
 			if (agent.workspace_id !== workspace) throw new Error("Watch only workers in the caller's workspace.");
 			if (agent.pane_id === self) throw new Error("Cannot watch the coordinator itself.");
-			return { target: agent.pane_id, identity: identity(agent), failures: 0 };
+			return { id: randomUUID(), target: agent.pane_id, identity: identity(agent), failures: 0 };
 		});
 		if (epoch !== this.epoch) throw new Error("Coordinator session changed; register workers again.");
 		const next = new Map(this.watches);
@@ -74,15 +80,27 @@ export class HerdrWatcher {
 	}
 
 	clear(): void {
+		const hadWatches = this.watches.size > 0;
 		this.reset();
-		this.save([]);
+		if (hadWatches) this.save([]);
 	}
 
-	async poll(): Promise<void> {
+	acknowledge(ids: string[]): void {
+		const before = this.watches.size;
+		const delivered = new Set(ids);
+		for (const watch of this.watches.values()) {
+			if (!delivered.has(watch.id)) continue;
+			this.watches.delete(watch.target);
+			this.queued.delete(watch.id);
+		}
+		if (this.watches.size !== before) this.save(this.list());
+	}
+
+	async poll(retryUndelivered = false): Promise<void> {
 		if (this.polling) return;
 		this.polling = true;
 		const epoch = this.epoch;
-		const pending = [...this.watches.values()];
+		const pending = [...this.watches.values()].filter(watch => retryUndelivered || !this.queued.has(watch.id));
 		try {
 			const results = await Promise.allSettled(pending.map(watch => this.get(watch.target)));
 			if (epoch !== this.epoch) return;
@@ -97,10 +115,15 @@ export class HerdrWatcher {
 				lines.push(`${watch.target}: ${reason}`);
 			}
 			if (!ready.length) return;
-			// Keep watches if delivery throws. Never let stale callbacks notify a new session.
-			this.notify(lines);
-			for (const watch of ready) this.watches.delete(watch.target);
-			this.save(this.list());
+			const ids = ready.map(watch => watch.id);
+			for (const id of ids) this.queued.add(id);
+			try {
+				this.notify(lines, ids);
+			} catch (error) {
+				for (const id of ids) this.queued.delete(id);
+				throw error;
+			}
+			// Removal happens only when Pi emits the custom message's message_end.
 		} finally {
 			this.polling = false;
 		}
@@ -114,7 +137,7 @@ export class HerdrWatcher {
 		const agent = result.value;
 		if (!agent.agent_session?.value) return "worker identity is unavailable; inspect it before sending anything.";
 		if (identity(agent) !== watch.identity) return "pane now hosts a different session; do not send the old task to it.";
-		if (agent.agent_status === "unknown") {
+		if (!["working", "idle", "done", "blocked"].includes(agent.agent_status)) {
 			watch.failures++;
 			return watch.failures >= 3 ? "state remained unknown for three checks; inspect it manually." : undefined;
 		}
@@ -124,22 +147,25 @@ export class HerdrWatcher {
 	}
 }
 
-export function registerHerdrWatch(pi: ExtensionAPI, getAgent = getHerdrAgent): void {
+export function registerHerdrWatch(pi: ExtensionAPI, getAgent = getHerdrAgent, caller = getCaller): void {
 	if (!herdrEnabled()) return;
 	let context: ExtensionContext | undefined;
+	let scope: Caller | undefined;
+	let warned = false;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const watcher = new HerdrWatcher(
 		getAgent,
 		watches => pi.appendEntry(ENTRY, {
-			owner: context?.sessionManager.getSessionId(), workspace: process.env.HERDR_WORKSPACE_ID, watches,
+			owner: context?.sessionManager.getSessionId(), scope, watches,
 		}),
-		lines => pi.sendMessage({
+		(lines, ids) => pi.sendMessage({
 			customType: NOTICE,
 			content: "Herdr worker update:\n" + lines.join("\n") +
 				"\nRead each worker's response with herdr agent read. Resolve questions within the user's existing authorization; " +
 				"ask the user for permissions you do not have. After prompting a worker to continue, register it again with herdr_watch. " +
 				"These watches have now ended. Do not equate idle/done with successful completion.",
 			display: true,
+			details: { ids },
 		}, { triggerTurn: true, deliverAs: "followUp" }),
 	);
 	const stop = () => {
@@ -147,14 +173,20 @@ export function registerHerdrWatch(pi: ExtensionAPI, getAgent = getHerdrAgent): 
 		timer = undefined;
 		watcher.reset();
 		context = undefined;
+		scope = undefined;
+		warned = false;
 	};
 	const schedule = () => {
 		if (!context || timer || !watcher.list().length) return;
 		const scheduled = setTimeout(async () => {
 			try {
-				await watcher.poll();
+				// Queued custom messages can be cleared by Esc. Retry unacknowledged
+				// notices only once the coordinator is idle, never every busy tick.
+				await watcher.poll(context?.isIdle() === true);
+				warned = false;
 			} catch {
-				context?.ui.notify("Herdr watcher could not deliver an update; will retry.", "warning");
+				if (!warned) context?.ui.notify("Herdr watcher could not deliver an update; will retry.", "warning");
+				warned = true;
 			} finally {
 				if (timer === scheduled) {
 					timer = undefined;
@@ -165,7 +197,7 @@ export function registerHerdrWatch(pi: ExtensionAPI, getAgent = getHerdrAgent): 
 		timer = scheduled;
 		timer.unref();
 	};
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
 		stop();
 		if (!["tui", "rpc"].includes(ctx.mode)) return;
 		context = ctx;
@@ -173,14 +205,24 @@ export function registerHerdrWatch(pi: ExtensionAPI, getAgent = getHerdrAgent): 
 			entry.type === "custom" && entry.customType === ENTRY,
 		).at(-1);
 		if (saved?.type !== "custom") return;
-		const data = saved.data as { owner?: string; workspace?: string; watches?: Watch[] } | undefined;
+		const data = saved.data as { owner?: string; scope?: Caller; watches?: Watch[] } | undefined;
 		if (data?.owner !== ctx.sessionManager.getSessionId()) return;
-		if (data.workspace !== process.env.HERDR_WORKSPACE_ID) return;
 		if (!Array.isArray(data.watches)) return;
+		if (!data.watches.length) return;
+		const current = await caller();
+		if (context !== ctx) return;
+		if (data.scope?.socket !== current.socket || data.scope.workspace !== current.workspace) return;
+		scope = current;
 		watcher.reset(data.watches.filter(watch =>
-			typeof watch.target === "string" && typeof watch.identity === "string",
+			watch && typeof watch.id === "string" && typeof watch.target === "string" && typeof watch.identity === "string",
 		).slice(0, MAX_WATCHES).map(watch => ({ ...watch, failures: 0 })));
 		schedule();
+	});
+	pi.on("message_end", event => {
+		if (event.message.role !== "custom" || event.message.customType !== NOTICE) return;
+		const ids = (event.message.details as { ids?: unknown } | undefined)?.ids;
+		if (!Array.isArray(ids)) return;
+		watcher.acknowledge(ids.filter((id): id is string => typeof id === "string"));
 	});
 	pi.on("session_shutdown", stop);
 	// Tree navigation can abandon the branch that authorized the watches.
@@ -206,7 +248,10 @@ export function registerHerdrWatch(pi: ExtensionAPI, getAgent = getHerdrAgent): 
 			if (args.action === "clear") watcher.clear();
 			if (args.action === "watch") {
 				if (!args.targets?.length) throw new Error("Provide the workers to watch.");
-				await watcher.add(args.targets, process.env.HERDR_WORKSPACE_ID ?? "", process.env.HERDR_PANE_ID ?? "", signal);
+				const current = await caller();
+				if (context !== ctx) throw new Error("Coordinator session changed.");
+				scope = current;
+				await watcher.add(args.targets, current.workspace, current.pane, signal);
 				schedule();
 			}
 			const watches = watcher.list();

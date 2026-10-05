@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { HerdrWatcher, registerHerdrWatch, type WatchedAgent, type Watch } from "../src/herdr-watch.ts";
+import { HerdrWatcher, registerHerdrWatch, type Watch } from "../src/herdr-watch.ts";
+import type { WatchedAgent } from "../src/herdr.ts";
 
 const agent = (status = "working", pane = "w1:p2"): WatchedAgent => ({
 	pane_id: pane, workspace_id: "w1", terminal_id: `term-${pane}`, agent: "pi",
@@ -17,7 +18,10 @@ test("working workers cause no messages; all settled siblings arrive in one one-
 	let status = "working";
 	const notices: string[][] = [];
 	let saved: Watch[] = [];
-	const watcher = new HerdrWatcher(async target => agent(status, target), watches => { saved = watches; }, lines => notices.push(lines));
+	const watcher: HerdrWatcher = new HerdrWatcher(async target => agent(status, target), watches => { saved = watches; }, (lines, ids) => {
+		notices.push(lines);
+		watcher.acknowledge(ids);
+	});
 	await watcher.add(["w1:p2", "w1:p3"], "w1", "w1:p1");
 	await watcher.poll();
 	assert.equal(notices.length, 0);
@@ -39,7 +43,10 @@ test("working workers cause no messages; all settled siblings arrive in one one-
 test("already-finished workers notify; replaced sessions never inherit old tasks", async () => {
 	let current = agent("done");
 	const notices: string[][] = [];
-	const watcher = new HerdrWatcher(async () => current, () => {}, lines => notices.push(lines));
+	const watcher: HerdrWatcher = new HerdrWatcher(async () => current, () => {}, (lines, ids) => {
+		notices.push(lines);
+		watcher.acknowledge(ids);
+	});
 	await watcher.add(["worker"], "w1", "w1:p1");
 	await watcher.poll();
 	assert.equal(notices.length, 1);
@@ -54,10 +61,13 @@ test("inspection failures and unknown states become bounded alerts, without raw 
 	let fail = false;
 	let current = agent();
 	const notices: string[][] = [];
-	const watcher = new HerdrWatcher(async () => {
+	const watcher: HerdrWatcher = new HerdrWatcher(async () => {
 		if (fail) throw new Error("private CLI diagnostic");
 		return current;
-	}, () => {}, lines => notices.push(lines));
+	}, () => {}, (lines, ids) => {
+		notices.push(lines);
+		watcher.acknowledge(ids);
+	});
 	await watcher.add(["worker"], "w1", "w1:p1");
 	fail = true;
 	await watcher.poll();
@@ -83,6 +93,14 @@ test("registration rejects self, foreign workspaces, missing identity and cancel
 	current = agent();
 	await assert.rejects(watcher.add(["worker"], "w1", "w1:p1", AbortSignal.abort()), /cancelled/);
 	assert.deepEqual(watcher.list(), []);
+});
+
+test("registration is atomic when the total watch limit is exceeded", async () => {
+	const watcher = new HerdrWatcher(async target => agent("working", target), () => {}, () => {});
+	const targets = Array.from({ length: 16 }, (_, i) => `w1:p${i + 2}`);
+	await watcher.add(targets, "w1", "w1:p1");
+	await assert.rejects(watcher.add(["w1:p99"], "w1", "w1:p1"), /At most 16/);
+	assert.equal(watcher.list().length, 16);
 });
 
 test("late polls cannot wake a switched session or consume a re-registered watch", async () => {
@@ -111,8 +129,9 @@ test("late polls cannot wake a switched session or consume a re-registered watch
 
 test("failed notification delivery retains the watch for retry", async () => {
 	let throws = true;
-	const watcher = new HerdrWatcher(async () => agent("idle"), () => {}, () => {
+	const watcher: HerdrWatcher = new HerdrWatcher(async () => agent("idle"), () => {}, (_lines, ids) => {
 		if (throws) throw new Error("queue unavailable");
+		watcher.acknowledge(ids);
 	});
 	await watcher.add(["worker"], "w1", "w1:p1");
 	await assert.rejects(watcher.poll(), /queue unavailable/);
@@ -122,6 +141,24 @@ test("failed notification delivery retains the watch for retry", async () => {
 	assert.equal(watcher.list().length, 0);
 });
 
+test("clearing a queued notice cannot drop its watch; retry on idle awaits message acknowledgement", async () => {
+	const deliveries: string[][] = [];
+	const watcher = new HerdrWatcher(async () => agent("idle"), () => {}, (_lines, ids) => deliveries.push(ids));
+	await watcher.add(["worker"], "w1", "w1:p1");
+	await watcher.poll();
+	assert.equal(watcher.list().length, 1, "sendMessage is not an acknowledgement");
+	await watcher.poll();
+	assert.equal(deliveries.length, 1, "do not flood a busy coordinator");
+	// The host clears its queue without delivering the notice, then goes idle.
+	await watcher.poll(true);
+	assert.equal(deliveries.length, 2);
+	watcher.acknowledge(deliveries[1]);
+	assert.equal(watcher.list().length, 0);
+	await watcher.add(["worker"], "w1", "w1:p1");
+	watcher.acknowledge(deliveries[0]);
+	assert.equal(watcher.list().length, 1, "late acknowledgement cannot consume a new registration");
+});
+
 test("extension queues a follow-up with triggerTurn, restores pending watches and stops on shutdown", async t => {
 	const oldEnv = { ...process.env };
 	Object.assign(process.env, { HERDR_ENV: "1", HERDR_SOCKET_PATH: "/tmp/test.sock", HERDR_WORKSPACE_ID: "w1", HERDR_PANE_ID: "w1:p1" });
@@ -129,22 +166,25 @@ test("extension queues a follow-up with triggerTurn, restores pending watches an
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	type Handler = (event: never, ctx: ExtensionContext) => unknown;
 	const handlers = new Map<string, Handler>();
-	const notices: { content: string; options: unknown }[] = [];
+	const notices: { content: string; details: { ids: string[] }; options: unknown }[] = [];
 	const entries: unknown[] = [];
 	let tool!: ToolDefinition;
 	let status = "working";
+	let workspace = "w1";
+	let socket = "/tmp/test.sock";
 	const pi = {
 		on: (name: string, handler: Handler) => handlers.set(name, handler),
 		registerTool: (definition: ToolDefinition) => { tool = definition; },
 		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
-		sendMessage: (message: { content: string }, options: unknown) => notices.push({ content: message.content, options }),
+		sendMessage: (message: { content: string; details: { ids: string[] } }, options: unknown) => notices.push({ ...message, options }),
 	} as unknown as ExtensionAPI;
 	const ctx = {
 		mode: "tui",
+		isIdle: () => true,
 		sessionManager: { getSessionId: () => "parent", getBranch: () => entries },
 		ui: { notify: () => {} },
 	} as unknown as ExtensionContext;
-	registerHerdrWatch(pi, async () => agent(status));
+	registerHerdrWatch(pi, async () => agent(status), async () => ({ pane: "w1:p1", workspace, socket }));
 	await handlers.get("session_start")!(undefined as never, ctx);
 	await tool.execute("watch", { action: "watch", targets: ["worker"] }, undefined, undefined, ctx);
 	assert.equal(entries.length, 1);
@@ -155,10 +195,35 @@ test("extension queues a follow-up with triggerTurn, restores pending watches an
 	await new Promise(resolve => setImmediate(resolve));
 	assert.equal(notices.length, 1);
 	assert.deepEqual(notices[0].options, { triggerTurn: true, deliverAs: "followUp" });
-	assert.match(notices[0].content, /existing authorization/);
+	await handlers.get("message_end")!({
+		message: { role: "custom", customType: "dispatch-herdr-ready", details: notices[0].details },
+	} as never, ctx);
 	await tool.execute("watch", { action: "watch", targets: ["worker"] }, undefined, undefined, ctx);
 	handlers.get("session_shutdown")!(undefined as never, ctx);
 	t.mock.timers.tick(3000);
 	await new Promise(resolve => setImmediate(resolve));
 	assert.equal(notices.length, 1);
+	await assert.rejects(tool.execute("watch", { action: "watch", targets: ["worker"] }, undefined, undefined, { ...ctx, mode: "print" } as ExtensionContext), /print mode/);
+	const other = { ...ctx, sessionManager: { ...ctx.sessionManager, getSessionId: () => "other" } } as ExtensionContext;
+	await handlers.get("session_start")!(undefined as never, other);
+	t.mock.timers.tick(3000);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(notices.length, 1, "forked sessions must not inherit watches");
+	workspace = "w2";
+	await handlers.get("session_start")!(undefined as never, ctx);
+	t.mock.timers.tick(3000);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(notices.length, 1, "different workspaces must not inherit watches");
+	workspace = "w1";
+	socket = "/tmp/other.sock";
+	await handlers.get("session_start")!(undefined as never, ctx);
+	t.mock.timers.tick(3000);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(notices.length, 1, "different Herdr servers must not inherit watches");
+	socket = "/tmp/test.sock";
+	await handlers.get("session_start")!(undefined as never, ctx);
+	handlers.get("session_tree")!(undefined as never, ctx);
+	t.mock.timers.tick(3000);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(notices.length, 1, "tree navigation clears pending watches");
 });
