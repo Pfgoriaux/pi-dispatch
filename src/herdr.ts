@@ -12,7 +12,17 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+export interface WatchedAgent {
+	pane_id: string;
+	workspace_id: string;
+	terminal_id: string;
+	agent: string;
+	agent_session?: { kind: string; value: string };
+	agent_status: string;
+}
+
 interface HerdrResponse {
+	agent?: WatchedAgent;
 	pane?: { workspace_id?: string; pane_id?: string };
 	tab?: { tab_id?: string };
 	root_pane?: { pane_id?: string };

@@ -402,6 +402,36 @@ tabs provide inspectable activity; execution still happens in isolated SDK
 sessions or headless child processes. Neither surface creates Git worktrees.
 Visibility failures appear in progress details and do not fail worker execution.
 
+## Standalone Herdr workers
+
+`herdr_watch` watches agents prompted directly through Herdr, outside `dispatch`.
+After a successful `herdr agent prompt`, register the worker's name or pane ID:
+
+```json
+{ "action": "watch", "targets": ["worker-a", "worker-b"] }
+```
+
+The tool resolves each name to a pane and session identity in the caller's
+workspace. Every three seconds, a bounded Herdr CLI check reads their states.
+When a worker settles or blocks, Pi receives a follow-up that wakes an idle
+coordinator or queues behind its current run. The coordinator reads the
+worker's response; terminal `idle`/`done` is not task success.
+
+Watches are one-shot. After sending a continuation, register that worker again.
+Use `action: "list"` to inspect watches or `action: "clear"` to stop all watches
+without stopping workers. A watch ends only when Pi confirms its notice entered
+the conversation; a queued notice cleared by Esc is retried when the coordinator
+goes idle. Missing or unknown agents produce an alert after three checks;
+a replaced session produces an alert instead of following its replacement.
+The watcher never sends worker prompts, grants approvals, or reads transcripts.
+
+Watches require a persistent TUI or RPC coordinator; print mode is rejected.
+Pending watches are stored in the coordinator's session and restored on reload
+in the same Herdr server and workspace. Forked sessions do not inherit them; tree navigation
+clears them. No monitoring runs while Pi is closed. This is not a durable
+message queue and does not guarantee exactly-once delivery across crashes.
+Inside Herdr the tool loads with Dispatch; existing sessions need `/reload`.
+
 ## Effort tiers
 
 Agent frontmatter may name an effort tier instead of a concrete model
