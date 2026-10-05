@@ -47,6 +47,7 @@ import {
 import type { AgentConfig, DispatchDetails, WorkerResult } from "./types.ts";
 import { registerFeaturePlanTool } from "./tools/feature-plan.ts";
 import { registerPrReviewTool } from "./tools/pr-review.ts";
+import { registerHerdrWatch } from "./herdr-watch.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CHAIN_LENGTH = 8;
@@ -199,6 +200,7 @@ function sumUsages(results: WorkerResult[]) {
 }
 
 export default function dispatchExtension(pi: ExtensionAPI): void {
+	registerHerdrWatch(pi);
 	pi.on("before_agent_start", (event, ctx) => ({
 		systemPrompt: `${event.systemPrompt}\n\n## Dispatch agents\nUse these exact names; never invent an agent name (skill role labels are not agent names):\n${agentRosterHelp(discoverAgents(ctx).agents)}`,
 	}));

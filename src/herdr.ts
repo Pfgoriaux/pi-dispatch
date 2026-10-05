@@ -9,10 +9,12 @@
 
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import type { WatchedAgent } from "./herdr-watch.ts";
 
 const execFileAsync = promisify(execFile);
 
 interface HerdrResponse {
+	agent?: WatchedAgent;
 	pane?: { workspace_id?: string; pane_id?: string };
 	tab?: { tab_id?: string };
 	root_pane?: { pane_id?: string };
