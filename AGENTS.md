@@ -7,9 +7,9 @@ processes in Git worktrees. Usage and current behavior: [README.md](README.md).
 ## Design constraints
 
 - Keep intermediate transcripts out of model-visible results. Structured status
-  and usage belong in `details`; current `persist`/`resume` modes also append
-  session identifiers to `content`. This is an intentional API exception to the
-  final-report-only policy and needs coverage when changing result construction.
+  and usage belong in `details`; `persist`/`resume` append session identifiers,
+  and `feature_plan` appends saved report paths to `content`. These recovery
+  references need coverage when changing result construction.
 - Apply `truncateText` to model-visible report and error text. The per-text cap
   is 12 KB of UTF-8, not code units; preserve code-point boundaries. Multiple
   reports and metadata can make the total result larger than one per-text cap.

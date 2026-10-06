@@ -13,6 +13,7 @@ import { DispatchProgress } from "../progress.ts";
 import { renderDispatchResult } from "../render.ts";
 import { ModelDiversity } from "../model-diversity.ts";
 import { WORKFLOW_EXCLUDED_MODELS, WORKFLOW_FALLBACK_MODELS } from "../profiles.ts";
+import { savePlanReport } from "./plan-report.ts";
 import {
 	architectDraftTask,
 	architectFinalTask,
@@ -44,14 +45,8 @@ interface StepModel {
 	excludeModels?: string[];
 }
 
-/** Model-visible text of a step, or a marker the next step can reason about. */
-function outputOf(r: WorkerResult): string {
-	if (r.status !== "ok") return `(unavailable: ${truncateText(r.error ?? r.status).text})`;
-	return truncateText(r.text || "(no output)").text;
-}
-
 /** Shown when the final step fails: the material the architect would have resolved. */
-function fallbackPlan(results: WorkerResult[]): string {
+function fallbackPlan(results: WorkerResult[], outputOf: (r: WorkerResult) => string): string {
 	const [draft, preMortem, challenge, final] = results;
 	return [
 		"## Architect draft", outputOf(draft),
@@ -71,7 +66,7 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 			"Plan a feature (read-only)",
 		promptGuidelines: [
 			"feature_plan: Use when the user asks to plan or scope a feature. Not for small changes or bugs.",
-			"feature_plan: Show the plan and its decisions to the user. Once approved, execute with dispatch tasks:[{agent:'writer', worktree:true, model:<Executor>, task:<contract verbatim>}]; independent tasks in one call, dependent tasks in later calls. Never execute a truncated plan.",
+			"feature_plan: Show the plan and its decisions to the user. Once approved, execute with dispatch tasks:[{agent:'writer', worktree:true, model:<Executor>, task:<contract verbatim>}]; independent tasks in one call, dependent tasks in later calls. If truncated, read the complete saved report with offset/limit before dispatching. Recover existing text instead of restarting planning; replan only when requirements or evidence change.",
 		],
 		parameters: Type.Object({
 			herdr: Type.Optional(
@@ -107,6 +102,9 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 				onUpdate,
 			);
 			const results: WorkerResult[] = [];
+			const reports = new Map<WorkerResult, Awaited<ReturnType<typeof savePlanReport>>>();
+			const outputOf = (r: WorkerResult) => reports.get(r)?.text
+				?? `(unavailable: ${truncateText(r.error ?? r.status).text})`;
 			const step = async (agent: AgentConfig, task: string, model: StepModel) => {
 				const index = results.length;
 				const result = await progress.run(
@@ -128,6 +126,14 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 					signal,
 				);
 				results.push(result);
+				if (result.status !== "ok") return result;
+				const report = await savePlanReport(result.text || "(no output)");
+				if (report.truncated && !report.saved) {
+					result.status = "error";
+					result.error = "Report could not be saved. Recover the complete text from this tool result's details.items in the session; do not restart feature_plan to recover text.";
+					return result;
+				}
+				reports.set(result, report);
 				return result;
 			};
 			const finish = (text: string, aggregated: boolean, truncated = false) => ({
@@ -173,8 +179,8 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 					architectFinalTask(c, draftText, outputOf(preMortem), outputOf(challenge)),
 					{ spec: draft.model ?? architectModel(), excludeModels: challenge.model ? [challenge.model] : undefined },
 				);
-				if (final.status !== "ok") return finish(fallbackPlan(results), false);
-				const plan = truncateText(final.text);
+				if (final.status !== "ok") return finish(fallbackPlan(results, outputOf), false);
+				const plan = reports.get(final)!;
 				return finish(plan.text, true, plan.truncated);
 			} finally {
 				await progress.end();
