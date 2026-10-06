@@ -47,6 +47,7 @@ import {
 import type { AgentConfig, DispatchDetails, WorkerResult } from "./types.ts";
 import { registerFeaturePlanTool } from "./tools/feature-plan.ts";
 import { registerPrReviewTool } from "./tools/pr-review.ts";
+import { registerCouncilTool } from "./tools/council.ts";
 import { registerHerdrWatch } from "./herdr-watch.ts";
 
 const MAX_PARALLEL_TASKS = 8;
@@ -213,9 +214,10 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 			"Modes: single (agent+task), parallel (tasks; an aggregator merges reports), chain (sequential; {previous} inserts the prior output). " +
 			"worktree:true (tasks/chain only) runs each task in a git worktree and merges its branch back automatically.",
 		promptSnippet:
-			"Delegate parallel or context-heavy work to sub-agents",
+			"Get an advisor's second opinion or delegate parallel or context-heavy work",
 		promptGuidelines: [
-			"dispatch: Use only for 3+ independent areas worked in parallel, output that would flood your context, or when the user asks for sub-agents or multiple perspectives. Otherwise do the work yourself.",
+			"dispatch: Consult a single advisor for a consequential trade-off, work stuck after investigation, or a concrete unresolved risk before declaring complex work done. No parallel work or user request is required. Skip routine tasks and repeat consultations without new evidence.",
+			"dispatch: Otherwise use for 3+ independent areas worked in parallel, output that would flood your context, or when the user asks for sub-agents or multiple perspectives. Do routine work yourself.",
 			"dispatch: Tasks must be self-contained: goal, paths, constraints, output shape. Workers see no conversation.",
 			"dispatch: For file edits use tasks:[{agent:'writer', worktree:true}] from a feature branch with a committed-clean repo root, only when the user authorized commits and merges. Single mode always runs in-process, without isolation.",
 		],
@@ -276,6 +278,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 
 	registerFeaturePlanTool(pi);
 	registerPrReviewTool(pi);
+	registerCouncilTool(pi);
 
 	async function executeDispatch(
 		params: DispatchParams,

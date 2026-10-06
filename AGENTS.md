@@ -46,8 +46,8 @@ processes in Git worktrees. Usage and current behavior: [README.md](README.md).
 main-agent turn. Keep advertised roles on the same discovery/trust path as
 execution; do not hardcode a separate list. `src/linkup.ts` adds shared Linkup tools
 from a trusted installation to both worker tiers; setup and usage are in README.md. Worker, worktree/merge, roster, and rendering
-modules own their respective behavior; the workflow tools `pr_review` and
-`feature_plan` live in `src/tools/` and reuse the same workers; agent prompts live in `agents/`.
+modules own their respective behavior; the workflow tools `pr_review`,
+`feature_plan`, and `council` live in `src/tools/` and reuse the same workers; agent prompts live in `agents/`.
 Agent frontmatter `model:` names an effort tier (`cheap`/`balanced`/`precise`/`long`)
 expanded by `src/profiles.ts` (env-overridable) — see the Effort tiers section
 in [README.md](README.md).

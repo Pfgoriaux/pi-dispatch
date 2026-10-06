@@ -1,6 +1,6 @@
 # pi-dispatch
 
-Pi extension that runs sub-agents in isolated sessions and returns only their final reports. It provides `dispatch`, `pr_review`, and `feature_plan`.
+Pi extension that runs sub-agents in isolated sessions and returns only their final reports. It provides `dispatch`, `council`, `pr_review`, and `feature_plan`.
 
 ## How it works
 
@@ -21,6 +21,48 @@ live in `details` (UI-only). Raw worker transcripts are not returned to the pare
 - `single` — `{ agent, task }`
 - `parallel` — `{ tasks: [{agent, task, cwd?}] }`, max 8 tasks, concurrency 4; results distilled by `aggregator` unless `aggregate: false`
 - `chain` — `{ chain: [{agent, task}] }`, sequential; `{previous}` = prior step's output
+
+## Advisor
+
+`dispatch({ agent: "advisor", task: "..." })` gives a read-only second opinion.
+Single consultations do not require parallel work or an explicit user request.
+
+Include the outcome, decision, relevant paths, evidence, and constraints.
+The advisor checks the evidence and returns a recommendation, reasons, risks,
+and the smallest verification step. It cannot see the caller's conversation.
+
+## Council
+
+`council({ question, context?, third?, herdr? })` runs three independent advisors
+in parallel, with high thinking:
+
+| Seat | Model |
+|---|---|
+| Anthropic | `anthropic/claude-opus-5-5` |
+| OpenAI | `openai-codex/gpt-6-astra` |
+| Third | `aperture/neuralwatt/glm-5.3` by default; `third: "kimi-k3"` selects Kimi K3 |
+
+Use it for consequential choices with competing options or an explicit request
+for several opinions. One advisor handles focused second opinions;
+`feature_plan` produces implementation plans and task contracts.
+
+Every seat receives the same question and context, without the others' answers.
+Supply evidence, paths, constraints, and applicable instructions. Workers use
+the advisor role with local tools restricted to `read`, `grep`, `find`, and `ls`,
+even if a custom advisor definition grants more tools. Shared Linkup tools
+remain available. Workers do not inherit the caller's conversation.
+
+Seats stay on their assigned model. GLM can retry through direct Synthetic;
+Kimi can retry through Aperture Synthetic. Opus and Astra do not swap seats or
+fall back to Sol. A resolved-model allowlist rejects other model identities.
+Unavailable seats remain visible in the result, alongside actual model names,
+failed attempts, and a count of successful opinions.
+
+Only the three seats run; no aggregator model is called. The caller synthesizes
+agreement, disagreement, its recommendation, and the smallest next check.
+Each labeled report is capped at 12 KB. `herdr: false` disables viewers.
+Zero successful opinions and cancellation are reported in the heading; like
+the other workflows, these results resolve normally so reports and usage survive.
 
 ## pr_review
 
@@ -289,7 +331,7 @@ master agent
 - Startup prunes only missing-worktree metadata; it never deletes existing
   directories by age. Dirty and locked worktrees remain under the worktree root
   for manual inspection/recovery.
-- Child pi runs `pi -p --no-session --mode json` with the agent's system prompt (`--system-prompt`), tool allowlist (`--tools`, or `--no-tools` for `tools: none`), `--exclude-tools dispatch,pr_review,feature_plan` (recursion backstop) and `PI_DISPATCH_DEPTH=<parent+1>` (max depth 2).
+- Child pi runs `pi -p --no-session --mode json` with the agent's system prompt (`--system-prompt`), tool allowlist (`--tools`, or `--no-tools` for `tools: none`), `--exclude-tools dispatch,pr_review,feature_plan,council` (recursion backstop) and `PI_DISPATCH_DEPTH=<parent+1>` (max depth 2).
 - Workers' commit summaries (not diffs) return through the same context firewall and aggregator as the research tier.
 - Successful write workers must leave a clean worktree before merge-back. Uncommitted
   edits change the result to an error with the retained worktree path.
@@ -354,7 +396,7 @@ blocks or fails a dispatch.
 **Live identities:** tool output shows each planned worker's role immediately,
 then its resolved provider/model, thinking level, attempt, and lifecycle state.
 You do not need to expand the result to identify running workers. This applies
-to `dispatch`, `pr_review`, and `feature_plan`.
+to `dispatch`, `council`, `pr_review`, and `feature_plan`.
 
 **Herdr viewers:** inside Herdr, workers get viewer tabs in the **calling
 workspace**, without moving focus. This works from non-Git directories such as
