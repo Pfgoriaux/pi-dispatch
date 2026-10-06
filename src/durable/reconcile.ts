@@ -10,8 +10,8 @@ import fs from "node:fs";
 import os from "node:os";
 import { putEffect, type AttemptState, type EffectState } from "./contracts.ts";
 import {
-	branchSha, observeMerge, observePullRequest, observePush,
-	type MergeTarget, type Observation, type PullRequestTarget, type PushTarget,
+	branchSha, observePullRequest, observePush,
+	type Observation, type PullRequestTarget, type PushTarget,
 } from "./git.ts";
 import { processStartIdentity, type DurableStore, type StoreSnapshot } from "./store.ts";
 import { dirtyLines } from "../worktree.ts";
@@ -73,7 +73,7 @@ export async function runEffect(store: DurableStore, intent: EffectState, ops: E
 	return settle(store, effect, seen);
 }
 
-export const encodeTarget = (target: MergeTarget | PushTarget | PullRequestTarget): string => JSON.stringify(target);
+export const encodeTarget = (target: PushTarget | PullRequestTarget): string => JSON.stringify(target);
 
 function decodeTarget<T>(effect: Readonly<EffectState>, keys: readonly (keyof T & string)[]): T {
 	const parsed = JSON.parse(effect.target) as Record<string, unknown>;
@@ -91,7 +91,6 @@ export async function observeEffect(effect: Readonly<EffectState>, adapters: Rec
 	const sha = effect.sha;
 	if (!sha) return { state: "blocked", reason: `${effect.key} has no recorded SHA` };
 	return safeObserve(async () => {
-		if (effect.kind === "merge") return observeMerge(decodeTarget<MergeTarget>(effect, ["featureRoot", "branch"]), sha);
 		if (effect.kind === "push") return observePush(decodeTarget<PushTarget>(effect, ["repoRoot", "remote", "url", "branch"]), sha);
 		if (effect.kind === "pull-request" && adapters.gh) {
 			return observePullRequest(adapters.gh, decodeTarget<PullRequestTarget>(effect, ["repo", "base", "head"]), sha);

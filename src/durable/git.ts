@@ -8,14 +8,13 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import type { PullRequestIdentity } from "./contracts.ts";
 import { dirtyLines, gitRun, gitThrow } from "../worktree.ts";
 
 const exec = promisify(execFile);
 
-/** Branches no pilot push or integration may target, in addition to allowlisted bases. */
+/** Branches no pilot push may target, in addition to allowlisted bases. */
 export const PROTECTED_BRANCHES: readonly string[] = Object.freeze(["main", "master", "production"]);
 
 export class EffectBlockedError extends Error {
@@ -105,64 +104,6 @@ export async function ensureTaskWorktree(repo: string, wtPath: string, branch: s
 	fs.mkdirSync(path.dirname(wtPath), { recursive: true });
 	const args = existing === null ? ["worktree", "add", "-b", branch, wtPath, baseSha] : ["worktree", "add", wtPath, branch];
 	await gitThrow(repo, args);
-}
-
-const inProcess = new Map<string, Promise<unknown>>();
-
-/**
- * Serialize feature integration: an in-process queue plus an exclusive SQLite
- * lock in the checkout's Git directory, which the OS releases if the holder dies.
- */
-export async function withIntegrationLock<T>(featureRoot: string, fn: () => Promise<T>): Promise<T> {
-	const key = fs.realpathSync(featureRoot);
-	const previous = inProcess.get(key) ?? Promise.resolve();
-	const run = previous.catch(() => undefined).then(async () => {
-		const lockFile = path.resolve(featureRoot, (await gitThrow(featureRoot, ["rev-parse", "--git-path", "pi-dispatch-integration.lock"])).trim());
-		const db = new DatabaseSync(lockFile);
-		try {
-			db.exec("PRAGMA busy_timeout = 0");
-			db.exec("BEGIN EXCLUSIVE");
-		} catch (error) {
-			db.close();
-			throw new EffectBlockedError(`Feature integration is locked by another process (${lockFile}).`, { cause: error });
-		}
-		try { return await fn(); } finally {
-			try { db.exec("ROLLBACK"); } finally { db.close(); }
-		}
-	});
-	inProcess.set(key, run);
-	try { return await run; } finally {
-		if (inProcess.get(key) === run) inProcess.delete(key);
-	}
-}
-
-export interface MergeTarget { readonly featureRoot: string; readonly branch: string }
-
-async function featureCheckoutProblem(target: MergeTarget): Promise<string | undefined> {
-	if (await worktreeBranch(target.featureRoot) !== target.branch) return `${target.featureRoot} is not on ${target.branch}`;
-	if ((await gitRun(target.featureRoot, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])).ok) return `${target.featureRoot} is mid-merge`;
-	if ((await dirtyLines(target.featureRoot, false)).length > 0) return `${target.featureRoot} has uncommitted changes`;
-	return undefined;
-}
-
-/** Applied when `sha` is reachable from the feature branch. */
-export async function observeMerge(target: MergeTarget, sha: string): Promise<Observation> {
-	const head = await branchSha(target.featureRoot, target.branch);
-	if (!head) return blocked(`Feature branch ${target.branch} is missing`);
-	if (await isAncestor(target.featureRoot, sha, head)) return { state: "applied" };
-	const problem = await featureCheckoutProblem(target);
-	return problem ? blocked(problem) : { state: "absent" };
-}
-
-/** Merge `sha` (not a branch name) with a merge commit; a conflict is aborted and reported. */
-export async function applyMerge(target: MergeTarget, sha: string, message: string): Promise<void> {
-	const problem = await featureCheckoutProblem(target);
-	if (problem) throw new EffectBlockedError(problem);
-	if (PROTECTED_BRANCHES.includes(target.branch)) throw new EffectBlockedError(`Refusing to integrate into protected ${target.branch}`);
-	const merged = await gitRun(target.featureRoot, ["merge", "--no-ff", "--no-edit", "-m", message, sha]);
-	if (merged.ok) return;
-	await gitRun(target.featureRoot, ["merge", "--abort"]);
-	throw new EffectBlockedError(`Merge of ${sha} into ${target.branch} stopped: ${merged.stderr.trim() || merged.stdout.trim()}`);
 }
 
 export interface RemoteAllow { readonly name: string; readonly url: string }

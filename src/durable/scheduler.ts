@@ -568,6 +568,7 @@ export class BatchOwner {
 		const problem = await this.#recheck(verified);
 		if (problem) return { state: "blocked", reason: clip(problem), pr: null };
 		const request: PublishRequest = {
+			headSha: verified.headSha,
 			remote: this.config.publication.remote, url: this.config.publication.url, repo: this.config.publication.repo,
 			base: verified.prBase, title: `${this.config.batch.id}: ${key}`, body: this.#pullRequestBody(verified),
 		};

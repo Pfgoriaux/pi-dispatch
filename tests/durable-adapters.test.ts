@@ -4,7 +4,6 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { putAttempt } from '../src/durable/contracts.ts';
 import { openDurableStore, processStartIdentity } from '../src/durable/store.ts';
@@ -139,7 +138,7 @@ test('pilot child: an unrecorded identity stops the child', async () => {
  assert.equal(await alive(result.spawned!.pid, result.spawned!.startIdentity), false);
 });
 
-test('supervisor: success records identity and spend, stays in owned paths, integrates once', async () => {
+test('supervisor: success records identity and spend, stays in owned paths, retains work without merging', async () => {
  const s = await setup();
  try {
   const pi = fakePi(`commit('src/a.txt','a\\n'); finish();`);
@@ -153,15 +152,8 @@ test('supervisor: success records identity and spend, stays in owned paths, inte
   assert.ok(fs.existsSync(path.join(s.ws, 'sessions', pilotSessionId(identity.batchId, 't1#1'))));
   await assert.rejects(supervisor.runAttempt(task('t1'), soon()), /succeeded/);
 
-  const merged = await supervisor.integrate('t1#1');
-  assert.equal(merged.status, 'applied');
-  assert.equal(git(s.repo, 'show', 'feat/pilot:src/a.txt'), 'a');
-  assert.equal(git(s.repo, 'rev-parse', 'HEAD^2'), done.headSha);
-  assert.ok(!fs.existsSync(done.worktree!), 'clean worktree removed');
-  assert.equal(git(s.repo, 'rev-parse', 'pilot/b1/t1-a1'), done.headSha, 'branch kept');
-  const head = git(s.repo, 'rev-parse', 'HEAD');
-  assert.equal((await supervisor.integrate('t1#1')).status, 'applied');
-  assert.equal(git(s.repo, 'rev-parse', 'HEAD'), head, 'no second merge');
+  assert.equal(git(s.repo, 'rev-parse', 'HEAD'), done.baseSha, 'parent never moves');
+  assert.ok(fs.existsSync(done.worktree!), 'verified worktree retained');
   assert.equal(pi.spawns().length, 1);
  } finally { await s.store.close(); }
 });
@@ -183,7 +175,6 @@ test('supervisor: owned paths, checks, retries, and retained dirty worktrees', a
   const kept = await new Supervisor(s.options({ piExecutable: dirty.bin })).runAttempt(task('t2'), soon());
   assert.equal(kept.status, 'failed'); assert.match(kept.reason!, /uncommitted edits/);
   assert.equal(fs.readFileSync(path.join(kept.worktree!, 'src-uncommitted.txt'), 'utf8'), 'valuable');
-  await assert.rejects(new Supervisor(s.options()).integrate('t2#1'), /no succeeded head/);
   assert.ok(fs.existsSync(kept.worktree!));
  } finally { await s.store.close(); }
 });
@@ -259,34 +250,6 @@ test('supervisor: unknown pricing and check mutations cannot verify an attempt',
  } finally { await s.store.close(); }
 });
 
-test('integration: conflicts stop, locks serialize, no dispatch merge-back', async () => {
- const s = await setup();
- try {
-  const pi = fakePi(`commit('src/shared.txt','worker\\n'); finish();`);
-  const supervisor = new Supervisor(s.options({ piExecutable: pi.bin }));
-  assert.equal((await supervisor.runAttempt(task('t1'), soon())).status, 'succeeded');
-  fs.mkdirSync(path.join(s.repo, 'src'));
-  fs.writeFileSync(path.join(s.repo, 'src/shared.txt'), 'feature\n');
-  git(s.repo, 'add', '.'); git(s.repo, 'commit', '-q', '-m', 'conflicting feature edit');
-  const lockFile = path.resolve(s.repo, git(s.repo, 'rev-parse', '--git-path', 'pi-dispatch-integration.lock'));
-  const holder = new DatabaseSync(lockFile); holder.exec('BEGIN EXCLUSIVE');
-  await assert.rejects(supervisor.integrate('t1#1'), /locked by another process/);
-  holder.exec('ROLLBACK'); holder.close();
-  assert.equal((await s.store.read()).effects.length, 0);
-
-  const head = git(s.repo, 'rev-parse', 'HEAD');
-  const stopped = await supervisor.integrate('t1#1');
-  assert.equal(stopped.status, 'blocked'); assert.match((stopped as any).reason, /stopped/);
-  assert.equal(git(s.repo, 'rev-parse', 'HEAD'), head);
-  assert.equal(git(s.repo, 'status', '--porcelain'), '');
-  assert.equal((await s.store.read()).effects[0].status, 'unresolved');
-  await assert.rejects(supervisor.runAttempt(task('t2'), soon()), /t1#1:merge is unresolved/);
- } finally { await s.store.close(); }
- for (const file of ['supervisor.ts', 'git.ts', 'reconcile.ts']) {
-  assert.doesNotMatch(fs.readFileSync(path.join(repoRoot, 'src/durable', file), 'utf8'), /merge\.ts|mergeWorktreeBranches|index\.ts/);
- }
-});
-
 /** Fake gh backed by a JSON file; PR heads follow the bare remote like GitHub. */
 function fakeGh(bare: string, afterCreate = '') {
  const state = path.join(W, `gh-state-${uid()}.json`);
@@ -305,7 +268,7 @@ process.exit(2);
  return { bin, state, calls };
 }
 
-const request = (bare: string) => ({ remote: 'origin', url: bare, repo: 'owner/proj', base: 'main', title: 'Pilot', body: 'Draft' });
+const request = (bare: string) => ({ headSha: git(path.join(path.dirname(bare), 'proj'), 'rev-parse', 'HEAD'), remote: 'origin', url: bare, repo: 'owner/proj', base: 'main', title: 'Pilot', body: 'Draft' });
 
 test('publication: protected and unlisted targets are rejected before any effect', async () => {
  const s = await setup();
@@ -329,6 +292,8 @@ test('publication: protected and unlisted targets are rejected before any effect
 
   // Normal publication is idempotent and opens one draft PR whose head matches the pushed SHA.
   const sha = git(s.repo, 'rev-parse', 'HEAD');
+  await assert.rejects(supervisor.publish({ ...request(s.bare), headSha: 'f'.repeat(40) }), /moved from verified head/);
+  assert.equal((await s.store.read()).effects.length, 0);
   const first = await supervisor.publish(request(s.bare));
   assert.equal(first.push.status, 'applied');
   assert.deepEqual(first.pullRequest?.effect.pr, { repo: 'owner/proj', number: 1, headSha: sha });

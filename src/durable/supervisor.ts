@@ -1,7 +1,6 @@
 /**
  * Durable pilot supervisor: runs admitted tasks as child Pi processes in
- * per-branch worktrees, integrates successful branches into one feature
- * branch, and publishes that branch as a draft pull request.
+ * retained per-branch worktrees and publishes verified branches as draft PRs.
  *
  * - One spawn is one attempt. The attempt is committed as `running` (worker
  *   unknown) before its worktree or child exists; the child's identity is
@@ -10,8 +9,8 @@
  * - The deadline timer belongs to this process, so a lost client cannot keep
  *   a child running. If this process dies, the child can outlive it; recovery
  *   then blocks on the live identity instead of retrying.
- * - Merges, pushes, and pull requests go through `runEffect` (reconcile.ts).
- *   The existing dispatch merge-back and merge agent are never used here.
+ * - Pushes and pull requests go through `runEffect` (reconcile.ts).
+ *   Target branches are never merged or removed.
  */
 
 import { execFile } from "node:child_process";
@@ -23,13 +22,13 @@ import { promisify } from "node:util";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../types.ts";
 import { runPilotProc, type PilotProcResult } from "../worker-proc.ts";
-import { dirtyLines, removeWorktree } from "../worktree.ts";
+import { dirtyLines } from "../worktree.ts";
 import { attemptKey, putAttempt, type AttemptState, type WorkerIdentity } from "./contracts.ts";
 import {
-	applyMerge, applyPullRequest, applyPush, assertPublishTargets, branchSha, changedFiles, ensureTaskWorktree,
-	isAncestor, observeMerge, observePullRequest, observePush, outsideOwnership, PROTECTED_BRANCHES,
-	taskWorktreePath, withIntegrationLock, worktreeBranch,
-	type MergeTarget, type PublishAllowlist, type PullRequestTarget, type PushTarget,
+	applyPullRequest, applyPush, assertPublishTargets, branchSha, changedFiles, ensureTaskWorktree,
+	isAncestor, observePullRequest, observePush, outsideOwnership, PROTECTED_BRANCHES,
+	taskWorktreePath, worktreeBranch,
+	type PublishAllowlist, type PullRequestTarget, type PushTarget,
 } from "./git.ts";
 import { blockers, encodeTarget, reconcileEffects, runEffect, type EffectOutcome, type ReconcileReport } from "./reconcile.ts";
 import { processStartIdentity, type DurableStore, type StoreSnapshot } from "./store.ts";
@@ -56,7 +55,7 @@ export interface PilotTask {
 
 export interface SupervisorOptions {
 	readonly store: DurableStore;
-	/** Checkout of `featureBranch`; tasks branch from its tip and merge back into it. */
+	/** Repository containing `featureBranch`; tasks branch from its tip. */
 	readonly featureRoot: string;
 	readonly featureBranch: string;
 	/** Absolute Pi executable for every child. */
@@ -83,6 +82,8 @@ export interface RunLimits {
 }
 
 export interface PublishRequest {
+	/** Exact commit whose checks passed. Never replace it with the current tip. */
+	readonly headSha: string;
 	readonly remote: string;
 	readonly url: string;
 	/** `owner/name` for gh. */
@@ -287,34 +288,6 @@ export class Supervisor {
 		return structuredClone(stored) as AttemptState;
 	}
 
-	/** Merge a succeeded attempt's recorded head into the feature branch, serialized per checkout. */
-	async integrate(key: string): Promise<EffectOutcome> {
-		const { store, featureRoot, featureBranch } = this.options;
-		const effectKey = `${key}:merge`;
-		const snapshot = await store.read();
-		const attempt = snapshot.attempts.find((a) => a.key === key);
-		if (attempt?.status !== "succeeded" || !attempt.headSha || !attempt.branch) {
-			throw new SupervisorBlockedError(`${key} has no succeeded head to integrate.`);
-		}
-		const halted = blockers(snapshot, new Set([effectKey]));
-		if (halted.length > 0) throw new SupervisorBlockedError(`Batch is halted: ${halted.join("; ")}`);
-		const target: MergeTarget = { featureRoot, branch: featureBranch };
-		const { headSha: sha, branch } = attempt;
-		const outcome = await withIntegrationLock(featureRoot, () => runEffect(store, {
-			key: effectKey, attemptKey: key, kind: "merge", status: "intended", target: encodeTarget(target), sha, pr: null,
-		}, {
-			observe: () => observeMerge(target, sha),
-			apply: async () => {
-				const current = await branchSha(featureRoot, branch);
-				if (current !== sha) throw new SupervisorBlockedError(`${branch} moved from ${sha} to ${current}.`);
-				await applyMerge(target, sha, `Merge ${branch} (${key})`);
-			},
-		}));
-		// Clean worktrees go; dirty or locked ones stay for recovery. The branch stays as evidence.
-		if (outcome.status === "applied" && attempt.worktree) await removeWorktree(featureRoot, attempt.worktree, { deleteBranch: false });
-		return outcome;
-	}
-
 	/** Push the feature tip to an allowlisted remote, then open one draft pull request for it. */
 	async publish(request: PublishRequest): Promise<{ push: EffectOutcome; pullRequest?: EffectOutcome }> {
 		const { store, featureRoot, featureBranch, allowlist, gh } = this.options;
@@ -322,8 +295,10 @@ export class Supervisor {
 		const pr: PullRequestTarget = { repo: request.repo, base: request.base, head: featureBranch };
 		await assertPublishTargets(allowlist, push, pr);
 		if (!gh || !path.isAbsolute(gh)) throw new SupervisorBlockedError("Publishing needs an absolute gh executable.");
-		const sha = await branchSha(featureRoot, featureBranch);
-		if (!sha) throw new SupervisorBlockedError(`Feature branch ${featureBranch} is missing.`);
+		const sha = request.headSha;
+		if (await branchSha(featureRoot, featureBranch) !== sha) {
+			throw new SupervisorBlockedError(`Feature branch ${featureBranch} moved from verified head ${sha}.`);
+		}
 		const scope = `feature:${featureBranch}`;
 		const keys = { push: `${scope}:push:${request.remote}:${sha}`, pr: `${scope}:pull-request:${request.repo}:${request.base}:${sha}` };
 		const halted = blockers(await store.read(), new Set(Object.values(keys)));

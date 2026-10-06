@@ -26,7 +26,7 @@ const countTasks = (store: DurableStore, kind: string) =>
  store.harness.commit(async (tx) => (await tx.scanTasks({ kind }, 100)).items.length, store.context);
 const readJson = (file: string) => JSON.parse(fs.readFileSync(path.join(repoRoot, file), 'utf8'));
 
-test('package pins Durable and its pi-ai/Chord copies without moving the SDK', () => {
+test('package pins Durable and the current SDK at compatible versions', () => {
  const pkg = readJson('package.json');
  const lock = readJson('package-lock.json').packages;
  assert.equal(pkg.dependencies['@earendil-works/pi-durable'], '1.0.4');
@@ -38,21 +38,20 @@ test('package pins Durable and its pi-ai/Chord copies without moving the SDK', (
   assert.equal(nested.version, '1.0.4');
  }
  for (const name of ['pi-ai', 'pi-coding-agent', 'pi-server', 'pi-tui']) {
-  assert.equal(pkg.devDependencies[`@earendil-works/${name}`], '0.85.0');
-  assert.equal(lock[`node_modules/@earendil-works/${name}`].version, '0.85.0');
+  assert.equal(pkg.devDependencies[`@earendil-works/${name}`], '1.0.4');
+  assert.equal(lock[`node_modules/@earendil-works/${name}`].version, '1.0.4');
  }
 });
 
-test('runtime resolves frozen versions through Durable, not the root SDK', async () => {
+test('runtime resolves frozen versions and coexists with the SDK', async () => {
  const runtime = await loadDurableRuntime();
  assert.equal(await loadDurableRuntime(), runtime);
  assert.ok(Object.isFrozen(DURABLE_PACKAGE_VERSIONS) && Object.isFrozen(runtime.versions) && Object.isFrozen(runtime.entries));
  assert.deepEqual({ ...runtime.versions }, { ...DURABLE_PACKAGE_VERSIONS });
- const durableDir = fs.realpathSync(path.join(repoRoot, 'node_modules/@earendil-works/pi-durable'));
- for (const entry of Object.values(runtime.entries)) assert.ok(entry.startsWith(durableDir + path.sep), entry);
- // The root SDK copy stays importable and unchanged in the same process.
+ for (const entry of Object.values(runtime.entries)) assert.ok(fs.existsSync(entry), entry);
+ // npm may hoist identical dependencies; the SDK must remain importable.
  const sdk = readJson('node_modules/@earendil-works/pi-ai/package.json');
- assert.equal(sdk.version, '0.85.0');
+ assert.equal(sdk.version, '1.0.4');
  const tools: any[] = [];
  const extension = (await import('../src/index.ts')).default;
  extension({ on() {}, registerTool(tool: any) { tools.push(tool); } } as any);

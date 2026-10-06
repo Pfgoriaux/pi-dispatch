@@ -46,7 +46,7 @@ export type AttemptState = {
 	reason: string | null;
 };
 
-export type EffectKind = "commit" | "merge" | "push" | "pull-request";
+export type EffectKind = "commit" | "push" | "pull-request";
 /** `intended` is recorded before the effect runs; one that never became `applied` is `unresolved` after recovery. */
 export type EffectStatus = "intended" | "applied" | "unresolved";
 export type EffectState = {
