@@ -156,12 +156,12 @@ export async function applyPush(push: PushTarget, sha: string): Promise<void> {
 	await gitThrow(push.repoRoot, ["push", "--porcelain", push.remote, `${sha}:refs/heads/${push.branch}`]);
 }
 
-interface ListedPr { number: number; headRefOid: string; headRefName: string; baseRefName: string }
+interface ListedPr { number: number; headRefOid: string; headRefName: string; baseRefName: string; state: string; isDraft: boolean }
 
 async function listPullRequests(gh: string, pr: PullRequestTarget): Promise<ListedPr[]> {
 	const { stdout } = await exec(gh, [
-		"pr", "list", "--repo", pr.repo, "--head", pr.head, "--base", pr.base, "--state", "open",
-		"--json", "number,headRefOid,headRefName,baseRefName", "--limit", "10",
+		"pr", "list", "--repo", pr.repo, "--head", pr.head, "--state", "all",
+		"--json", "number,headRefOid,headRefName,baseRefName,state,isDraft", "--limit", "10",
 	], { timeout: 60_000 });
 	const parsed = JSON.parse(stdout) as unknown;
 	if (!Array.isArray(parsed)) throw new EffectBlockedError("Unexpected gh pr list output.");
@@ -172,8 +172,9 @@ async function listPullRequests(gh: string, pr: PullRequestTarget): Promise<List
 export async function observePullRequest(gh: string, pr: PullRequestTarget, sha: string): Promise<Observation> {
 	const prs = await listPullRequests(gh, pr);
 	if (prs.length === 0) return { state: "absent" };
-	if (prs.length > 1) return blocked(`${prs.length} open pull requests use ${pr.head} -> ${pr.base}`);
+	if (prs.length > 1) return blocked(`${prs.length} pull requests use ${pr.head}`);
 	const [found] = prs;
+	if (found.state !== "OPEN" || !found.isDraft) return blocked(`Pull request #${found.number} is not an open draft; operator inspection required`);
 	const exact = found.headRefOid === sha && found.headRefName === pr.head && found.baseRefName === pr.base;
 	if (!exact) return blocked(`Pull request #${found.number} head is ${found.headRefOid}, not ${sha}`);
 	return { state: "applied", pr: { repo: pr.repo, number: found.number, headSha: sha } };

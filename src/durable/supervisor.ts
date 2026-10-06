@@ -39,6 +39,8 @@ export class SupervisorBlockedError extends Error {
 	override name = "SupervisorBlockedError";
 }
 
+export class AttemptNotStartedError extends Error {}
+
 export interface PilotTask {
 	/** Admitted task key. */
 	readonly key: string;
@@ -79,6 +81,8 @@ export interface RunLimits {
 	readonly deadlineAt: number;
 	/** Optional client cancellation. Losing the client does not lift the deadline. */
 	readonly signal?: AbortSignal;
+	/** Rechecked immediately before admission, after asynchronous preparation. */
+	readonly canStart?: () => boolean;
 }
 
 export interface PublishRequest {
@@ -170,7 +174,7 @@ export class Supervisor {
 		const remaining = limits.deadlineAt - Date.now();
 		if (!(remaining > 0 && remaining <= MAX_TIMER_MS)) throw new SupervisorBlockedError("Deadline must be in the future and within 24 days.");
 		if (limits.signal?.aborted) throw new SupervisorBlockedError("Cancelled before start.");
-		const attempt = await this.#queue(() => this.#claim(task));
+		const attempt = await this.#queue(() => this.#claim(task, limits));
 		let spawned = false;
 		try {
 			return await this.#execute(task, attempt, limits, () => { spawned = true; });
@@ -180,7 +184,7 @@ export class Supervisor {
 		}
 	}
 
-	async #claim(task: PilotTask): Promise<AttemptState> {
+	async #claim(task: PilotTask, limits: RunLimits): Promise<AttemptState> {
 		const { store, featureRoot, featureBranch, worktreesRoot, branchPrefix } = this.options;
 		const plan = planAttempt(await store.read(), task.key);
 		const baseSha = await branchSha(featureRoot, featureBranch);
@@ -191,7 +195,11 @@ export class Supervisor {
 			reservedUsd: plan.reserveUsd, spentUsd: 0, worker: null, worktree: await taskWorktreePath(worktreesRoot, featureRoot, branch),
 			branch, baseSha, headSha: null, pr: null, reason: null,
 		};
-		await store.harness.commit((tx) => putAttempt(store.contracts, tx, attempt), store.context);
+		await store.harness.commit((tx) => {
+			if (limits.signal?.aborted || limits.canStart?.() === false) throw new AttemptNotStartedError("Stopped before admission.");
+			if (Date.now() >= limits.deadlineAt) throw new AttemptNotStartedError("Deadline passed before admission.");
+			return putAttempt(store.contracts, tx, attempt);
+		}, store.context);
 		return attempt;
 	}
 
@@ -266,7 +274,10 @@ export class Supervisor {
 		if (await worktreeBranch(cwd) !== attempt.branch) return `worktree is no longer on ${attempt.branch}`;
 		const head = await branchSha(cwd, attempt.branch!);
 		if (!head || !(await isAncestor(cwd, attempt.baseSha!, head))) return `${attempt.branch} does not descend from ${attempt.baseSha}`;
-		const outside = outsideOwnership(await changedFiles(cwd, attempt.baseSha!, head), task.ownedPaths);
+		if (head === attempt.baseSha) return "worker produced no commit";
+		const files = await changedFiles(cwd, attempt.baseSha!, head);
+		if (files.length === 0) return "worker produced no file changes";
+		const outside = outsideOwnership(files, task.ownedPaths);
 		if (outside.length > 0) return `changes outside owned paths: ${outside.slice(0, 5).join(", ")}`;
 		for (const argv of task.checks ?? []) {
 			const failed = await exec(argv[0], argv.slice(1), { cwd, signal, maxBuffer: 16 * 1024 * 1024 }).then(() => false, () => true);

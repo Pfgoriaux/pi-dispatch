@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { putAttempt } from '../src/durable/contracts.ts';
+import { runEffect } from '../src/durable/reconcile.ts';
 import { openDurableStore, processStartIdentity } from '../src/durable/store.ts';
 import { pilotSessionId, Supervisor, SupervisorBlockedError, type SupervisorOptions } from '../src/durable/supervisor.ts';
 import { runPilotProc } from '../src/worker-proc.ts';
@@ -158,6 +159,20 @@ test('supervisor: success records identity and spend, stays in owned paths, reta
  } finally { await s.store.close(); }
 });
 
+test('supervisor: no-op output is not verified; stopped admission starts nothing', async () => {
+ const s = await setup();
+ try {
+  const pi = fakePi('finish();');
+  const supervisor = new Supervisor(s.options({ piExecutable: pi.bin }));
+  await assert.rejects(supervisor.runAttempt(task('t1'), { ...soon(), canStart: () => false }), /Stopped before admission/);
+  assert.equal(pi.spawns().length, 0);
+  assert.equal((await s.store.read()).attempts.filter(a => a.status !== 'reserved').length, 0);
+  const result = await supervisor.runAttempt(task('t1'), soon());
+  assert.equal(result.status, 'failed');
+  assert.equal(result.reason, 'worker produced no commit');
+ } finally { await s.store.close(); }
+});
+
 test('supervisor: owned paths, checks, retries, and retained dirty worktrees', async () => {
  const s = await setup();
  try {
@@ -260,7 +275,7 @@ const args=process.argv.slice(2), opt=(n)=>args[args.indexOf(n)+1];
 const state=fs.existsSync(${JSON.stringify(state)})?JSON.parse(fs.readFileSync(${JSON.stringify(state)},'utf8')):[];
 const head=(b)=>{try{return cp.execFileSync('git',['-C',${JSON.stringify(bare)},'rev-parse','--verify','refs/heads/'+b],{encoding:'utf8'}).trim()}catch{return '0'.repeat(40)}};
 fs.appendFileSync(${JSON.stringify(log)}, args[1]+'\\n');
-if(args[0]==='pr'&&args[1]==='list'){console.log(JSON.stringify(state.filter(p=>p.headRefName===opt('--head')&&p.baseRefName===opt('--base')).map(p=>({number:p.number,headRefName:p.headRefName,baseRefName:p.baseRefName,headRefOid:p.headRefOid??head(p.headRefName)}))));process.exit(0);}
+if(args[0]==='pr'&&args[1]==='list'){console.log(JSON.stringify(state.filter(p=>p.headRefName===opt('--head')).map(p=>({state:p.state??'OPEN',isDraft:p.isDraft??true,number:p.number,headRefName:p.headRefName,baseRefName:p.baseRefName,headRefOid:p.headRefOid??head(p.headRefName)}))));process.exit(0);}
 if(args[0]==='pr'&&args[1]==='create'&&args.includes('--draft')){state.push({number:state.length+1,headRefName:opt('--head'),baseRefName:opt('--base')});fs.writeFileSync(${JSON.stringify(state)},JSON.stringify(state));${afterCreate};console.log('https://example.invalid/pull/'+state.length);process.exit(0);}
 process.exit(2);
 `);
@@ -269,6 +284,31 @@ process.exit(2);
 }
 
 const request = (bare: string) => ({ headSha: git(path.join(path.dirname(bare), 'proj'), 'rev-parse', 'HEAD'), remote: 'origin', url: bare, repo: 'owner/proj', base: 'main', title: 'Pilot', body: 'Draft' });
+
+test('publication: closed, merged, retargeted and non-draft PRs block without creation', async () => {
+ for (const override of [{ state: 'CLOSED' }, { state: 'MERGED' }, { isDraft: false }, { baseRefName: 'other' }]) {
+  const s = await setup();
+  try {
+   const gh = fakeGh(s.bare);
+   fs.writeFileSync(gh.state, JSON.stringify([{ number: 1, headRefName: 'feat/pilot', baseRefName: 'main', ...override }]));
+   const result = await new Supervisor(s.options({ gh: gh.bin })).publish(request(s.bare));
+   assert.equal(result.pullRequest?.status, 'blocked');
+   assert.equal(gh.calls().filter(c => c === 'create').length, 0);
+  } finally { await s.store.close(); }
+ }
+});
+
+test('publication: uncertain PR create is never replayed from an empty listing', async () => {
+ const s = await setup();
+ try {
+  let creates = 0;
+  const intent = { key: 'create-once', attemptKey: 't1#1', kind: 'pull-request' as const, status: 'intended' as const, target: '{}', sha: 'a'.repeat(40), pr: null };
+  const ops = { observe: async () => ({ state: 'absent' as const }), apply: async () => { creates++; throw new Error('connection lost'); } };
+  assert.equal((await runEffect(s.store, intent, ops)).status, 'blocked');
+  assert.equal((await runEffect(s.store, intent, ops)).status, 'blocked');
+  assert.equal(creates, 1);
+ } finally { await s.store.close(); }
+});
 
 test('publication: protected and unlisted targets are rejected before any effect', async () => {
  const s = await setup();

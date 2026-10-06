@@ -75,7 +75,7 @@ const args=process.argv.slice(2), opt=(n)=>args[args.indexOf(n)+1];
 const state=fs.existsSync(${JSON.stringify(state)})?JSON.parse(fs.readFileSync(${JSON.stringify(state)},'utf8')):[];
 const head=(b)=>{try{return cp.execFileSync('git',['-C',${JSON.stringify(bare)},'rev-parse','--verify','refs/heads/'+b],{encoding:'utf8'}).trim()}catch{return '0'.repeat(40)}};
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args)+'\\n');
-if(args[0]==='pr'&&args[1]==='list'){console.log(JSON.stringify(state.filter(p=>p.headRefName===opt('--head')&&p.baseRefName===opt('--base')).map(p=>({number:p.number,headRefName:p.headRefName,baseRefName:p.baseRefName,headRefOid:head(p.headRefName)}))));process.exit(0);}
+if(args[0]==='pr'&&args[1]==='list'){console.log(JSON.stringify(state.filter(p=>p.headRefName===opt('--head')).map(p=>({state:p.state??'OPEN',isDraft:p.isDraft??true,number:p.number,headRefName:p.headRefName,baseRefName:p.baseRefName,headRefOid:head(p.headRefName)}))));process.exit(0);}
 if(args[0]==='pr'&&args[1]==='create'&&args.includes('--draft')){state.push({number:state.length+1,headRefName:opt('--head'),baseRefName:opt('--base')});fs.writeFileSync(${JSON.stringify(state)},JSON.stringify(state));console.log('https://example.invalid/pull/'+state.length);process.exit(0);}
 process.exit(2);
 `);
@@ -162,6 +162,8 @@ test('config: missing inputs, caps, deadline, and spend fail closed', () => {
  broken((c) => { c.worker.piExecutable = 'pi'; }, /absolute path/);
  // The policy hash covers every input, so a resume with changed inputs is refused by the store.
  assert.notEqual(policyHash(valid), policyHash({ ...valid, limits: { ...valid.limits, maxWorkers: 2 } }));
+ assert.match(agent.systemPrompt, /Commits on the assigned branch are authorized/);
+ assert.doesNotMatch(agent.systemPrompt, /authorization for.*merge-back/);
 });
 
 test('cli: missing configuration and past deadlines start nothing', async () => {
@@ -277,7 +279,7 @@ test('offline publication keeps verified work, reports it, and refuses an ambigu
  const { report, effects } = await runBatch(cfg);
  const tasks = byId(report);
  assert.equal(tasks.a.state, 'verified'); assert.match(tasks.a.reason, /publication blocked: push/);
- assert.equal(tasks.b.state, 'verified'); assert.match(tasks.b.reason, /parent a has no draft pull request/);
+ assert.equal(tasks.b.state, 'verified'); assert.match(tasks.b.reason, /not published yet/);
  assert.deepEqual(effects.map((e) => [e.kind, e.status]), [['push', 'unresolved']]);
  assert.deepEqual(gh.calls(), []);
  const owner = await openBatch(cfg, { agent });
@@ -289,6 +291,31 @@ test('offline publication keeps verified work, reports it, and refuses an ambigu
  assert.equal(pi.starts().length, 2);
 });
 
+test('publication: transient failed push stays resumable without repeating workers', async () => {
+ const w = workspace();
+ const pi = fakePi({});
+ const gh = fakeGh(w.bare);
+ const hook = path.join(git(w.repo, 'config', 'core.hooksPath'), 'pre-push');
+ fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o700 });
+ const cfg = config(w, [{ id: 'a' }, { id: 'b' }], pi.bin, gh.bin);
+ const first = await runBatch(cfg);
+ assert.equal(first.report.phase, 'running');
+ assert.match(byId(first.report).a.reason, /publication blocked/);
+ fs.rmSync(hook);
+ const resumed = await runBatch(cfg, 'resume');
+ assert.deepEqual(resumed.report.tasks.map(t => t.state), ['pr-ready', 'pr-ready']);
+ assert.equal(pi.starts().length, 2);
+ assert.equal(gh.prs().length, 2);
+});
+
+test('IPC client refuses symlinked private directory', async () => {
+ const dir = path.join(W, `ipc-${uid()}`);
+ const link = path.join(W, `ipc-link-${uid()}`);
+ fs.mkdirSync(dir, { mode: 0o700 });
+ fs.symlinkSync(dir, link);
+ await assert.rejects(request(path.join(link, 'owner.sock'), { op: 'stop', cancel: true }), /private directory/);
+});
+
 /** Run the CLI in its own process; resolves once its first worker has started. */
 function owner(file: string) {
  const child = spawn(process.execPath, ['--import', 'tsx', path.join(repoRoot, 'src/durable/cli.ts'), 'run', file], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -298,6 +325,22 @@ function owner(file: string) {
  const exited = new Promise<number | null>((resolve) => child.on('exit', (code) => resolve(code)));
  return { child, exited, output: () => ({ stdout, stderr }) };
 }
+
+test('cli: terminal hangup cancels its owned worker', async () => {
+ const w = workspace();
+ const pi = fakePi({ h: 'hang' });
+ const cfg = config(w, [{ id: 'h' }], pi.bin, fakeGh(w.bare).bin);
+ const file = path.join(w.ws, 'hangup.json');
+ fs.writeFileSync(file, JSON.stringify(cfg));
+ const run = owner(file);
+ await waitFor(() => pi.starts('h').length === 1, 30_000);
+ const pid = pi.starts('h')[0].pid;
+ leftovers.push(pid);
+ const identity = await processStartIdentity(pid);
+ run.child.kill('SIGHUP');
+ await run.exited;
+ assert.notEqual(await processStartIdentity(pid), identity);
+});
 
 test('cli: status and stop over the owner socket; a killed owner blocks resume', async () => {
  const w = workspace();

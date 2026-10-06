@@ -404,6 +404,9 @@ Every field is required, except `worker.piPrefixArgs`:
 - `ownedFiles` entries are repository-relative files or directories ending in
   `/`. Each task needs at least one check (argv, no shell). Checks run with the
   CLI's environment, so start it without production credentials.
+- Checks run in the retained worker worktree. Ignored artifacts and dependencies
+  are not independently reproduced in a fresh checkout. A worker must produce
+  a commit with file changes; unchanged output is not verified.
 
 ```
 cli.ts run
@@ -448,13 +451,15 @@ Ownership and stopping:
   finish, then the owner prints the report and exits. Unfinished tasks continue
   on `resume`. `stop --cancel` also stops running workers; their spend becomes
   unknown, which halts the batch. The first SIGINT/SIGTERM drains; a second
-  cancels.
+  cancels. SIGHUP cancels running workers.
 - `status` without a live owner opens the store, which runs recovery, and
   prints the report without scheduling anything.
 - `resume` refuses while any attempt is blocked or interrupted, any spend is
-  unknown, or an effect cannot be observed. Effects proven absent rerun in their
-  publication step. A killed owner can leave its worker running; recovery
-  records it as blocked and nothing restarts it.
+  unknown, or an effect cannot be observed. A failed publication pauses at that
+  step. Proven-absent pushes can retry on resume. Unconfirmed PR creation never
+  retries automatically; closed, merged, retargeted or non-draft PRs block
+  publication. A killed owner can leave its worker running; recovery records
+  it as blocked and nothing restarts it.
 
 Limits:
 

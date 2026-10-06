@@ -67,6 +67,11 @@ export async function runEffect(store: DurableStore, intent: EffectState, ops: E
 	if (!existing) await store.harness.commit((tx) => putEffect(store.contracts, tx, effect), store.context);
 	let seen = await safeObserve(ops.observe);
 	if (seen.state !== "absent") return settle(store, effect, seen);
+	// GitHub has no create idempotency key. An empty listing cannot prove that
+	// a previous request failed, so replay never repeats an uncertain create.
+	if (existing && intent.kind === "pull-request") {
+		return settle(store, effect, { state: "blocked", reason: "Previous PR creation is unconfirmed; operator inspection required." });
+	}
 	const failure = await ops.apply().then(() => undefined, message);
 	seen = await safeObserve(ops.observe);
 	if (seen.state === "absent") seen = { state: "blocked", reason: failure ?? "effect is not visible after applying" };

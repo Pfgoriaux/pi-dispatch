@@ -25,7 +25,7 @@ import type { AttemptState } from "./contracts.ts";
 import { branchSha, isAncestor } from "./git.ts";
 import { blockers, reconcileEffects } from "./reconcile.ts";
 import { openDurableStore, type DurableStore, type StoreSnapshot } from "./store.ts";
-import { Supervisor, type PilotTask, type PublishRequest, type SupervisorOptions } from "./supervisor.ts";
+import { AttemptNotStartedError, Supervisor, type PilotTask, type PublishRequest, type SupervisorOptions } from "./supervisor.ts";
 
 export const MAX_WORKERS = 3;
 export const MAX_ATTEMPTS_PER_TASK = 2;
@@ -457,7 +457,8 @@ export class BatchOwner {
 	run(key: string, checkpoint: WorkCheckpoint, runtime: Runtime<WorkInput, WorkCheckpoint, Verified>, context: Context): Promise<void> {
 		if (checkpoint.phase !== "run") throw new Error(`Unexpected checkpoint ${checkpoint.phase}.`);
 		return this.#withSlot(runtime, context, () => this.#attemptStep(key, checkpoint)
-			.catch((error) => failure<WorkCheckpoint, Verified>("blocked", message(error))));
+			.catch((error) => error instanceof AttemptNotStartedError && this.#draining
+				? PARK : failure<WorkCheckpoint, Verified>("blocked", message(error))));
 	}
 
 	/** Adopt a recorded success, decide a retry, or start the next attempt. Store records win over checkpoints. */
@@ -519,7 +520,9 @@ export class BatchOwner {
 			key, prompt: workerPrompt(this.config, spec, base), agent: this.options.agent, model: worker.model,
 			thinking: worker.thinking, ownedPaths: spec.ownedFiles, checks: spec.checks,
 		};
-		return this.#claimed(key, () => supervisor.runAttempt(task, { deadlineAt: this.deadlineAt, signal: this.#cancel.signal }));
+		return this.#claimed(key, () => supervisor.runAttempt(task, {
+			deadlineAt: this.deadlineAt, signal: this.#cancel.signal, canStart: () => !this.#draining,
+		}));
 	}
 
 	/**
@@ -550,6 +553,10 @@ export class BatchOwner {
 		return this.#withSlot(runtime, context, async () => {
 			const published = await this.#publishOne(spec.id, checkpoint).catch((error): Publication => ({ state: "blocked", reason: clip(message(error)), pr: null }));
 			if (published === PARK) return PARK;
+			if (published.state === "blocked") {
+				void this.stop();
+				return { status: "running", checkpoint: { ...checkpoint, publications: { ...publications, [spec.id]: published } } };
+			}
 			return { status: "running", checkpoint: { ...checkpoint, index: index + 1, publications: { ...publications, [spec.id]: published } } };
 		});
 	}
@@ -583,7 +590,8 @@ export class BatchOwner {
 			"",
 			`- Head: ${verified.headSha}`,
 			`- Base: ${verified.baseSha}${verified.parent ? `, the verified head of ${verified.parent}` : ""}`,
-			`- Checks passed at the head: ${spec.checks.map((argv) => `\`${argv.join(" ")}\``).join(", ")}`,
+			`- Checks passed in the retained worker worktree at this head: ${spec.checks.map((argv) => `\`${argv.join(" ")}\``).join(", ")}`,
+			"- Ignored artifacts and dependencies were not independently reproduced in a fresh checkout.",
 			"- Not reviewed: this pull request awaits human review.",
 		].join("\n");
 	}

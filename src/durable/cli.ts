@@ -174,9 +174,9 @@ export function loadConfig(file: string): PilotConfig {
 	return parseConfig(raw);
 }
 
-/** The bundled writer agent. The model comes from the configuration, never from frontmatter. */
+/** Commit-only pilot writer. The model comes from the configuration. */
 export function writerAgent(): AgentConfig {
-	const filePath = path.join(bundledAgentsDir(), "writer.md");
+	const filePath = path.join(bundledAgentsDir(), "durable-writer.md");
 	const { frontmatter, body } = parseFrontmatter<{ name?: unknown; description?: unknown; tools?: unknown }>(fs.readFileSync(filePath, "utf8"));
 	const tools = typeof frontmatter.tools === "string" ? frontmatter.tools.split(",").map((t) => t.trim()).filter(Boolean) : undefined;
 	return {
@@ -235,8 +235,19 @@ async function serve(owner: BatchOwner, file: string): Promise<net.Server> {
 
 /** One request to the owner; `undefined` when no owner listens. */
 export async function request(file: string, body: Request): Promise<Record<string, unknown> | undefined> {
+	privateDir(path.dirname(file));
+	try {
+		const stat = fs.lstatSync(file);
+		if (!stat.isSocket() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) {
+			throw new Error("Refusing socket not privately owned by this user.");
+		}
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
 	return new Promise((resolve, reject) => {
 		const socket = net.connect(file);
+		socket.setTimeout(5000, () => socket.destroy(new Error("Owner request timed out.")));
 		let output = "";
 		socket.setEncoding("utf8");
 		socket.on("connect", () => socket.write(`${JSON.stringify(body)}\n`));
@@ -267,6 +278,7 @@ async function own(config: PilotConfig, mode: "run" | "resume", io: Io): Promise
 		io.err(signals === 1 ? "Stopping: no new attempts; running attempts finish first. Signal again to cancel them." : "Cancelling running attempts.");
 		void owner.stop(signals > 1);
 	};
+	const onHangup = () => { void owner.stop(true); };
 	try {
 		if (mode === "run") await owner.create();
 		else await owner.attach();
@@ -278,10 +290,12 @@ async function own(config: PilotConfig, mode: "run" | "resume", io: Io): Promise
 		}
 		server = await serve(owner, file);
 		process.on("SIGINT", onSignal).on("SIGTERM", onSignal);
+		process.on("SIGHUP", onHangup);
 		print(io, await owner.execute());
 		return 0;
 	} finally {
 		process.off("SIGINT", onSignal).off("SIGTERM", onSignal);
+		process.off("SIGHUP", onHangup);
 		if (server) await new Promise((resolve) => server!.close(resolve));
 		await owner.close();
 	}
