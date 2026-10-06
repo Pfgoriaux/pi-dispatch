@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import dispatchExtension from "../src/index.ts";
 
 test("the live roster is advertised before dispatch, respects trust, and refreshes between turns", async (t) => {
@@ -34,7 +34,7 @@ test("the live roster is advertised before dispatch, respects trust, and refresh
 	} as unknown as ExtensionAPI);
 	assert.ok(beforeStart, "registration must expose the roster before any tool call");
 	const event = { systemPrompt: "Existing master instructions" };
-	const context = (trusted: boolean) => ({ cwd, isProjectTrusted: () => trusted }) as ExtensionContext;
+	const context = (trusted: boolean) => ({ cwd, isProjectTrusted: () => trusted }) as ExtensionToolContext;
 	const untrusted = beforeStart(event, context(false)).systemPrompt;
 	assert.ok(untrusted.startsWith(event.systemPrompt));
 	assert.match(untrusted, /- scout: .*\(bundled\)/);

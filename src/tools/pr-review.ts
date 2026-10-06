@@ -191,9 +191,6 @@ export async function resolveDiff(
 // review steps
 // ---------------------------------------------------------------------------
 
-/** Provider error text goes into a markdown heading: keep it short and on one line. */
-const oneLine = (text: string) => truncateText(text, 300).text.replace(/\s+/g, " ");
-
 const STEPS = [
 	{ agent: "reviewer", task: "Review: correctness + security" },
 	{ agent: "reviewer", task: "Review: correctness" },
@@ -204,13 +201,14 @@ const STEPS = [
 const FIX_STEP = { agent: "writer", task: "Fix explicitly authorized findings" };
 
 /** Labeled report for the next step: actual model, status, and failed attempts. */
-function report(r: WorkerResult, name: string) {
+function report(r: WorkerResult, name: string, cap: (text: string, maxBytes?: number) => string) {
+	const oneLine = (text: string) => cap(text, 300).replace(/\s+/g, " ");
 	return {
 		label: `${name} [actual model: ${r.model ?? "unavailable"}] — ${r.status}` +
 			(r.failedAttempts ? ` (failed attempts: ${r.failedAttempts.map(oneLine).join("; ")})` : ""),
 		text: r.status === "ok"
-			? truncateText(r.text || "(no output)").text
-			: `[FAILED: ${truncateText(r.error ?? "").text}]`,
+			? cap(r.text || "(no output)")
+			: `[FAILED: ${cap(r.error ?? "")}]`,
 	};
 }
 
@@ -258,6 +256,12 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const started = Date.now();
+			let truncated = false;
+			const cap = (text: string, maxBytes?: number) => {
+				const output = truncateText(text, maxBytes);
+				truncated ||= output.truncated;
+				return output.text;
+			};
 			const { byName, agents } = discoverAgents(ctx);
 
 			const required = [
@@ -396,7 +400,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 
 					if (opus.status !== "ok" && astra.status !== "ok") {
 						const errors = reviews
-							.map((r, i) => `- ${STEPS[i].task}: ${truncateText(r.error ?? r.status).text}`)
+							.map((r, i) => `- ${STEPS[i].task}: ${cap(r.error ?? r.status)}`)
 							.join("\n");
 						return {
 							content: [{ type: "text", text: `pr_review: both code reviewers failed.\n${errors}` }],
@@ -404,22 +408,22 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 								mode: "parallel",
 								items: reviews,
 								aggregated: false,
-								truncated: false,
+								truncated,
 							} satisfies DispatchDetails,
 							usage: sumWorkerUsage(reviews),
 						};
 					}
 
 					const reports = [
-						report(opus, "Correctness + security reviewer"),
-						report(astra, "Correctness reviewer"),
-						report(preMortem, "Pre-mortem"),
-						report(slop, "Slop reviewer"),
+						report(opus, "Correctness + security reviewer", cap),
+						report(astra, "Correctness reviewer", cap),
+						report(preMortem, "Pre-mortem", cap),
+						report(slop, "Slop reviewer", cap),
 					];
 					const aggregateResult = await runStep(4, verifyAggregateTask({ cwd: ctx.cwd, label, diffFile, reports }), {});
 					const findings =
 						aggregateResult.status === "ok"
-							? truncateText(aggregateResult.text || "(no output)").text
+							? cap(aggregateResult.text || "(no output)")
 							: [
 								`(verification step ${aggregateResult.status}; unverified reports follow)`,
 								...reports.map((x) => `### ${x.label}\n${x.text}`),
@@ -428,7 +432,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					// ---- optional fix step (write tier worktree) ----
 					let fixReport = "";
 					let fixResult: WorkerResult | undefined;
-					const fixRequested = wantFix && aggregateResult.status === "ok";
+					const fixRequested = wantFix && aggregateResult.status === "ok" && !truncated;
 					if (fixRequested && !signal?.aborted) {
 						await assertFixHead(repoRoot, fixHead!);
 						await assertCleanTree(repoRoot);
@@ -478,10 +482,10 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 								);
 								merged = outcome.merged.includes(worktree.branch);
 								if (!merged && outcome.failed.length > 0) {
-									fixReport = `\n\nFix MERGE FAILED: ${outcome.failed[0].error} (branch kept: ${outcome.failed[0].branch})`;
+									fixReport = `\n\nFix MERGE FAILED: ${cap(outcome.failed[0].error)} (branch kept: ${outcome.failed[0].branch})`;
 								}
 							} else if (fixResult.status !== "ok") {
-								fixReport = `\n\nFix FAILED (${fixResult.status}): ${truncateText(fixResult.error ?? "").text}. Branch kept for inspection: ${worktree.branch}`;
+								fixReport = `\n\nFix FAILED (${fixResult.status}): ${cap(fixResult.error ?? "")}. Branch kept for inspection: ${worktree.branch}`;
 							}
 						} finally {
 							await removeWorktree(repoRoot, worktree.path, {
@@ -494,14 +498,16 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 								`\n\nFix applied via worktree ` +
 								"writer; branch merged back automatically." +
 								(fixResult?.text
-									? `\nWriter summary: ${truncateText(fixResult.text).text}`
+									? `\nWriter summary: ${cap(fixResult.text)}`
 									: "");
 						}
 					} else if (!wantFix) {
 						fixReport =
 							"\n\n(Fix skipped: fix=false. Ask to fix the findings, or run dispatch writer when ready.)";
 					} else if (!fixRequested) {
-						fixReport = "\n\n(Fix skipped: verification did not finish, so no findings are validated.)";
+						fixReport = truncated
+							? "\n\n(Fix skipped: review material was truncated. Rerun a narrower review before applying fixes.)"
+							: "\n\n(Fix skipped: verification did not finish, so no findings are validated.)";
 					}
 
 					// ---- notification & result ----
@@ -530,7 +536,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 							mode: "parallel",
 							items,
 							aggregated: aggregateResult.status === "ok",
-							truncated: false,
+							truncated,
 						} satisfies DispatchDetails,
 					};
 				} finally {
