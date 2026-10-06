@@ -119,8 +119,15 @@ feature_plan
 └─ Architect (the draft's model): resolve the challenge, return the plan
 ```
 
-Each step receives the earlier outputs in full, up to the 12 KB text cap. With
-default models, architect and challenger use Astra or Opus 5.5, then GLM 5.3,
+Each successful step saves its complete report in a private Markdown file under
+`<getAgentDir()>/pi-dispatch/plans/`, outside the repository. Reports are retained
+until manually removed. Model-visible previews keep the 12 KB text cap and include
+the saved path; later workers are instructed to read truncated reports in full.
+If a truncated report cannot be saved, the workflow stops and returns its preview
+with a warning. Full worker text remains in the tool result's `details.items`;
+the warning includes the persisted session path when available.
+
+With default models, architect and challenger use Astra or Opus 5.5, then GLM 5.3,
 never the same model; the final step never uses the challenger's model. The
 pre-mortem falls back to Synthetic DeepSeek, Sonnet 5.5, then GLM 5.3. GLM 5.3
 runs on Neuralwatt, then Synthetic. No step uses Sol 6.1. A failed draft stops
@@ -129,11 +136,18 @@ final step returns the draft, pre-mortem, and challenge instead.
 Override models with `DISPATCH_ARCHITECT_MODEL`, `DISPATCH_PREMORTEM_MODEL`, and
 `DISPATCH_CHALLENGER_MODEL`.
 
-The plan lists product decisions, then task contracts. The tool does not execute
-them; after approval, dispatch each contract to `writer` with `worktree: true` and
-the task's `Executor` as `model`.
+The plan lists product decisions, then task contracts. Prompts scale detail to
+scope: small features usually get one or two implementation contracts; larger
+features can carry more coordination detail. Contracts specify ownership,
+dependencies, interfaces, non-obvious decisions, and acceptance checks without
+repeating the project context loaded by implementation sessions.
 
-Read-only, no Herdr needed.
+The tool does not execute contracts; after approval, dispatch each to `writer`
+with `worktree: true` and the task's `Executor` as `model`. Read saved reports
+completely before using truncated contracts. Recover existing text instead of
+restarting planning just because the preview was cut.
+
+No repository edits, no Herdr needed.
 
 **Isolation:** in-process workers disable extension discovery, skills, and context files.
 Every worker also gets Linkup search/answer/fetch when configured; only those tool

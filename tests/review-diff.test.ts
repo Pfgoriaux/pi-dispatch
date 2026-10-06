@@ -9,6 +9,9 @@ import { resolveDiff, registerPrReviewTool } from "../src/tools/pr-review.ts";
 import { registerFeaturePlanTool } from "../src/tools/feature-plan.ts";
 import { modelIdentity } from "../src/model-diversity.ts";
 import type { WorkerResult } from "../src/types.ts";
+import { isolateAgentDir } from "./isolated-agent-dir.ts";
+
+isolateAgentDir();
 
 function fixture(t: { after: (fn: () => void) => void }) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-diff-test-"));
@@ -197,6 +200,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 	const steps = [["Finalize your design", "FINAL-TEXT"], ["Challenge this feature design", "CHALLENGE-TEXT"],
 		["Run a pre-mortem", "PREMORTEM-TEXT"], ["You are the architect for this feature", "DRAFT-TEXT"]];
 	let fail = (_provider: string, _step: string) => false;
+	let report = (step: string) => step;
 	let onStep = (_step: string) => {};
 	const calls: { provider: string; step: string; prompt: string }[] = [];
 	t.mock.method(ModelRuntime.prototype, "hasConfiguredAuth", () => true);
@@ -208,7 +212,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 		const failed = fail(model.provider, step);
 		const message: AssistantMessage = {
 			role: "assistant", api: model.api, provider: model.provider, model: model.id,
-			content: failed ? [] : [{ type: "text", text: step }],
+			content: failed ? [] : [{ type: "text", text: report(step) }],
 			stopReason: failed ? "error" : "stop", errorMessage: failed ? "402 insufficient credits" : undefined,
 			timestamp: Date.now(),
 			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
@@ -233,6 +237,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 		calls.length = 0;
 		return tool.execute("test", { idea: "test architect flow", herdr: false }, signal, undefined, {
 			cwd: path.resolve(import.meta.dirname, ".."), isProjectTrusted: () => false, modelRegistry: registry,
+			sessionManager: { getSessionFile: () => "/sessions/plan-recovery.jsonl" },
 		});
 	};
 	const promptOf = (step: string) => calls.find(c => c.step === step)?.prompt ?? "";
@@ -251,7 +256,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 	assert.match(promptOf("PREMORTEM-TEXT"), /preventive design change or check/);
 	assert.match(promptOf("CHALLENGE-TEXT"), /DRAFT-TEXT[\s\S]*PREMORTEM-TEXT/);
 	assert.match(promptOf("FINAL-TEXT"), /DRAFT-TEXT[\s\S]*PREMORTEM-TEXT[\s\S]*CHALLENGE-TEXT/);
-	assert.equal(plan.content[0].text, "FINAL-TEXT");
+	assert.match(plan.content[0].text, /^FINAL-TEXT\n\nFull report saved to: /);
 	assert.equal(plan.details.aggregated, true);
 	assert.equal(plan.usage.totalTokens, 8);
 
@@ -272,7 +277,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 
 	fail = (_provider, step) => step === "CHALLENGE-TEXT";
 	const noChallenge = await runPlan();
-	assert.equal(noChallenge.content[0].text, "FINAL-TEXT", "final plan still runs without a challenge");
+	assert.match(noChallenge.content[0].text, /^FINAL-TEXT\n\nFull report saved to: /, "final plan still runs without a challenge");
 	assert.match(promptOf("FINAL-TEXT"), /DESIGN CHALLENGE:\\n\(unavailable:/);
 
 	// Anthropic and OpenAI out of credits: GLM drafts and finalizes; the challenger cannot reuse it.
@@ -286,11 +291,43 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 	assert.match(noDraft.content[0].text, /architect draft failed/);
 
 	fail = () => false;
+	report = (step) => `${step}\n${"é".repeat(8000)}\nEND-${step}`;
+	const large = await runPlan();
+	assert.equal(large.details.truncated, true);
+	assert.equal(calls.length, 4, "oversized reports do not restart planning");
+	const savedPath = (text: string) => text.match(/Full report saved to: ([^\n]+)/)![1];
+	assert.equal(fs.readFileSync(savedPath(large.content[0].text), "utf8"), report("FINAL-TEXT"));
+	assert.match(promptOf("CHALLENGE-TEXT"), /Read the complete file with offset\/limit/);
+	assert.match(promptOf("FINAL-TEXT"), /Do not restart feature_plan/);
+	assert.match(tool.promptGuidelines.join("\n"), /Recover existing text instead of restarting planning/);
+	report = (step) => step;
+
 	const controller = new AbortController();
 	onStep = (step) => { if (step === "DRAFT-TEXT") controller.abort(); };
 	const aborted = await runPlan(controller.signal);
 	assert.equal(aborted.details.items.length, 1);
 	assert.match(aborted.content[0].text, /aborted during the architect draft/);
+
+	const directory = path.join(process.env.PI_CODING_AGENT_DIR!, "pi-dispatch", "plans");
+	for (const [index, target] of ["DRAFT-TEXT", "PREMORTEM-TEXT", "CHALLENGE-TEXT", "FINAL-TEXT"].entries()) {
+		fs.rmSync(directory, { recursive: true, force: true });
+		report = (step) => step === target ? `${step}${"x".repeat(13000)}END` : step;
+		onStep = (step) => {
+			if (step !== target) return;
+			fs.rmSync(directory, { recursive: true, force: true });
+			fs.mkdirSync(path.dirname(directory), { recursive: true });
+			fs.writeFileSync(directory, "not a directory");
+		};
+		const unsaved = await runPlan();
+		assert.equal(calls.length, index + 1, "no downstream step receives an unrecoverable truncated input");
+		assert.equal(unsaved.details.aggregated, false);
+		assert.equal(unsaved.details.truncated, true);
+		assert.equal(unsaved.details.items[index].text, report(target));
+		assert.equal(unsaved.details.items[index].status, "ok", "storage failure does not rewrite model status");
+		assert.ok(unsaved.content[0].text.startsWith(target), "retain the completed report preview");
+		assert.match(unsaved.content[0].text, /Report could not be saved/);
+		assert.match(unsaved.content[0].text, /\/sessions\/plan-recovery.jsonl/);
+	}
 });
 
 test("PR fix schema advertises opt-in commits", () => {
