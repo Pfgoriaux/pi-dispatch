@@ -1,0 +1,414 @@
+import test, { after } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync, spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { putAttempt } from '../src/durable/contracts.ts';
+import { openDurableStore, processStartIdentity } from '../src/durable/store.ts';
+import { pilotSessionId, Supervisor, SupervisorBlockedError, type SupervisorOptions } from '../src/durable/supervisor.ts';
+import { runPilotProc } from '../src/worker-proc.ts';
+
+// Every repository, remote, store, fake Pi, and fake gh lives in this disposable workspace.
+const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const W = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-adapters-')));
+const envKeys = ['HERDR_ENV', 'PI_CODING_AGENT_DIR', 'LINKUP_API_KEY', 'PI_DISPATCH_PI_BIN', 'PI_DISPATCH_DURABLE_STORE', 'PI_SESSION_ID', 'PI_DISPATCH_DEPTH'];
+const savedEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+after(() => {
+ for (const [key, value] of savedEnv) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+ fs.rmSync(W, { recursive: true, force: true });
+});
+process.env.HERDR_ENV = '0';
+process.env.PI_CODING_AGENT_DIR = path.join(W, 'mock-config');
+delete process.env.LINKUP_API_KEY;
+delete process.env.PI_DISPATCH_DEPTH;
+fs.mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+
+let n = 0;
+const uid = () => `${++n}`;
+const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+const agent: any = { name: 'writer', description: 'test', tools: ['read', 'edit', 'write', 'bash'], systemPrompt: 'test', source: 'bundled', filePath: '' };
+const identity = { batchId: 'batch-a', policyHash: 'sha256:a' };
+const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.25 } };
+
+function script(name: string, body: string): string {
+ const file = path.join(W, `${name}-${uid()}`);
+ fs.writeFileSync(file, `#!/usr/bin/env node\n${body}`, { mode: 0o700 });
+ return file;
+}
+
+/** Fake Pi: logs its spawn, echoes the requested session ID, then runs `body` after a startup delay. */
+function fakePi(body: string, sessionExpr = 'sid', log = path.join(W, `spawns-${uid()}.log`)) {
+ const bin = script('fake-pi', `
+const fs=require('fs'),cp=require('child_process');
+const args=process.argv.slice(2), sid=args[args.indexOf('--session-id')+1];
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({pid:process.pid,args,store:process.env.PI_DISPATCH_DURABLE_STORE??null,parent:process.env.PI_SESSION_ID??null})+'\\n');
+const out=(o)=>process.stdout.write(JSON.stringify(o)+'\\n');
+const finish=(text='done')=>{out({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],stopReason:'stop',model:'fake',usage:${JSON.stringify(usage)}}});out({type:'agent_end',messages:[]});out({type:'agent_settled'});};
+const commit=(file,text)=>{fs.mkdirSync(require('path').dirname(file),{recursive:true});fs.writeFileSync(file,text);cp.execFileSync('git',['add','--',file]);cp.execFileSync('git',['commit','-q','-m','worker '+file]);};
+out({type:'session',version:3,id:${sessionExpr},timestamp:new Date().toISOString(),cwd:process.cwd()});
+setTimeout(()=>{${body}},300);
+`);
+ const spawns = () => fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
+ return { bin, spawns };
+}
+
+/** Workspace repo on a feature branch plus a bare allowlisted remote. */
+function workspace() {
+ const ws = path.join(W, `ws-${uid()}`);
+ const repo = path.join(ws, 'proj');
+ const bare = path.join(ws, 'remote.git');
+ const hooks = path.join(ws, 'hooks');
+ fs.mkdirSync(repo, { recursive: true });
+ fs.mkdirSync(hooks);
+ git(repo, 'init', '-q', '-b', 'main');
+ for (const [key, value] of [['user.name', 'Dispatch Test'], ['user.email', 'dispatch-test@example.invalid'], ['commit.gpgsign', 'false'], ['core.hooksPath', hooks]]) git(repo, 'config', key, value);
+ fs.writeFileSync(path.join(repo, 'shared.txt'), 'base\n');
+ git(repo, 'add', '.');
+ git(repo, 'commit', '-q', '-m', 'fixture');
+ git(repo, 'checkout', '-q', '-b', 'feat/pilot');
+ execFileSync('git', ['init', '-q', '--bare', bare]);
+ git(bare, 'config', 'core.hooksPath', path.join(bare, 'hooks'));
+ git(repo, 'remote', 'add', 'origin', bare);
+ return { ws, repo, bare, hooks };
+}
+
+async function setup(admitted = { maxWorkers: 2, maxAttemptsPerTask: 2, budgetUsd: 10, tasks: [{ key: 't1', reserveUsd: 1 }, { key: 't2', reserveUsd: 1 }] }) {
+ const w = workspace();
+ const storePath = path.join(w.ws, 'store.sqlite');
+ const store = await openDurableStore({ path: storePath, ...identity });
+ await store.admit(admitted);
+ const options = (extra: Partial<SupervisorOptions> = {}): SupervisorOptions => ({
+  store, featureRoot: w.repo, featureBranch: 'feat/pilot', piExecutable: '/nonexistent', worktreesRoot: path.join(w.ws, '.worktrees'),
+  sessionsRoot: path.join(w.ws, 'sessions'), branchPrefix: 'pilot/b1', allowlist: { remotes: [{ name: 'origin', url: w.bare }], bases: ['main'] }, ...extra,
+ });
+ return { ...w, storePath, store, options };
+}
+
+const task = (key: string, extra: object = {}) => ({ key, prompt: 'fixture', agent, model: 'fake/model', thinking: 'off', ownedPaths: ['src/'], ...extra });
+const soon = (ms = 20_000) => ({ deadlineAt: Date.now() + ms });
+const alive = async (pid: number, startedAt: string) => await processStartIdentity(pid) === startedAt;
+
+test('pilot child: explicit executable, documented session flags, stripped coordinator env, one spawn', async () => {
+ const dir = fs.mkdtempSync(path.join(W, 'child-'));
+ const base = { cwd: dir, model: 'fake/model', thinking: 'off', sessionId: 'pd-test-1', sessionDir: path.join(dir, 's'), onSpawn: () => {} };
+ const noFallback = fakePi(`process.exit(1);`);
+ process.env.PI_DISPATCH_PI_BIN = noFallback.bin;
+ for (const piExecutable of ['fake-pi', 'relative/pi', path.join(W, 'missing')]) {
+  const refused = await runPilotProc(agent, 'x', { ...base, piExecutable });
+  assert.equal(refused.status, 'error'); assert.equal(refused.launched, false); assert.match(refused.error!, /absolute Pi executable/);
+ }
+ assert.equal(noFallback.spawns().length, 0, 'PI_DISPATCH_PI_BIN is never used');
+ // A model with fallback routes still gets exactly one spawn.
+ const failed = await runPilotProc(agent, 'x', { ...base, model: 'anthropic/claude-opus-5-5', piExecutable: noFallback.bin });
+ assert.equal(failed.status, 'error'); assert.equal(noFallback.spawns().length, 1);
+ assert.equal(failed.settled, false);
+
+ process.env.PI_DISPATCH_DURABLE_STORE = '/coordinator/store.sqlite';
+ process.env.PI_SESSION_ID = 'parent-session';
+ const ok = fakePi('finish();');
+ const spawned: [number, string][] = [];
+ const result = await runPilotProc(agent, '--looks-like-a-flag', { ...base, piExecutable: ok.bin, onSpawn: (pid, start) => { spawned.push([pid, start]); } });
+ delete process.env.PI_DISPATCH_DURABLE_STORE; delete process.env.PI_SESSION_ID;
+ assert.equal(result.status, 'ok'); assert.equal(result.settled, true); assert.equal(result.sessionId, 'pd-test-1');
+ assert.equal(result.usage?.cost.total, 0.25);
+ const [record] = ok.spawns();
+ assert.deepEqual(spawned, [[record.pid, result.spawned!.startIdentity]]);
+ assert.equal(record.store, null); assert.equal(record.parent, null);
+ const args: string[] = record.args;
+ assert.deepEqual(args.slice(args.indexOf('--session-id'), args.indexOf('--session-id') + 4), ['--session-id', 'pd-test-1', '--session-dir', base.sessionDir]);
+ assert.ok(!args.includes('--no-session'));
+ assert.deepEqual(args.slice(-2), ['--', '--looks-like-a-flag']);
+
+ const wrongSession = fakePi('finish();', "'other'");
+ const mismatch = await runPilotProc(agent, 'x', { ...base, piExecutable: wrongSession.bin });
+ assert.equal(mismatch.status, 'error'); assert.match(mismatch.error!, /does not match/);
+});
+
+test('pilot child: an unrecorded identity stops the child', async () => {
+ const dir = fs.mkdtempSync(path.join(W, 'child-'));
+ const hang = fakePi('setInterval(()=>{},1000);');
+ const result = await runPilotProc(agent, 'x', {
+  cwd: dir, model: 'fake/model', thinking: 'off', sessionId: 'pd-test-2', sessionDir: path.join(dir, 's'), piExecutable: hang.bin,
+  onSpawn: async () => { throw new Error('store unavailable'); },
+ });
+ assert.equal(result.status, 'error'); assert.match(result.error!, /not recorded: store unavailable/);
+ assert.equal(result.launched, true);
+ assert.equal(await alive(result.spawned!.pid, result.spawned!.startIdentity), false);
+});
+
+test('supervisor: success records identity and spend, stays in owned paths, integrates once', async () => {
+ const s = await setup();
+ try {
+  const pi = fakePi(`commit('src/a.txt','a\\n'); finish();`);
+  const supervisor = new Supervisor(s.options({ piExecutable: pi.bin }));
+  const done = await supervisor.runAttempt(task('t1', { checks: [[process.execPath, '-e', 'process.exit(0)']] }), soon());
+  assert.equal(done.status, 'succeeded'); assert.equal(done.spentUsd, 0.25);
+  assert.equal(done.worker?.pid, pi.spawns()[0].pid); assert.equal(done.worker?.host, os.hostname());
+  assert.equal(done.worktree, path.join(s.ws, '.worktrees', 'proj', 'pilot-b1-t1-a1'));
+  assert.equal(done.branch, 'pilot/b1/t1-a1');
+  assert.equal(git(s.repo, 'rev-parse', 'pilot/b1/t1-a1'), done.headSha);
+  assert.ok(fs.existsSync(path.join(s.ws, 'sessions', pilotSessionId(identity.batchId, 't1#1'))));
+  await assert.rejects(supervisor.runAttempt(task('t1'), soon()), /succeeded/);
+
+  const merged = await supervisor.integrate('t1#1');
+  assert.equal(merged.status, 'applied');
+  assert.equal(git(s.repo, 'show', 'feat/pilot:src/a.txt'), 'a');
+  assert.equal(git(s.repo, 'rev-parse', 'HEAD^2'), done.headSha);
+  assert.ok(!fs.existsSync(done.worktree!), 'clean worktree removed');
+  assert.equal(git(s.repo, 'rev-parse', 'pilot/b1/t1-a1'), done.headSha, 'branch kept');
+  const head = git(s.repo, 'rev-parse', 'HEAD');
+  assert.equal((await supervisor.integrate('t1#1')).status, 'applied');
+  assert.equal(git(s.repo, 'rev-parse', 'HEAD'), head, 'no second merge');
+  assert.equal(pi.spawns().length, 1);
+ } finally { await s.store.close(); }
+});
+
+test('supervisor: owned paths, checks, retries, and retained dirty worktrees', async () => {
+ const s = await setup();
+ try {
+  const outside = fakePi(`commit('docs/x.md','x'); finish();`);
+  const first = await new Supervisor(s.options({ piExecutable: outside.bin })).runAttempt(task('t1'), soon());
+  assert.equal(first.status, 'failed'); assert.match(first.reason!, /outside owned paths: docs\/x.md/); assert.equal(first.spentUsd, 0.25);
+
+  const failingCheck = fakePi(`commit('src/b.txt','b'); finish();`);
+  const second = await new Supervisor(s.options({ piExecutable: failingCheck.bin }))
+   .runAttempt(task('t1', { checks: [[process.execPath, '-e', 'process.exit(3)']] }), soon());
+  assert.equal(second.status, 'failed'); assert.match(second.reason!, /check failed/);
+  await assert.rejects(new Supervisor(s.options({ piExecutable: failingCheck.bin })).runAttempt(task('t1'), soon()), /used all 2 attempts/);
+
+  const dirty = fakePi(`fs.writeFileSync('src-uncommitted.txt','valuable'); finish();`);
+  const kept = await new Supervisor(s.options({ piExecutable: dirty.bin })).runAttempt(task('t2'), soon());
+  assert.equal(kept.status, 'failed'); assert.match(kept.reason!, /uncommitted edits/);
+  assert.equal(fs.readFileSync(path.join(kept.worktree!, 'src-uncommitted.txt'), 'utf8'), 'valuable');
+  await assert.rejects(new Supervisor(s.options()).integrate('t2#1'), /no succeeded head/);
+  assert.ok(fs.existsSync(kept.worktree!));
+ } finally { await s.store.close(); }
+});
+
+test('supervisor: deadline is enforced without a client; unknown spend halts the batch', async () => {
+ const s = await setup();
+ try {
+  const hang = fakePi('setInterval(()=>{},1000);');
+  const supervisor = new Supervisor(s.options({ piExecutable: hang.bin }));
+  const started = Date.now();
+  const timedOut = await supervisor.runAttempt(task('t1'), { deadlineAt: Date.now() + 1200 });
+  assert.ok(Date.now() - started < 10_000);
+  assert.equal(timedOut.status, 'failed'); assert.equal(timedOut.reason, 'deadline exceeded'); assert.equal(timedOut.spentUsd, null);
+  assert.equal(await alive(timedOut.worker!.pid, timedOut.worker!.startedAt), false);
+  await assert.rejects(supervisor.runAttempt(task('t2'), soon()), /halted: t1#1 has unknown spend/);
+  assert.equal(hang.spawns().length, 1);
+  await assert.rejects(supervisor.runAttempt(task('t2'), { deadlineAt: Date.now() - 1 }), SupervisorBlockedError);
+ } finally { await s.store.close(); }
+
+ const c = await setup();
+ try {
+  const hang = fakePi('setInterval(()=>{},1000);');
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 1000);
+  const cancelled = await new Supervisor(c.options({ piExecutable: hang.bin })).runAttempt(task('t1'), { ...soon(), signal: controller.signal });
+  assert.equal(cancelled.reason, 'cancelled'); assert.equal(cancelled.spentUsd, null);
+  assert.equal(await alive(cancelled.worker!.pid, cancelled.worker!.startedAt), false);
+ } finally { await c.store.close(); }
+});
+
+test('supervisor: spawn gaps fail closed', async () => {
+ const s = await setup();
+ const pi = fakePi('finish();');
+ // Evidence of an earlier spawn (its session directory) blocks a second one.
+ fs.mkdirSync(path.join(s.ws, 'sessions', pilotSessionId(identity.batchId, 't1#1')), { recursive: true });
+ await assert.rejects(new Supervisor(s.options({ piExecutable: pi.bin })).runAttempt(task('t1'), soon()), /refusing a second spawn/);
+ const blocked = (await s.store.read()).attempts.find((a) => a.key === 't1#1')!;
+ assert.equal(blocked.status, 'blocked'); assert.equal(blocked.spentUsd, 0); assert.equal(pi.spawns().length, 0);
+ // A crash after the intent commit and before the identity commit: running with no worker.
+ await s.store.harness.commit((tx) => putAttempt(s.store.contracts, tx, { ...blocked, key: 't2#1', taskKey: 't2', status: 'running', worker: null, reason: null }), s.store.context);
+ await s.store.close();
+ const reopened = await openDurableStore({ path: s.storePath, ...identity });
+ try {
+  assert.deepEqual(reopened.recovery.blocked, ['t1#1', 't2#1']);
+  await assert.rejects(new Supervisor({ ...s.options({ piExecutable: pi.bin }), store: reopened }).runAttempt(task('t2'), soon()), /halted/);
+  assert.equal(pi.spawns().length, 0);
+ } finally { await reopened.close(); }
+});
+
+test('supervisor: unknown pricing and check mutations cannot verify an attempt', async () => {
+ for (const reported of [undefined, { ...usage, cost: undefined }, { ...usage, cost: { ...usage.cost, total: 0 } }]) {
+  const s = await setup();
+  try {
+   const pi = fakePi(`out({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'done'}],stopReason:'stop',usage:${JSON.stringify(reported) ?? 'undefined'}}});out({type:'agent_settled'});`);
+   const supervisor = new Supervisor(s.options({ piExecutable: pi.bin }));
+   const done = await supervisor.runAttempt(task('t1'), soon());
+   assert.equal(done.spentUsd, null);
+   await assert.rejects(supervisor.runAttempt(task('t2'), soon()), /unknown spend/);
+  } finally { await s.store.close(); }
+ }
+ const s = await setup();
+ try {
+  const pi = fakePi(`commit('src/a.txt','a'); finish();`);
+  const done = await new Supervisor(s.options({ piExecutable: pi.bin })).runAttempt(task('t1', {
+   checks: [[process.execPath, '-e', "require('fs').writeFileSync('unchecked.txt','changed')"]],
+  }), soon());
+  assert.equal(done.status, 'failed');
+  assert.match(done.reason!, /check mutated/);
+  assert.ok(fs.existsSync(path.join(done.worktree!, 'unchecked.txt')));
+ } finally { await s.store.close(); }
+});
+
+test('integration: conflicts stop, locks serialize, no dispatch merge-back', async () => {
+ const s = await setup();
+ try {
+  const pi = fakePi(`commit('src/shared.txt','worker\\n'); finish();`);
+  const supervisor = new Supervisor(s.options({ piExecutable: pi.bin }));
+  assert.equal((await supervisor.runAttempt(task('t1'), soon())).status, 'succeeded');
+  fs.mkdirSync(path.join(s.repo, 'src'));
+  fs.writeFileSync(path.join(s.repo, 'src/shared.txt'), 'feature\n');
+  git(s.repo, 'add', '.'); git(s.repo, 'commit', '-q', '-m', 'conflicting feature edit');
+  const lockFile = path.resolve(s.repo, git(s.repo, 'rev-parse', '--git-path', 'pi-dispatch-integration.lock'));
+  const holder = new DatabaseSync(lockFile); holder.exec('BEGIN EXCLUSIVE');
+  await assert.rejects(supervisor.integrate('t1#1'), /locked by another process/);
+  holder.exec('ROLLBACK'); holder.close();
+  assert.equal((await s.store.read()).effects.length, 0);
+
+  const head = git(s.repo, 'rev-parse', 'HEAD');
+  const stopped = await supervisor.integrate('t1#1');
+  assert.equal(stopped.status, 'blocked'); assert.match((stopped as any).reason, /stopped/);
+  assert.equal(git(s.repo, 'rev-parse', 'HEAD'), head);
+  assert.equal(git(s.repo, 'status', '--porcelain'), '');
+  assert.equal((await s.store.read()).effects[0].status, 'unresolved');
+  await assert.rejects(supervisor.runAttempt(task('t2'), soon()), /t1#1:merge is unresolved/);
+ } finally { await s.store.close(); }
+ for (const file of ['supervisor.ts', 'git.ts', 'reconcile.ts']) {
+  assert.doesNotMatch(fs.readFileSync(path.join(repoRoot, 'src/durable', file), 'utf8'), /merge\.ts|mergeWorktreeBranches|index\.ts/);
+ }
+});
+
+/** Fake gh backed by a JSON file; PR heads follow the bare remote like GitHub. */
+function fakeGh(bare: string, afterCreate = '') {
+ const state = path.join(W, `gh-state-${uid()}.json`);
+ const log = path.join(W, `gh-log-${uid()}`);
+ const bin = script('fake-gh', `
+const fs=require('fs'),cp=require('child_process');
+const args=process.argv.slice(2), opt=(n)=>args[args.indexOf(n)+1];
+const state=fs.existsSync(${JSON.stringify(state)})?JSON.parse(fs.readFileSync(${JSON.stringify(state)},'utf8')):[];
+const head=(b)=>{try{return cp.execFileSync('git',['-C',${JSON.stringify(bare)},'rev-parse','--verify','refs/heads/'+b],{encoding:'utf8'}).trim()}catch{return '0'.repeat(40)}};
+fs.appendFileSync(${JSON.stringify(log)}, args[1]+'\\n');
+if(args[0]==='pr'&&args[1]==='list'){console.log(JSON.stringify(state.filter(p=>p.headRefName===opt('--head')&&p.baseRefName===opt('--base')).map(p=>({number:p.number,headRefName:p.headRefName,baseRefName:p.baseRefName,headRefOid:p.headRefOid??head(p.headRefName)}))));process.exit(0);}
+if(args[0]==='pr'&&args[1]==='create'&&args.includes('--draft')){state.push({number:state.length+1,headRefName:opt('--head'),baseRefName:opt('--base')});fs.writeFileSync(${JSON.stringify(state)},JSON.stringify(state));${afterCreate};console.log('https://example.invalid/pull/'+state.length);process.exit(0);}
+process.exit(2);
+`);
+ const calls = () => fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : [];
+ return { bin, state, calls };
+}
+
+const request = (bare: string) => ({ remote: 'origin', url: bare, repo: 'owner/proj', base: 'main', title: 'Pilot', body: 'Draft' });
+
+test('publication: protected and unlisted targets are rejected before any effect', async () => {
+ const s = await setup();
+ try {
+  const gh = fakeGh(s.bare);
+  for (const featureBranch of ['main', 'master', 'production']) assert.throws(() => new Supervisor(s.options({ featureBranch })), /protected/);
+  const supervisor = new Supervisor(s.options({ gh: gh.bin }));
+  await assert.rejects(supervisor.publish({ ...request(s.bare), base: 'release' }), /not allowlisted/);
+  await assert.rejects(supervisor.publish({ ...request(s.bare), remote: 'upstream' }), /not allowlisted/);
+  await assert.rejects(supervisor.publish({ ...request(s.bare), url: path.join(W, 'elsewhere.git') }), /not allowlisted/);
+  git(s.repo, 'remote', 'set-url', 'origin', path.join(W, 'retargeted.git'));
+  await assert.rejects(supervisor.publish(request(s.bare)), /points at/);
+  git(s.repo, 'remote', 'set-url', 'origin', s.bare);
+  git(s.repo, 'config', 'remote.origin.pushurl', path.join(W, 'unapproved.git'));
+  await assert.rejects(supervisor.publish(request(s.bare)), /unapproved/);
+  git(s.repo, 'config', '--unset-all', 'remote.origin.pushurl');
+  assert.throws(() => new Supervisor(s.options({ allowlist: { remotes: [{ name: 'origin', url: s.bare }], bases: ['main', 'feat/pilot'] } })), /protected/);
+  assert.equal((await s.store.read()).effects.length, 0);
+  assert.deepEqual(gh.calls(), []);
+  assert.equal(git(s.bare, 'for-each-ref'), '');
+
+  // Normal publication is idempotent and opens one draft PR whose head matches the pushed SHA.
+  const sha = git(s.repo, 'rev-parse', 'HEAD');
+  const first = await supervisor.publish(request(s.bare));
+  assert.equal(first.push.status, 'applied');
+  assert.deepEqual(first.pullRequest?.effect.pr, { repo: 'owner/proj', number: 1, headSha: sha });
+  const again = await supervisor.publish(request(s.bare));
+  assert.equal(again.pullRequest?.status, 'applied');
+  assert.equal(gh.calls().filter((c) => c === 'create').length, 1);
+  // A PR whose head differs from the recorded SHA blocks.
+  const mismatch = fakeGh(s.bare);
+  fs.writeFileSync(mismatch.state, JSON.stringify([{ number: 7, headRefName: 'feat/pilot', baseRefName: 'main', headRefOid: 'f'.repeat(40) }]));
+  fs.writeFileSync(path.join(s.repo, 'shared.txt'), 'next\n'); git(s.repo, 'commit', '-q', '-am', 'next');
+  const blocked = await new Supervisor(s.options({ gh: mismatch.bin })).publish(request(s.bare));
+  assert.equal(blocked.push.status, 'applied'); assert.equal(blocked.pullRequest?.status, 'blocked');
+  assert.match((blocked.pullRequest as any).reason, /#7 head/);
+ } finally { await s.store.close(); }
+});
+
+/** Run `publish` in a separate process that the fixture kills mid-effect. */
+async function crashingPublish(s: Awaited<ReturnType<typeof setup>>, gh: string, pidFile: string) {
+ const file = path.join(W, `coordinator-${uid()}.mts`);
+ const options = { ...s.options({ gh }), store: undefined };
+ fs.writeFileSync(file, `
+import fs from 'node:fs';
+import { openDurableStore } from ${JSON.stringify(pathToFileURL(path.join(repoRoot, 'src/durable/store.ts')).href)};
+import { Supervisor } from ${JSON.stringify(pathToFileURL(path.join(repoRoot, 'src/durable/supervisor.ts')).href)};
+const store = await openDurableStore({ path: ${JSON.stringify(s.storePath)}, ...${JSON.stringify(identity)} });
+fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+await new Supervisor({ ...${JSON.stringify(options)}, store }).publish(${JSON.stringify(request(s.bare))});
+process.stdout.write('survived\\n');
+`);
+ const child = spawn(process.execPath, ['--import', 'tsx', file], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+ let stdout = '';
+ child.stdout.on('data', (chunk) => { stdout += chunk; });
+ const signal = await new Promise((resolve) => child.once('exit', (_code, sig) => resolve(sig)));
+ assert.equal(signal, 'SIGKILL'); assert.equal(stdout, '');
+}
+
+test('publication crash windows reconcile from remote and PR identities', async () => {
+ const s = await setup();
+ await s.store.close();
+ const sha = git(s.repo, 'rev-parse', 'HEAD');
+ const pidFile = path.join(W, `coordinator-${uid()}.pid`);
+ const kill = `process.kill(Number(fs.readFileSync(${JSON.stringify(pidFile)},'utf8')),'SIGKILL')`;
+
+ // 1. Killed after the push reached the remote, before it was recorded.
+ const receive = path.join(s.bare, 'hooks', 'post-receive');
+ fs.writeFileSync(receive, `#!/bin/sh\nkill -9 "$(cat ${JSON.stringify(pidFile)})"\n`, { mode: 0o700 });
+ const gh = fakeGh(s.bare);
+ await crashingPublish(s, gh.bin, pidFile);
+ fs.rmSync(receive);
+ assert.equal(git(s.bare, 'rev-parse', 'refs/heads/feat/pilot'), sha);
+ let store = await openDurableStore({ path: s.storePath, ...identity });
+ assert.equal(store.recovery.unresolvedEffects.length, 1); assert.equal(store.recovery.halted, true);
+ const report = await new Supervisor(s.options({ store, gh: gh.bin })).reconcile();
+ assert.equal(report.applied.length, 1); assert.equal(report.halted, false);
+ await store.close();
+
+ // 2. Killed after the PR was created, before it was recorded.
+ const ghCrash = fakeGh(s.bare, kill);
+ await crashingPublish(s, ghCrash.bin, pidFile);
+ store = await openDurableStore({ path: s.storePath, ...identity });
+ assert.equal(store.recovery.halted, true);
+ const prReport = await new Supervisor(s.options({ store, gh: ghCrash.bin })).reconcile();
+ assert.equal(prReport.halted, false);
+ const pr = (await store.read()).effects.find((e) => e.kind === 'pull-request')!;
+ assert.deepEqual([pr.status, pr.pr], ['applied', { repo: 'owner/proj', number: 1, headSha: sha }]);
+ await store.close();
+
+ // 3. Killed after the intent was recorded, before the push left: reconcile proves it absent, the phase applies it.
+ fs.writeFileSync(path.join(s.repo, 'shared.txt'), 'second\n'); git(s.repo, 'commit', '-q', '-am', 'second');
+ const next = git(s.repo, 'rev-parse', 'HEAD');
+ fs.writeFileSync(path.join(s.hooks, 'pre-push'), `#!/bin/sh\nkill -9 "$(cat ${JSON.stringify(pidFile)})"\nexit 1\n`, { mode: 0o700 });
+ await crashingPublish(s, ghCrash.bin, pidFile);
+ fs.rmSync(path.join(s.hooks, 'pre-push'));
+ assert.equal(git(s.bare, 'rev-parse', 'refs/heads/feat/pilot'), sha);
+ store = await openDurableStore({ path: s.storePath, ...identity });
+ try {
+  const absent = await new Supervisor(s.options({ store, gh: ghCrash.bin })).reconcile();
+  assert.equal(absent.halted, true); assert.equal(absent.unresolved[0].state, 'absent');
+  await assert.rejects(new Supervisor(s.options({ store })).runAttempt(task('t1'), soon()), /halted/);
+  const published = await new Supervisor(s.options({ store, gh: ghCrash.bin })).publish(request(s.bare));
+  assert.equal(published.push.status, 'applied'); assert.equal(published.pullRequest?.status, 'applied');
+  assert.equal(git(s.bare, 'rev-parse', 'refs/heads/feat/pilot'), next);
+  assert.equal(published.pullRequest?.effect.pr?.number, 1, 'existing PR adopted at the new head');
+  assert.equal((await store.recover()).halted, false);
+ } finally { await store.close(); }
+});
