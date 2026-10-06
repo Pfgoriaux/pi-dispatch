@@ -104,6 +104,8 @@ session cwd and authorization for commits and automatic merge-back. `fix` defaul
 to **false**. Invalid diffs fail before reviewers start; empty diffs skip model calls.
 Fixes require the reviewed head to match the checkout; the checkout is rechecked
 before writing and merging so findings cannot silently target another revision.
+If any review material is truncated, the tool skips automatic fixes and asks for
+a narrower review.
 
 ## feature_plan
 
@@ -117,8 +119,15 @@ feature_plan
 └─ Architect (the draft's model): resolve the challenge, return the plan
 ```
 
-Each step receives the earlier outputs in full, up to the 12 KB text cap. With
-default models, architect and challenger use Astra or Opus 5.5, then GLM 5.3,
+Each successful step saves its complete report in a private Markdown file under
+`<getAgentDir()>/pi-dispatch/plans/`, outside the repository. Reports are retained
+until manually removed. Model-visible previews keep the 12 KB text cap and include
+the saved path; later workers are instructed to read truncated reports in full.
+If a truncated report cannot be saved, the workflow stops and returns its preview
+with a warning. Full worker text remains in the tool result's `details.items`;
+the warning includes the persisted session path when available.
+
+With default models, architect and challenger use Astra or Opus 5.5, then GLM 5.3,
 never the same model; the final step never uses the challenger's model. The
 pre-mortem falls back to Synthetic DeepSeek, Sonnet 5.5, then GLM 5.3. GLM 5.3
 runs on Neuralwatt, then Synthetic. No step uses Sol 6.1. A failed draft stops
@@ -127,11 +136,18 @@ final step returns the draft, pre-mortem, and challenge instead.
 Override models with `DISPATCH_ARCHITECT_MODEL`, `DISPATCH_PREMORTEM_MODEL`, and
 `DISPATCH_CHALLENGER_MODEL`.
 
-The plan lists product decisions, then task contracts. The tool does not execute
-them; after approval, dispatch each contract to `writer` with `worktree: true` and
-the task's `Executor` as `model`.
+The plan lists product decisions, then task contracts. Prompts scale detail to
+scope: small features usually get one or two implementation contracts; larger
+features can carry more coordination detail. Contracts specify ownership,
+dependencies, interfaces, non-obvious decisions, and acceptance checks without
+repeating the project context loaded by implementation sessions.
 
-Read-only, no Herdr needed.
+The tool does not execute contracts; after approval, dispatch each to `writer`
+with `worktree: true` and the task's `Executor` as `model`. Read saved reports
+completely before using truncated contracts. Recover existing text instead of
+restarting planning just because the preview was cut.
+
+No repository edits, no Herdr needed.
 
 **Isolation:** in-process workers disable extension discovery, skills, and context files.
 Every worker also gets Linkup search/answer/fetch when configured; only those tool
@@ -141,8 +157,10 @@ Neither a cwd check nor a worktree is a filesystem sandbox; agents with `bash`
 can access paths outside their starting directory. In-process tasks must include
 applicable constraints or tell workers which instruction files to read.
 
-The bundled scout and planner have no write or shell tools; the reviewer has
-`bash` and is read-only by instruction, not enforcement. Models resolve through
+The bundled scout, planner, and advisor have no write or shell tools. The
+investigator and reviewer have `bash` and are read-only by instruction, not
+enforcement. Shell access does not grant authorization to access a host or
+database. Models resolve through
 rosters, agent frontmatter, then the parent's active model as described below.
 Single mode always runs in-process, even when the agent is named `writer`.
 
@@ -209,8 +227,8 @@ bottleneck percentage across all reported quota windows. Synthetic's 5-hour
 and weekly limits both count; a full 5-hour window cannot hide a depleted week.
 A healthy tie (at least 50% remaining) prefers Synthetic. Different model
 families keep their roster priority, and Codex stays the terminal fallback.
-Concrete per-task/frontmatter model pins, `inherit`, and `DISPATCH_DIVERSE_*_MODEL`
-overrides retain their provider order and existing failure fallbacks.
+Concrete per-task/frontmatter model pins and `inherit` retain their provider
+order and existing failure fallbacks.
 Every model attempt in both worker tiers checks the latest cache and skips providers
 with fresh, known zero headroom, including pinned, inherited, and fallback models.
 Models blocked at selection do not consume an attempt or claim a parallel model identity.
@@ -450,12 +468,27 @@ Limits:
 
 Frontmatter markdown, byte-compatible with the official example. Discovery: bundled (`agents/`) < user (`~/.pi/agent/agents/`) < project (`.pi/agents/`, trusted projects only).
 
-Before each main-agent turn, dispatch adds the current names, descriptions, and
-sources to its system context. This uses the same discovery and trust rules as
-execution, so installed custom roles and overrides are visible before a call.
+Before each main-agent turn, dispatch adds the current names, descriptions,
+sources, role tool lists, and shell availability to its system context. This
+uses the same discovery and trust rules as execution, including custom roles
+and overrides. Workers do not inherit the parent's tools; configured Linkup
+tools are added separately. Model tiers do not change tool access.
 Generic role labels in skills are not agent names; use an exact roster name.
 
-Bundled: `scout` (read-only recon — tier `cheap`), `reviewer` (code review — `balanced`), `planner` (implementation plans — `long`), `aggregator` (fan-in specialist, no local tools — `balanced`), `security-reviewer` (application security — `precise`), `advisor` (read-only second opinion on decisions and risky or finished work — `precise`), `writer` (worktree write tier — implements, commits, and reports a summary — `precise`; dispatch with `model:'long'` for long-context writing tasks). Tier names in agent frontmatter `model:` expand via `src/profiles.ts`; see [Effort tiers](#effort-tiers).
+Select by capability: `scout` locates code, `investigator` checks code and runtime
+causes, and `advisor` evaluates evidence and decisions. The investigator has
+read/search tools and `bash`, without edit/write tools. Its prompt limits shell
+use to authorized read-only diagnostics, including bounded SSH and database
+checks; it forbids edits, installs, deployments, restarts, requeues, and production
+writes. These limits are instructions, not a shell sandbox.
+
+Dispatch's coordinator guidance requires checking returned commands against the
+user's scope and safety rules, then completing authorized checks or delegating
+them to a capable role. A blocked check needs a specific tool, access, or approval
+blocker and a statement of what remains unverified. A worker's completed turn
+does not establish that the investigation is complete.
+
+Bundled: `scout` (read-only recon — tier `cheap`), `investigator` (code and runtime diagnostics — `precise`), `reviewer` (code review — `balanced`), `planner` (implementation plans — `long`), `aggregator` (fan-in specialist, no local tools — `balanced`), `security-reviewer` (application security — `precise`), `advisor` (read-only second opinion on decisions and risky or finished work — `precise`), `writer` (worktree write tier — implements, commits, and reports a summary — `precise`; dispatch with `model:'long'` for long-context writing tasks). Tier names in agent frontmatter `model:` expand via `src/profiles.ts`; see [Effort tiers](#effort-tiers).
 
 ## Install
 

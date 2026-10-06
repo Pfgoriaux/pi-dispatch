@@ -8,6 +8,7 @@ function header(c: PlanContext, goal: string): string[] {
 	const lines = [
 		goal,
 		"Read applicable AGENTS.md instructions first; do not modify the repository.",
+		"If an input report is truncated, read its saved file completely with offset/limit before using it.",
 		`Repository: ${c.cwd}`,
 		"",
 		"FEATURE IDEA:",
@@ -21,8 +22,9 @@ export function architectDraftTask(c: PlanContext): string {
 	return [
 		...header(c, "You are the architect for this feature. Discover the relevant code, then design the implementation."),
 		"",
-		"",
-		"Return a draft design (Markdown, under ~150 lines and 10 KB):",
+		"Scale detail to the feature. A small feature usually needs one or two implementation tasks; larger features may need more.",
+		"Reference repository instructions and source paths instead of repeating their contents. Include only decisions and context workers cannot rediscover safely.",
+		"Return a concise draft design (Markdown; omit empty sections):",
 		"## Goal",
 		"## Scope (in, out, and what stays unchanged)",
 		"## Current state (relevant files and flows, with paths)",
@@ -75,14 +77,14 @@ export function challengerTask(c: PlanContext, draft: string, preMortem: string)
 const TASK_CONTRACT = [
 	"### Task N: <title>",
 	"- Executor: exactly one of `long` (default), `aperture/neuralwatt/glm-5.3` (small, well-bounded), or `precise` (auth, migrations, concurrency, shared interfaces)",
-	"- Executor reason: <one line, required for `precise`>",
-	"- Read first: <AGENTS.md files and source paths the worker must read>",
+	"- Executor reason: <only required for `precise`>",
+	"- Source pointers: <only essential paths the worker would otherwise miss; omit if none>",
 	"- Depends on: <task numbers or none>",
 	"- Owns: <exact file paths>",
 	"- Behavior: <observable behavior to implement>",
 	"- Contracts: <interfaces, data shapes, and invariants to keep>",
 	"- Verify: <tests and checks that prove it works>",
-	"- Escalate when: <findings that require the architect, not a worker redesign>",
+	"- Escalate when: <only non-obvious boundaries requiring a decision; omit if none>",
 ];
 
 export function architectFinalTask(c: PlanContext, draft: string, preMortem: string, challenge: string): string {
@@ -99,11 +101,14 @@ export function architectFinalTask(c: PlanContext, draft: string, preMortem: str
 		challenge,
 		"",
 		"Resolve every challenge issue: accept it and change the design, or reject it with evidence. Verify disputed claims in the code.",
-		"Each task goes to a cheaper implementation model that has not seen this design. It must be executable from its contract alone.",
-		"Keep independent tasks separate so they can run in parallel; order dependent tasks.",
+		"Workers have repository access but not this conversation. Each contract must carry the outcome, ownership, dependencies, non-obvious decisions, shared interfaces, and acceptance checks needed to execute it.",
+		"Implementation workers run child pi sessions that load project context normally. Do not repeat AGENTS.md instructions or reminders to read them in task contracts. Do not duplicate file contents, routine coding steps, or the discovery transcript.",
+		"Scale plan length to scope, not a fixed word limit. Small features usually need one or two short implementation contracts; large features may need more coordination detail.",
+		"Split tasks only for meaningful ownership or dependencies. Keep routine checkout preparation, documentation, and final checks with the coordinator or an implementation task, not separate workers.",
+		"Keep independent tasks separate so they can run in parallel; order dependent tasks. Put exact shared interfaces in the contracts that need them without repeating a separate architecture section.",
 		"Answer technical questions yourself. Ask the human only about product decisions the code cannot answer.",
 		"",
-		"Return the plan with this structure (Markdown, under 10 KB; output past 12 KB is cut):",
+		"Return the following Markdown, omitting empty or redundant sections.",
 		"",
 		"# Feature plan: <short title>",
 		"## Goal",
@@ -112,7 +117,6 @@ export function architectFinalTask(c: PlanContext, draft: string, preMortem: str
 		"## Execution tasks",
 		...TASK_CONTRACT,
 		"## Final verification (checks and observable behavior after all tasks)",
-		"## Architecture (boundaries, interfaces, data changes, invariants)",
-		"## Challenge resolution (each issue: accepted or rejected, one line why)",
+		"## Challenge resolution (only rejected or unresolved findings needing explanation; accepted fixes belong in contracts)",
 	].join("\n");
 }

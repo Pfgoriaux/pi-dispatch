@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { registerPrReviewTool } from "../src/tools/pr-review.ts";
 import { pinFixHead, assertFixHead } from "../src/tools/review-target.ts";
 
@@ -44,7 +44,7 @@ test("fixes require the reviewed head and refuse a moved checkout", async (t) =>
 		},
 	} as unknown as ExtensionAPI);
 	await assert.rejects(() => tool!.execute("fixture", { pr: "42", fix: true, herdr: false }, undefined, undefined,
-		{ cwd, isProjectTrusted: () => true } as ExtensionContext), /differs/);
+		{ cwd, isProjectTrusted: () => true } as ExtensionToolContext), /differs/);
 	assert.equal(views, 2);
 
 	git("commit", "--allow-empty", "-m", "concurrent change");

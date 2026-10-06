@@ -287,11 +287,6 @@ export async function removeWorktree(
 	}
 }
 
-/** Best-effort remove of several worktrees. */
-export async function removeWorktrees(repoRoot: string, paths: string[]): Promise<void> {
-	await Promise.allSettled(paths.map((p) => removeWorktree(repoRoot, p)));
-}
-
 /** Prune missing-worktree metadata only. Age is not proof a worker stopped. */
 export async function pruneStale(repoRoot: string): Promise<void> {
 	await gitRun(repoRoot, ["worktree", "prune"]);
