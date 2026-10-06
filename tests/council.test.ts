@@ -3,7 +3,7 @@ import test, { type TestContext } from "node:test";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { ModelRuntime, type ExtensionAPI, type ExtensionToolContext, type ModelRegistry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentTools, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import dispatchExtension from "../src/index.ts";
 import { registerCouncilTool } from "../src/tools/council.ts";
 import type { DispatchDetails } from "../src/types.ts";
@@ -79,9 +79,7 @@ test("three distinct opinions see the same task, not each other's answers; no fo
 		assert.match(call.context, /Evidence: A is simpler/);
 		assert.ok(!call.context.includes("Opinion from"));
 		const context = JSON.parse(call.context);
-		const declaredTools = context.messages
-			.filter((message: { role: string }) => message.role === "system")
-			.flatMap((message: { toolsAdded?: { name: string }[] }) => message.toolsAdded ?? []);
+		const declaredTools = [...getCurrentTools(context.messages), ...(context.tools ?? [])];
 		assert.ok(declaredTools.some((tool: { name: string }) => tool.name === "read"));
 		const toolNames = declaredTools.map((tool: { name: string }) => tool.name);
 		for (const forbidden of ["bash", "edit", "write", "dispatch", "council", "feature_plan", "pr_review"])

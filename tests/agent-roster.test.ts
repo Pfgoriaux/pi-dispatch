@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import dispatchExtension from "../src/index.ts";
 
 test("the live roster is advertised before dispatch, respects trust, and refreshes between turns", async (t) => {
@@ -25,7 +25,7 @@ test("the live roster is advertised before dispatch, respects trust, and refresh
 	writeAgent(path.join(cwd, ".pi/agents"), "researcher", "Project researcher");
 	writeAgent(path.join(cwd, ".pi/agents"), "scout", "Project override");
 
-	type Hook = (event: { systemPrompt: string }, ctx: ExtensionToolContext) => { systemPrompt: string };
+	type Hook = (event: { systemPrompt: string }, ctx: ExtensionContext) => { systemPrompt: string };
 	let beforeStart: Hook | undefined;
 	const tools: ToolDefinition[] = [];
 	dispatchExtension({
