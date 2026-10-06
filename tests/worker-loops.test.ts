@@ -124,3 +124,35 @@ test("parent cancellation wins over cutoff and never retries", { timeout: 10000 
 	assert.equal(result.attempts, 1);
 	assert.equal(state.calls(), 3);
 });
+
+for (const started of [false, true]) test(`SDK startup budget only bounds absent output (started=${started})`, { timeout: 10000 }, async(t) => {
+	const previous = process.env.PI_DISPATCH_STARTUP_TIMEOUT_MS;
+	process.env.PI_DISPATCH_STARTUP_TIMEOUT_MS = "1000";
+	t.after(() => {
+		if (previous === undefined) delete process.env.PI_DISPATCH_STARTUP_TIMEOUT_MS;
+		else process.env.PI_DISPATCH_STARTUP_TIMEOUT_MS = previous;
+	});
+	t.mock.method(ModelRuntime.prototype, "hasConfiguredAuth", () => true);
+	t.mock.method(ModelRuntime.prototype, "streamSimple", (model: Model<Api>, _context: unknown, options: { signal: AbortSignal }) => {
+		const stream = createAssistantMessageEventStream();
+		const message: AssistantMessage = {
+			role: "assistant", api: model.api, provider: model.provider, model: model.id,
+			content: [{ type: "text", text: "ok" }], stopReason: "stop", timestamp: Date.now(),
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		};
+		if (started) {
+			stream.push({ type: "start", partial: message });
+			stream.push({ type: "text_delta", contentIndex: 0, delta: "ok", partial: message });
+			setTimeout(() => stream.push({ type: "done", reason: "stop", message }), 1500);
+		} else {
+			options.signal.addEventListener("abort", () => stream.push({
+				type: "error", reason: "aborted", error: { ...message, stopReason: "aborted" },
+			}), { once: true });
+		}
+		return stream;
+	});
+	const result = await runWorker(agent, "fixture", { registry, fallbackModel: undefined, modelSpec: "fake/startup" });
+	assert.equal(result.status, started ? "ok" : "error");
+	if (!started) assert.match(result.error!, /no model output/);
+});

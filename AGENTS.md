@@ -28,12 +28,13 @@ processes in Git worktrees. Usage and current behavior: [README.md](README.md).
   child model. They have a separate loader and depth/exclusion guard;
   do not claim all tiers are hermetic. Worktrees separate changes but do not
   prevent shell access to other paths.
-- Worktree dispatch commits worker changes and merges branches automatically.
-  Use it only when the user has authorized those effects. Agent selection alone
+- Worktree dispatch returns commits on retained branches, never merging them.
+  Writers require authorization to edit and commit. The coordinator reviews and
+  integrates only with user authorization; PR merges require user review and authorization. Agent selection alone
   does not imply worktree execution: single mode is always in-process.
   Never force-delete dirty or locked worktrees; retained directories are recovery
   data. Age alone is not permission to remove a worktree. Write workers must pass
-  the clean-worktree check before merge-back; merge agents intentionally do not.
+  the clean-worktree check before a successful handoff.
 - PR fixes must match the reviewed head.
 - In-process failed-tool cutoffs are model-attempt failures, not user aborts;
   keep failover, usage accounting, and parent-cancellation precedence intact.
@@ -45,7 +46,7 @@ processes in Git worktrees. Usage and current behavior: [README.md](README.md).
 `src/index.ts` registers the tool and advertises the live roster before each
 main-agent turn. Keep advertised roles on the same discovery/trust path as
 execution; do not hardcode a separate list. `src/linkup.ts` adds shared Linkup tools
-from a trusted installation to both worker tiers; setup and usage are in README.md. Worker, worktree/merge, roster, and rendering
+from a trusted installation to both worker tiers; setup and usage are in README.md. Worker, worktree/handoff, roster, and rendering
 modules own their respective behavior; the workflow tools `pr_review`,
 `feature_plan`, and `council` live in `src/tools/` and reuse the same workers; agent prompts live in `agents/`.
 Agent frontmatter `model:` names an effort tier (`cheap`/`balanced`/`precise`/`long`)
@@ -56,7 +57,7 @@ Pi loads `src/index.ts` directly. Run `npm ci --ignore-scripts`, then
 mocked commands/models and disposable Git fixtures; they do not call providers or
 operate live Herdr. CI runs the same check on Linux and macOS. The pinned SDK's native import
 requires `pi-server` as a development dependency; dispatch does not start it.
-Live E2E spawns models and write-tier E2E commits/merges, so use authorized
+Live E2E spawns models and write-tier E2E commits in retained disposable worktrees, so use authorized
 disposable fixtures.
 
 Worker visibility is shared through `src/progress.ts`. Planned/running metadata

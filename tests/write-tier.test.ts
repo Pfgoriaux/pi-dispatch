@@ -4,8 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { createWorktree, removeWorktree, pruneStale, assertCleanTree, ensureGitignore } from '../src/worktree.ts';
-import { mergeWorktreeBranches } from '../src/merge.ts';
+import { createWorktree, removeWorktree, pruneStale, assertCleanTree, ensureExcluded } from '../src/worktree.ts';
 import { runWorkerProc } from '../src/worker-proc.ts';
 import extension from '../src/index.ts';
 
@@ -20,6 +19,7 @@ after(() => {
  fs.rmSync(root, {recursive:true, force:true});
 });
 process.env.HERDR_ENV = '0';
+delete process.env.PI_DISPATCH_DEPTH;
 process.env.PI_CODING_AGENT_DIR = path.join(root, 'mock-config');
 delete process.env.LINKUP_API_KEY;
 fs.mkdirSync(process.env.PI_CODING_AGENT_DIR, {recursive:true});
@@ -29,7 +29,7 @@ const dispatch = tools.find(t=>t.name==='dispatch');
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], {encoding:'utf8', stdio:['ignore','pipe','pipe']}).trim();
 function repo() {
  const dir=fs.mkdtempSync(path.join(root,'repo-'));
- git(dir,'init','-b','main'); git(dir,'config','user.name','Dispatch Test'); git(dir,'config','user.email','dispatch-test@example.invalid');
+ git(dir,'init','-b','feat/test'); git(dir,'config','user.name','Dispatch Test'); git(dir,'config','user.email','dispatch-test@example.invalid');
  git(dir,'config','commit.gpgsign','false'); git(dir,'config','core.hooksPath','/dev/null');
  fs.writeFileSync(path.join(dir,'.gitignore'),'.dispatch/\n'); fs.writeFileSync(path.join(dir,'shared.txt'),'base\n');
  git(dir,'add','.'); git(dir,'commit','-m','fixture'); return dir;
@@ -69,18 +69,13 @@ test('clean-tree checks include untracked files even when user config hides them
 test('unsafe worktree path components rejected',async()=>{
  const dir=repo(); for(const id of ['..','../escape','a/b','a\\b','']) await assert.rejects(()=>createWorktree(dir,'run',id));
 });
-test('real parallel branches merge disjoint edits; cleanup leaves clean parent',async()=>{
- const dir=repo(), a=await createWorktree(dir,'run','a'), b=await createWorktree(dir,'run','b');
- commit(a.path,'a.txt','alpha\n'); commit(b.path,'b.txt','beta\n');
- const result=await mergeWorktreeBranches(dir,[a.branch,b.branch]); assert.deepEqual(result.failed,[]); assert.equal(result.merged.length,2);
- for(const w of [a,b]) await removeWorktree(dir,w.path,{branch:w.branch});
- assert.equal(git(dir,'status','--porcelain'),''); assert.equal(fs.readFileSync(path.join(dir,'a.txt'),'utf8'),'alpha\n'); assert.equal(fs.readFileSync(path.join(dir,'b.txt'),'utf8'),'beta\n');
- assert.equal(git(dir,'worktree','list','--porcelain').split('worktree ').length-1,1);
-});
-test('first-use gitignore bookkeeping completes and parent ends clean',async()=>{
- const dir=repo(); git(dir,'rm','.gitignore'); git(dir,'commit','-m','remove ignore'); ensureGitignore(dir);
- const w=await createWorktree(dir,'run','a'); commit(w.path,'a.txt','alpha'); const result=await mergeWorktreeBranches(dir,[w.branch]);
- assert.equal(result.merged.length,1); await removeWorktree(dir,w.path,{branch:w.branch}); assert.equal(git(dir,'status','--porcelain'),'');
+test('first-use excludes leave tracked files and parent clean',async()=>{
+ const dir=repo(); git(dir,'rm','.gitignore'); git(dir,'commit','-m','remove ignore');
+ ensureExcluded(dir); ensureExcluded(dir);
+ const w=await createWorktree(dir,'run','a'); commit(w.path,'a.txt','alpha');
+ assert.equal(git(dir,'status','--porcelain'),'');
+ assert.equal(fs.existsSync(path.join(dir,'.gitignore')),false);
+ assert.equal(fs.readFileSync(path.join(dir,'.git/info/exclude'),'utf8').split('.dispatch/').length,2);
 });
 test('repos inside the workspace get mirrored central worktrees and no gitignore edit',async()=>{
  const ws=path.join(fs.realpathSync(root),'ws'), central=path.join(ws,'.worktrees'), app=path.join(ws,'products','app');
@@ -88,7 +83,7 @@ test('repos inside the workspace get mirrored central worktrees and no gitignore
  try {
   git(app,'init','-b','main'); git(app,'config','user.name','Dispatch Test'); git(app,'config','user.email','dispatch-test@example.invalid');
   git(app,'config','commit.gpgsign','false'); fs.writeFileSync(path.join(app,'f.txt'),'x\n'); git(app,'add','.'); git(app,'commit','-m','fixture');
-  assert.equal(ensureGitignore(app),false); assert.equal(fs.existsSync(path.join(app,'.gitignore')),false);
+  ensureExcluded(app); assert.equal(fs.existsSync(path.join(app,'.gitignore')),false);
   const w=await createWorktree(app,'run','a');
   assert.equal(w.path,path.join(central,'products','app','dispatch-run-a'));
   const nested=await createWorktree(w.path,'run','b');
@@ -96,49 +91,20 @@ test('repos inside the workspace get mirrored central worktrees and no gitignore
   for(const x of [nested,w]) await removeWorktree(app,x.path,{branch:x.branch});
  } finally { delete process.env.PI_WORKTREE_ROOT; }
 });
-async function conflicted() {
- const dir=repo(), w=await createWorktree(dir,'run','a'); commit(w.path,'shared.txt','worker\n'); commit(dir,'shared.txt','parent\n'); return {dir,w};
-}
-test('conflict resolution uses real git with simulated merge worker',async()=>{
- const {dir,w}=await conflicted(); fake(`require('fs').writeFileSync('shared.txt','parent\\nworker\\n');`+final);
- const result=await mergeWorktreeBranches(dir,[w.branch],{model:'fake/model'}); assert.deepEqual(result.failed,[]); assert.equal(result.merged.length,1);
- assert.equal(fs.readFileSync(path.join(dir,'shared.txt'),'utf8'),'parent\nworker\n'); assert.equal(git(dir,'status','--porcelain'),'');
- await removeWorktree(dir,w.path,{branch:w.branch});
-});
-test('merge children validate fallback routes against the supplied registry',async(t)=>{
- const {dir,w}=await conflicted(), head=git(dir,'rev-parse','HEAD');
- const cache=path.join(process.env.PI_CODING_AGENT_DIR!,'cache','usage-bar'); fs.mkdirSync(cache,{recursive:true});
- const quota=path.join(cache,'claude-v3.json'); fs.writeFileSync(quota,JSON.stringify({updatedAt:Date.now(),limits:[{label:'week',remaining:0,unit:'%'}]}));
- t.after(()=>fs.rmSync(quota,{force:true}));
- fake(`require('fs').writeFileSync('spawned.txt','unexpected child');`+final);
- const registry={find:(provider:string,id:string)=>provider==='anthropic'?{provider,id}:undefined} as any;
- const result=await mergeWorktreeBranches(dir,[w.branch],{model:'anthropic/claude-opus-5-5',registry});
- assert.equal(result.merged.length,0); assert.match(result.failed[0].error,/No model available/);
- assert.ok(!fs.existsSync(path.join(dir,'spawned.txt'))); assert.equal(git(dir,'rev-parse','HEAD'),head);
- await removeWorktree(dir,w.path,{deleteBranch:false});
-});
-test('unresolved conflict markers abort merge and preserve parent',async()=>{
- const {dir,w}=await conflicted(), head=git(dir,'rev-parse','HEAD'); fake(final);
- const result=await mergeWorktreeBranches(dir,[w.branch],{model:'fake/model'}); assert.equal(result.merged.length,0); assert.match(result.failed[0].error,/markers remain/);
- assert.equal(git(dir,'rev-parse','HEAD'),head); assert.equal(git(dir,'status','--porcelain'),''); await removeWorktree(dir,w.path,{deleteBranch:false});
-});
-test('pre-aborted merge performs no commits',async()=>{
- const dir=repo(), w=await createWorktree(dir,'run','a'); commit(w.path,'a.txt','a'); const head=git(dir,'rev-parse','HEAD');
- const result=await mergeWorktreeBranches(dir,[w.branch],{signal:AbortSignal.abort()}); assert.equal(result.merged.length,0); assert.equal(git(dir,'rev-parse','HEAD'),head); await removeWorktree(dir,w.path,{deleteBranch:false});
-});
 test('failed writer committed branch is kept but not merged',async()=>{
  const dir=repo(),head=git(dir,'rev-parse','HEAD');
  fake(`const fs=require('fs'),cp=require('child_process'); fs.writeFileSync('broken.txt','broken'); cp.execFileSync('git',['add','broken.txt']); cp.execFileSync('git',['commit','-m','broken fixture']); process.exit(1);`);
  const result=await call(dir,{tasks:[{agent:'writer',task:'fixture',model:'fake/model',worktree:true}],aggregate:false});
- assert.equal(result.details.items[0].status,'error'); const kept=git(dir,'branch','--list','dispatch/*').trim(); assert.equal(git(dir,'show',`${kept}:broken.txt`),'broken'); assert.equal(git(dir,'rev-parse','HEAD'),head); assert.ok(!fs.existsSync(path.join(dir,'broken.txt')));
- assert.match(git(dir,'branch','--list','dispatch/*'),/dispatch\//); assert.equal(git(dir,'worktree','list','--porcelain').split('worktree ').length-1,1);
+ assert.equal(result.details.items[0].status,'error'); const kept=git(dir,'branch','--list','--format=%(refname:short)','dispatch/*').trim(); assert.equal(git(dir,'show',`${kept}:broken.txt`),'broken'); assert.equal(git(dir,'rev-parse','HEAD'),head); assert.ok(!fs.existsSync(path.join(dir,'broken.txt')));
+ assert.match(git(dir,'branch','--list','dispatch/*'),/dispatch\//); assert.equal(git(dir,'worktree','list','--porcelain').split('worktree ').length-1,2);
 });
 test('SAFETY: successful writer without commit must not lose its edits',async()=>{
  const dir=repo(); git(dir,'config','status.showUntrackedFiles','no');
  fake(`require('fs').writeFileSync('valuable.txt','uncommitted work');`+final);
  const result=await call(dir,{tasks:[{agent:'writer',task:'fixture',model:'fake/model',worktree:true}],aggregate:false});
  assert.equal(result.details.items[0].status, 'error');
- assert.equal(result.details.merges.merged.length, 0);
+ assert.equal(result.details.worktrees[0].status, "error");
+ assert.match(result.content[0].text, /not ready/);
  const kept = fs.readdirSync(path.join(dir, '.dispatch/worktrees'));
  assert.equal(kept.length, 1);
  assert.equal(fs.readFileSync(path.join(dir, '.dispatch/worktrees', kept[0], 'valuable.txt'), 'utf8'), 'uncommitted work');
@@ -192,4 +158,68 @@ test('ACCOUNTING: dispatch cache costs are currency, not token counts',async()=>
  const result=await call(dir,{tasks:[{agent:'writer',task:'fixture',model:'fake/model',worktree:true}],aggregate:false});
  assert.equal(result.usage.cost.cacheRead,usage.cost.cacheRead);
  assert.equal(result.usage.cost.cacheWrite,usage.cost.cacheWrite);
+});
+
+test('writer commits are returned with durable references, never integrated or removed', async()=>{
+ const dir=repo(), head=git(dir,'rev-parse','HEAD');
+ fake(`const fs=require('fs'),cp=require('child_process'); fs.writeFileSync('done.txt','ok'); cp.execFileSync('git',['add','--','done.txt']); cp.execFileSync('git',['commit','-m','worker edit']);`+final);
+ const result=await call(root,{target:path.relative(root,dir),tasks:[{agent:'writer',task:'fixture',model:'fake/model',worktree:true}],aggregate:false});
+ const entry=result.details.worktrees[0];
+ assert.equal(result.details.items[0].status,'ok');
+ assert.equal(git(dir,'rev-parse','HEAD'),head);
+ assert.equal(entry.baseCommit,head);
+ assert.equal(entry.commits,1);
+ assert.equal(entry.head,git(dir,'rev-parse',entry.branch));
+ assert.ok(fs.existsSync(entry.path));
+ assert.equal(git(entry.path,'show','HEAD:done.txt'),'ok');
+ assert.equal(git(dir,'status','--porcelain'),'');
+ assert.match(result.content[0].text,/not merged/);
+ for(const value of [entry.branch,entry.path,entry.head,'1 commit']) assert.ok(result.content[0].text.includes(value));
+});
+
+test('target and chain boundaries fail before creating branches', async()=>{
+ const dir=repo();
+ const tasks=[{agent:'writer',task:'fixture',model:'fake/model',worktree:true}];
+ await assert.rejects(()=>call(root,{target:dir,chain:tasks}),/chain worktrees/);
+ await assert.rejects(()=>call(root,{target:dir,agent:'scout',task:'fixture'}),/target requires/);
+ await assert.rejects(()=>call(dir,{target:'..',tasks}),/outside/);
+ git(dir,'branch','-m','main');
+ for(const params of [{tasks},{target:'.',tasks}]) await assert.rejects(()=>call(dir,params),/feature branch/);
+ git(dir,'checkout','--detach');
+ await assert.rejects(()=>call(root,{target:dir,tasks}),/detached/);
+ assert.equal(git(dir,'branch','--list','dispatch/*'),'');
+});
+
+test('a thrown spawn does not strand a slow sibling or remove either worktree', async()=>{
+ const dir=repo();
+ fake(`console.log(JSON.stringify({type:'agent_start'})); setTimeout(()=>{${final}},300);`);
+ const result=await call(dir,{tasks:[
+  {agent:'writer',task:'invalid\u0000argument',model:'fake/model',worktree:true},
+  {agent:'writer',task:'slow',model:'fake/model',worktree:true},
+ ],aggregate:false});
+ assert.deepEqual(result.details.items.map((r:any)=>r.status),['error','ok']);
+ assert.equal(result.details.worktrees.length,2);
+ for(const entry of result.details.worktrees) assert.ok(fs.existsSync(entry.path));
+});
+
+test('spawn diagnostics return codes without leaking paths or stderr secrets', async()=>{
+ process.env.PI_DISPATCH_PI_BIN=path.join(root,'missing-private-binary');
+ const missing=await runWorkerProc(agent,'fixture',{cwd:root});
+ assert.match(missing.error!,/ENOENT/);
+ assert.ok(!missing.error!.includes(root));
+ fake(`console.error('password=very-private ERR_MODULE_NOT_FOUND'); process.exit(3);`);
+ const failed=await runWorkerProc(agent,'fixture',{cwd:root});
+ assert.match(failed.error!,/ERR_MODULE_NOT_FOUND/);
+ assert.ok(!failed.error!.includes('very-private'));
+});
+
+test('silent startup is bounded, but healthy slow children are not timed out', async(t)=>{
+ const previous=process.env.PI_DISPATCH_STARTUP_TIMEOUT_MS;
+ t.after(()=>{if(previous===undefined) delete process.env.PI_DISPATCH_STARTUP_TIMEOUT_MS; else process.env.PI_DISPATCH_STARTUP_TIMEOUT_MS=previous;});
+ process.env.PI_DISPATCH_STARTUP_TIMEOUT_MS='1000';
+ fake(`setInterval(()=>{},1000);`);
+ const timed=await runWorkerProc(agent,'fixture',{cwd:root,modelOverride:'anthropic/claude-opus-5-5'});
+ assert.equal(timed.status,'error'); assert.match(timed.error!,/did not start/); assert.equal(timed.attempts,1);
+ fake(`console.log(JSON.stringify({type:'agent_start'})); setTimeout(()=>{${final}},1500);`);
+ assert.equal((await runWorkerProc(agent,'fixture',{cwd:root})).status,'ok');
 });

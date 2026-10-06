@@ -14,13 +14,15 @@ master agent
 ```
 
 **Result boundary:** model-visible `content` contains final reports, failure summaries,
-and session-ID footers for `persist`/`resume`. Status, usage, and worker previews
+retained worktree/branch/commit references, and session-ID footers for `persist`/`resume`. Status, usage, and worker previews
 live in `details` (UI-only). Raw worker transcripts are not returned to the parent.
 
 **Modes:**
 - `single` — `{ agent, task }`
 - `parallel` — `{ tasks: [{agent, task, cwd?}] }`, max 8 tasks, concurrency 4; results distilled by `aggregator` unless `aggregate: false`
 - `chain` — `{ chain: [{agent, task}] }`, sequential; `{previous}` = prior step's output
+
+All four orchestration tools have `model-only` exposure: call them directly, not from codemode scripts.
 
 ## Advisor
 
@@ -98,14 +100,15 @@ reviewers fail, the tool stops. If verification fails, the unverified reports
 are returned. Override models with `DISPATCH_REVIEW_OPUS_MODEL`,
 `DISPATCH_REVIEW_ASTRA_MODEL`, and `DISPATCH_REVIEW_PREMORTEM_MODEL`.
 
-When `fix: true` is explicitly requested and verification succeeds, a `writer`
-fixes the findings in a git worktree whose branch merges back automatically. The fix step requires a trusted, committed-clean repo root at the
-session cwd and authorization for commits and automatic merge-back. `fix` defaults
-to **false**. Invalid diffs fail before reviewers start; empty diffs skip model calls.
-Fixes require the reviewed head to match the checkout; the checkout is rechecked
-before writing and merging so findings cannot silently target another revision.
-If any review material is truncated, the tool skips automatic fixes and asks for
-a narrower review.
+When `fix: true` is explicitly requested and verification succeeds, a writer
+commits fixes on a retained worktree branch. It does not merge. The fix step
+requires a trusted, committed-clean feature repo root at the session cwd and
+authorization to edit and commit. `fix` defaults to **false**.
+The reviewed head must match the checkout before work starts; the fix branch
+starts at that pinned commit. Invalid diffs fail before reviewers start; empty
+diffs skip model calls. Truncated reviews skip fixes and request a narrower review.
+The coordinator reviews the returned branch, integrates only with user authorization,
+and tests the combined result. PR merges require user review and authorization.
 
 ## feature_plan
 
@@ -143,7 +146,9 @@ dependencies, interfaces, non-obvious decisions, and acceptance checks without
 repeating the project context loaded by implementation sessions.
 
 The tool does not execute contracts; after approval, dispatch each to `writer`
-with `worktree: true` and the task's `Executor` as `model`. Read saved reports
+with `worktree: true` and the task's `Executor` as `model`, one call per repository.
+Use `target` for a clean feature checkout inside the session directory. Review and
+authorize integration before dispatching dependent work. Read saved reports
 completely before using truncated contracts. Recover existing text instead of
 restarting planning just because the preview was cut.
 
@@ -240,7 +245,7 @@ without calling a provider. A later positive reading makes the provider eligible
 Child workers resolve bare IDs through the parent's registry, prefer the sole
 authenticated match when several providers share an ID, and pass the canonical
 provider and full model spec to Pi. Ambiguous IDs, unresolved defaults, and model
-IDs the CLI cannot pin exactly fail before spawn. Merge children use the same registry checks.
+IDs the CLI cannot pin exactly fail before spawn.
 
 Snapshots are read at spawn time from
 `<getAgentDir()>/cache/usage-bar/<provider>-v3.json`, written by `pi-usage-bar`.
@@ -319,53 +324,63 @@ The SDK forwards cancellation to the tools. Run `/reload` after updating.
 
 ## Write tier (worktrees)
 
-**Before unattended use:** repository-wide merge locking and execution budgets
-are still absent. Do not overlap write dispatches in the same repository.
-Cancellation snapshots and signals the owned process tree on POSIX, including
-detached tool groups, with a force-stop after a grace period. This is best-effort,
-not containment: already reparented/daemonized processes can escape the snapshot.
-
-Tasks marked `worktree: true` in parallel or chain mode run a child `pi` process
-in a separate Git worktree. This mode commits worker changes and merges branches
-back automatically; use it only with authorization for those effects.
-
-```
-master agent
- └─ dispatch({ tasks: [{agent: "writer", task, worktree: true} × N] })
-      ├─ git worktree add <worktree root>/dispatch-<runId>-t1 -b dispatch/<runId>/t1
-      ├─ child pi #1 (cwd = worktree 1) ─ commits on its branch
-      ├─ child pi #2 (cwd = worktree 2) ─ commits on its branch
-      └─ after ALL finish: sequential `git merge --no-edit` per branch,
-         conflict → merge agent (read/edit) resolves preserving BOTH
-         sides, then worktrees removed (branches deleted after a clean merge)
+```text
+coordinator → dispatch({ target?, tasks: [{agent: "writer", task, worktree: true}] })
+  ├─ create isolated branches from one pinned feature commit
+  ├─ writers edit, test, and commit their own files
+  └─ return reports + branch, worktree, base/head commits, commit count
+coordinator → review → authorized integration → combined tests → PR
+user → review and authorize PR merge
 ```
 
-- **Requires** a committed-clean git repo root (`git status --porcelain` empty) and the session cwd to be the repo root; per-task `cwd` is not allowed for worktree tasks.
-- Worktree root: repos inside the workspace (the parent of `PI_WORKTREE_ROOT`,
-  default `~/eden/.worktrees`) mirror their main checkout's path under it, so
-  `~/eden/products/app` uses `~/eden/.worktrees/products/app/`. Other repos use
-  `<repo>/.dispatch/worktrees/`; for those, `.dispatch/` is added to `.gitignore`
-  on first use and merge bookkeeping can commit that change automatically.
-- Startup prunes only missing-worktree metadata; it never deletes existing
-  directories by age. Dirty and locked worktrees remain under the worktree root
-  for manual inspection/recovery.
-- Child pi runs `pi -p --no-session --mode json` with the agent's system prompt (`--system-prompt`), tool allowlist (`--tools`, or `--no-tools` for `tools: none`), `--exclude-tools dispatch,pr_review,feature_plan,council` (recursion backstop) and `PI_DISPATCH_DEPTH=<parent+1>` (max depth 2).
-- Workers' commit summaries (not diffs) return through the same context firewall and aggregator as the research tier.
-- Successful write workers must leave a clean worktree before merge-back. Uncommitted
-  edits change the result to an error with the retained worktree path.
-- On abort, POSIX workers and known descendants get SIGTERM (SIGKILL after 5s).
-  Clean, unlocked worktrees may be removed; dirty/locked worktrees and failed or
-  aborted branches are **kept** for a human. Cleanup never bypasses Git's refusal
-  with recursive deletion. Merge failures abort the merge and retain the branch;
-  `details.merges` reports which branches failed and why.
-- Fresh worktrees don't contain gitignored build deps (`node_modules/` etc.) — tasks that need builds should install or be scoped to source edits.
-- Chain mode supports `worktree: true` per step; each step's branch merges before the next step runs.
+- Requires authorization to edit and commit, and a clean feature checkout.
+  `main`, `master`, `production` and detached HEAD are rejected.
+- `target` defaults to the session cwd. An explicit target must resolve inside
+  the session directory and be the repo root. Each call has one target.
+  Per-task `cwd` is not allowed for worktree tasks.
+- Only `tasks` supports worktrees. Chain worktrees are rejected; run dependent
+  tasks after authorized integration, in a later call.
+- Repos inside the workspace (the parent of `PI_WORKTREE_ROOT`, default
+  `~/eden/.worktrees`) mirror their main checkout's path under it. Other repos
+  use `<repo>/.dispatch/worktrees/`; `.dispatch/` is added to Git's local
+  `info/exclude`, never to tracked `.gitignore`.
+- Each successful writer must leave committed, clean edits. Uncommitted edits
+  produce an error, with the worktree retained. No empty commit is required.
+- Once workers start, all their worktrees remain, including failed and aborted
+  tasks. One task's exception becomes an error result; siblings finish normally.
+  Branch references appear outside aggregator text and in `details.worktrees`.
+- After verifying integration and a clean worktree, remove the returned path
+  with `git worktree remove <path>`, then `git branch -d <branch>`.
+  Stop if Git refuses. There is no age-based deletion or automatic merge.
+- Children keep global extension discovery, but exclude the four orchestration
+  tools and omit the Dispatch roster when `PI_DISPATCH_DEPTH > 0`.
+  Depth above 2 is refused. They run `pi -p --no-session --mode json` with
+  role tools, role prompt, and the assigned worktree.
+- Workers are instructed not to launch nested agent CLIs through the shell.
+  This is guidance, not a shell sandbox.
+- Cancellation signals owned POSIX processes and known descendants, with a
+  force-stop after a grace period. Already daemonized processes may escape.
+- Fresh worktrees do not contain ignored dependencies such as `node_modules`.
+
+### Startup failures
+
+`PI_DISPATCH_STARTUP_TIMEOUT_MS` defaults to 120000 milliseconds. Invalid,
+non-positive or out-of-range values use the default. Child startup must produce
+an agent/message/tool-start event within this budget; a silent startup is stopped
+without retrying other models. In-process prompts must produce model output
+within this budget; timeout is an attempt failure and normal fallback applies.
+The in-process timer begins after session setup. Neither timer limits healthy
+workers' total runtime.
+
+Spawn errors report an OS error code. Child stderr is never returned verbatim;
+only recognized module/filesystem diagnostic codes can accompany an exit failure.
+Model-provider errors retain their existing reporting.
 
 ## Agents
 
 Frontmatter markdown, byte-compatible with the official example. Discovery: bundled (`agents/`) < user (`~/.pi/agent/agents/`) < project (`.pi/agents/`, trusted projects only).
 
-Before each main-agent turn, dispatch adds the current names, descriptions,
+Before each main-agent turn (not inside a dispatch child), dispatch adds the current names, descriptions,
 sources, role tool lists, and shell availability to its system context. This
 uses the same discovery and trust rules as execution, including custom roles
 and overrides. Workers do not inherit the parent's tools; configured Linkup
@@ -402,15 +417,23 @@ operating live Herdr, or committing in real project repositories. Git integratio
 tests create and remove disposable repositories. CI runs the same check on Linux
 and macOS; live provider/Herdr checks remain separate.
 
-Global: add to `~/.pi/agent/settings.json`:
+For a stable installation, pin a reviewed, pushed commit:
 
-```json
-{ "packages": ["~/path/to/pi-dispatch"] }
+```bash
+pi install git:github.com/Pfgoriaux/pi-dispatch@<commit>
 ```
 
-Or install the published Git repository: `pi install git:github.com/Pfgoriaux/pi-dispatch`.
+Pi clones Git packages under its agent directory, separate from development
+checkouts, and installs their runtime dependencies. A commit pin does not advance
+when development branches move. Remove any local-path package entry for this
+extension before enabling the Git entry: local paths and Git URLs have different
+package identities. Replace the pin only during an intentional update.
 
-Requires pi ≥ 0.84 (exported `createAgentSession`, `DefaultResourceLoader.noExtensions`, `parseFrontmatter`, `getAgentDir`).
+Do not update the Pi binary underneath active sessions. Finish or stop workers,
+then update and restart sessions. Change extension versions between tasks;
+`/reload` changes the code used by that session.
+
+Requires Pi 1.0.4 or newer. Deterministic checks use the pinned 1.0.4 SDK.
 
 ## Resumable sessions & Herdr observability
 

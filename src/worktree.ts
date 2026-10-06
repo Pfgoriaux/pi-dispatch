@@ -4,8 +4,7 @@
  * Each write-tier task runs in its own worktree on branch
  * `dispatch/<runId>/<taskId>`, in a directory named after the branch under
  * `worktreeRoot()`, so workers can commit without touching the
- * parent tree. Branches merge back (see merge.ts), then the worktree is
- * removed.
+ * parent tree. Worktrees and committed branches remain for review and integration.
  *
  * All functions use execFile-style git invocation (argv array, never a
  * shell string) so task text can never be shell-interpreted.
@@ -112,103 +111,40 @@ export function worktreeRoot(repoRoot: string): string {
 	return path.join(central, rel);
 }
 
-/**
- * Add `.dispatch/` to the repo's .gitignore if not already covered and task
- * worktrees live inside the repo. Returns true when the file was modified.
- */
-export function ensureGitignore(repoRoot: string): boolean {
-	if (!worktreeRoot(repoRoot).startsWith(repoRoot + path.sep)) return false;
-	const gitignorePath = path.join(repoRoot, ".gitignore");
-	let current: string;
-	try {
-		current = fs.readFileSync(gitignorePath, "utf-8");
-	} catch {
-		current = "";
-	}
-	if (/^\s*\.dispatch\/\s*$/m.test(current)) return false;
-	const next = current.length === 0
-		? ".dispatch/\n"
-		: current.endsWith("\n")
-			? `${current}.dispatch/\n`
-			: `${current}\n.dispatch/\n`;
-	fs.mkdirSync(path.dirname(gitignorePath), { recursive: true });
-	fs.writeFileSync(gitignorePath, next);
-	return true;
+/** Keep local task worktrees out of status without changing tracked files. */
+export function ensureExcluded(repoRoot: string): void {
+	if (!worktreeRoot(repoRoot).startsWith(repoRoot + path.sep)) return;
+	const common = execFileSync("git", ["-C", repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim();
+	const file = path.join(common, "info", "exclude");
+	const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+	if (current.split("\n").includes(".dispatch/")) return;
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.appendFileSync(file, `${current.endsWith("\n") || !current ? "" : "\n"}.dispatch/\n`);
 }
 
-/**
- * Dirty if any status line remains after tolerating the one change this
- * module itself introduces: an appended `.dispatch/` line in .gitignore —
- * tracked ("M .gitignore") or newly created ("?? .gitignore", when
- * ensureGitignore had to create the file). A .gitignore that was already
- * dirty for other reasons is NOT tolerated — it fails the first precheck
- * before ensureGitignore ever writes, so an unrelated diff here is still
- * reported as real uncommitted work.
- */
-export async function dirtyLines(
-	repoRoot: string,
-	tolerateGitignoreAppend: boolean,
-): Promise<string[]> {
+export async function dirtyLines(repoRoot: string): Promise<string[]> {
 	const status = await gitRun(repoRoot, ["status", "--porcelain", "--untracked-files=all"]);
-	if (!status.ok) throw new Error(`Cannot verify working tree: ${status.stderr.trim()}`);
-	const lines = status.stdout
-		.split("\n")
-		.map((l) => l.trim())
-		.filter(Boolean);
-	if (!tolerateGitignoreAppend) return lines;
-
-	// Allow both "M .gitignore" and "?? .gitignore" — the check's purpose is
-	// catching real uncommitted work, not our own bookkeeping line.
-	const isGitignoreLine = (l: string) => l === "M .gitignore" || l === "?? .gitignore";
-	if (!lines.some(isGitignoreLine)) return lines;
-	if (!lines.every(isGitignoreLine)) return lines;
-
-	if (lines.includes("M .gitignore")) {
-		// Tracked `.gitignore`: only tolerate a diff that purely appends the
-		// `.dispatch/` line.
-		const diff = await gitRun(repoRoot, ["diff", "HEAD", "--", ".gitignore"]);
-		if (!diff.ok) throw new Error(`Cannot verify .gitignore: ${diff.stderr.trim()}`);
-		const changes = diff.stdout
-			.split("\n")
-			.filter(
-				(l) =>
-					(l.startsWith("+") || l.startsWith("-")) &&
-					!l.startsWith("+++") &&
-					!l.startsWith("---"),
-			);
-		const onlyDispatchAppend =
-			changes.length > 0 &&
-			changes.every((l) => l.startsWith("+") && /^\+\s*\.dispatch\/\s*$/.test(l));
-		return onlyDispatchAppend ? [] : lines;
-	}
-
-	// Untracked ("??") `.gitignore`: newly created by ensureGitignore — its
-	// whole content must be only our `.dispatch/` line(s).
-	try {
-		const content = fs.readFileSync(path.join(repoRoot, ".gitignore"), "utf-8");
-		const onlyOurs = content
-			.split("\n")
-			.filter((l) => l.trim() !== "")
-			.every((l) => /^\s*\.dispatch\/\s*$/.test(l));
-		return onlyOurs ? [] : lines;
-	} catch {
-		return lines;
-	}
+	if (!status.ok) throw new Error("Cannot verify working tree");
+	return status.stdout.split("\n").map(l => l.trim()).filter(Boolean);
 }
 
-/**
- * Write-tier precheck: the parent tree must be clean. `git worktree add` is
- * safe on a dirty tree, but merging the branches back later is not, and a
- * clean tree is the only way to attribute every change to its worker.
- */
 export async function assertCleanTree(repoRoot: string): Promise<void> {
-	const dirty = await dirtyLines(repoRoot, true);
-	if (dirty.length > 0) {
-		throw new Error(
-			"write tier requires a clean working tree — commit or stash first " +
-				`(uncommitted: ${dirty.slice(0, 3).join(", ")})`,
-		);
-	}
+	const dirty = await dirtyLines(repoRoot);
+	if (dirty.length) throw new Error("write tier requires a clean working tree — commit task changes first");
+}
+
+/** Pin every worker in a call to the same clean feature commit. */
+export async function resolveWorktreeTarget(dir: string): Promise<{ root: string; base: string; baseCommit: string }> {
+	const root = await getRepoRoot(dir);
+	if (!root) throw new Error("dispatch: set target to a clean feature repo root inside the session cwd");
+	if (fs.realpathSync(dir) !== fs.realpathSync(root)) throw new Error("dispatch: target must be the repo root");
+	await assertCleanTree(root);
+	const branch = await gitRun(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+	const base = branch.stdout.trim();
+	if (!branch.ok || !base) throw new Error("dispatch: target must have a feature branch, not detached HEAD");
+	if (["main", "master", "production"].includes(base)) throw new Error(`dispatch: check out a feature branch in ${root} first`);
+	const baseCommit = (await gitThrow(root, ["rev-parse", "HEAD"])).trim();
+	return { root, base, baseCommit };
 }
 
 export interface WorktreeInfo {
@@ -221,6 +157,7 @@ export async function createWorktree(
 	repoRoot: string,
 	runId: string,
 	taskId: string,
+	baseCommit = "HEAD",
 ): Promise<WorktreeInfo> {
 	// Precheck FIRST — before any repo mutation.
 	await assertCleanTree(repoRoot);
@@ -232,7 +169,7 @@ export async function createWorktree(
 	if (fs.existsSync(wtPath)) {
 		throw new Error(`worktree path already exists: ${wtPath}`);
 	}
-	await gitThrow(repoRoot, ["worktree", "add", wtPath, "-b", branch]);
+	await gitThrow(repoRoot, ["worktree", "add", wtPath, "-b", branch, baseCommit]);
 	return { path: wtPath, branch };
 }
 
@@ -273,13 +210,12 @@ export async function removeWorktree(
 		const branch = options.branch ?? (await branchOfWorktree(repoRoot, wtPath));
 		// Never force removal: Git protects dirty, locked and otherwise unsafe
 		// worktrees. Retain both the directory and branch if cleanup is refused.
-		if ((await dirtyLines(wtPath, false)).length > 0) return;
+		if ((await dirtyLines(wtPath)).length > 0) return;
 		const removed = await gitRun(repoRoot, ["-c", "status.showUntrackedFiles=all", "worktree", "remove", wtPath]);
 		if (!removed.ok) return;
 		if (deleteBranch && branch) {
-			// A branch still checked out elsewhere can't be deleted; force is
-			// fine because either it was merged or the operator chose removal.
-			await gitRun(repoRoot, ["branch", "-D", branch]);
+			// Git refuses deletion of unmerged or checked-out branches.
+			await gitRun(repoRoot, ["branch", "-d", branch]);
 		}
 		await gitRun(repoRoot, ["worktree", "prune"]);
 	} catch {

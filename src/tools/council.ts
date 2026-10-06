@@ -26,6 +26,7 @@ function report(result: WorkerResult, requested: string) {
 export function registerCouncilTool(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "council",
+		exposure: "model-only",
 		label: "Council",
 		description:
 			"Get three independent, read-only opinions in parallel: Opus 5.5, GPT-6 Astra, and GLM 5.3 or Kimi K3. Returns labeled reports; the caller synthesizes them.",

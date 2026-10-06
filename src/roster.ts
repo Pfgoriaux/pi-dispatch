@@ -145,18 +145,6 @@ const CROSS_PROVIDER_PEERS = new Map<string, { peer?: string; family: "top-tier"
 	[OPENAI_FALLBACK, { family: "mid-tier" }],
 ]);
 
-// Provider top models for global fallback when all providers are running low.
-// Used when quota headroom across all known providers drops below threshold.
-export const PROVIDER_TOP_MODELS: Record<string, string> = {
-	"anthropic": "anthropic/claude-opus-5-5",
-	// quota.ts keys Anthropic as "claude".
-	"claude": "anthropic/claude-opus-5-5",
-	"codex": "openai-codex/gpt-6-astra",
-	"openai-codex": "openai-codex/gpt-6-astra",
-	"neuralwatt": "aperture/neuralwatt/glm-5.3",
-	"synthetic": "aperture/synthetic/hf:moonshotai/Kimi-K3",
-};
-
 const routeId = (spec: string) => spec.replace(/^aperture\//, "");
 
 /** Drop candidates naming an excluded model, with or without the Aperture prefix. */
