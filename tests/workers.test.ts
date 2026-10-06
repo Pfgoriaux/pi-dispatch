@@ -214,7 +214,7 @@ console.log(JSON.stringify({type: "message_end", message: {role: "assistant", co
 	const args = JSON.parse(result.text) as string[];
 	assert.equal(
 		args[args.indexOf("--exclude-tools") + 1],
-		"dispatch,pr_review,feature_plan",
+		"dispatch,pr_review,feature_plan,council",
 	);
 	assert.equal(args[args.indexOf("--provider") + 1], "parent");
 	assert.equal(args[args.indexOf("--model") + 1], "parent/model");

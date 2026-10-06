@@ -47,6 +47,7 @@ import {
 import type { AgentConfig, DispatchDetails, WorkerResult } from "./types.ts";
 import { registerFeaturePlanTool } from "./tools/feature-plan.ts";
 import { registerPrReviewTool } from "./tools/pr-review.ts";
+import { registerCouncilTool } from "./tools/council.ts";
 import { registerHerdrWatch } from "./herdr-watch.ts";
 
 const MAX_PARALLEL_TASKS = 8;
@@ -277,6 +278,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 
 	registerFeaturePlanTool(pi);
 	registerPrReviewTool(pi);
+	registerCouncilTool(pi);
 
 	async function executeDispatch(
 		params: DispatchParams,

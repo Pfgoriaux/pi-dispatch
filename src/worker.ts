@@ -40,6 +40,7 @@ import {
 import { THINKING_LEVELS } from "./types.ts";
 import { exhaustedQuotaReason, quotaCandidates } from "./quota.ts";
 import { ToolHealth } from "./tool-health.ts";
+import { modelIdentity } from "./model-diversity.ts";
 import type { AgentConfig, WorkerResult } from "./types.ts";
 
 export interface RunWorkerOptions {
@@ -66,6 +67,8 @@ export interface RunWorkerOptions {
 	steerByQuota?: boolean;
 	/** Model specs never tried, not even as failover (keeps parallel workers on distinct models). */
 	excludeModels?: readonly string[];
+	/** Only these model identities may run, including after provider failover. */
+	allowedModels?: readonly string[];
 	/** Model specs tried after every other candidate, in order (workflow last resort). */
 	fallbackModels?: readonly string[];
 	/** Synchronous phase-wide claim, checked against the resolved model on every attempt. */
@@ -303,6 +306,7 @@ export async function runWorker(
 	let lastAttempt: WorkerResult | undefined;
 	let attempts = 0;
 	const failedAttempts: string[] = [];
+	const allowed = options.allowedModels?.map(modelIdentity);
 
 	for (let i = 0; i < candidates.length; i++) {
 		const candidate = candidates[i];
@@ -321,6 +325,10 @@ export async function runWorker(
 		}
 
 		const resolvedSpec = `${model.provider}/${model.id}`;
+		if (allowed?.includes(modelIdentity(resolvedSpec)) === false) {
+			lastError ??= `Model ${resolvedSpec} is not allowed for this worker`;
+			continue;
+		}
 		const resolvedQuotaReason = exhaustedQuotaReason(resolvedSpec);
 		if (resolvedQuotaReason) {
 			options.onWarning?.(resolvedQuotaReason);
