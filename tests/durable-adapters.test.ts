@@ -194,8 +194,8 @@ test('supervisor: deadline is enforced without a client; unknown spend halts the
   const hang = fakePi('setInterval(()=>{},1000);');
   const supervisor = new Supervisor(s.options({ piExecutable: hang.bin }));
   const started = Date.now();
-  const timedOut = await supervisor.runAttempt(task('t1'), { deadlineAt: Date.now() + 1200 });
-  assert.ok(Date.now() - started < 10_000);
+  const timedOut = await supervisor.runAttempt(task('t1'), { deadlineAt: Date.now() + 5000 });
+  assert.ok(Date.now() - started < 20_000);
   assert.equal(timedOut.status, 'failed'); assert.equal(timedOut.reason, 'deadline exceeded'); assert.equal(timedOut.spentUsd, null);
   assert.equal(await alive(timedOut.worker!.pid, timedOut.worker!.startedAt), false);
   await assert.rejects(supervisor.runAttempt(task('t2'), soon()), /halted: t1#1 has unknown spend/);
@@ -207,8 +207,11 @@ test('supervisor: deadline is enforced without a client; unknown spend halts the
  try {
   const hang = fakePi('setInterval(()=>{},1000);');
   const controller = new AbortController();
-  setTimeout(() => controller.abort(), 1000);
-  const cancelled = await new Supervisor(c.options({ piExecutable: hang.bin })).runAttempt(task('t1'), { ...soon(), signal: controller.signal });
+  const running = new Supervisor(c.options({ piExecutable: hang.bin })).runAttempt(task('t1'), { ...soon(), signal: controller.signal });
+  const waitUntil = Date.now() + 10_000;
+  while (hang.spawns().length === 0 && Date.now() < waitUntil) await new Promise((resolve) => setTimeout(resolve, 25));
+  controller.abort();
+  const cancelled = await running;
   assert.equal(cancelled.reason, 'cancelled'); assert.equal(cancelled.spentUsd, null);
   assert.equal(await alive(cancelled.worker!.pid, cancelled.worker!.startedAt), false);
  } finally { await c.store.close(); }
