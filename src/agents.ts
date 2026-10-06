@@ -147,6 +147,9 @@ export function discoverAgents(ctx: ExtensionContext): AgentDiscoveryResult {
 
 export function agentRosterHelp(agents: AgentConfig[]): string {
 	return agents
-		.map((a) => `- ${a.name}: ${a.description} (${a.source})`)
+		.map((a) => {
+			const tools = a.tools ?? [];
+			return `- ${a.name}: ${a.description} (${a.source}) — role tools: ${tools.join(", ") || "none"}; ${tools.includes("bash") ? "shell available" : "no shell"}`;
+		})
 		.join("\n");
 }

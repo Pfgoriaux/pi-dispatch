@@ -141,8 +141,10 @@ Neither a cwd check nor a worktree is a filesystem sandbox; agents with `bash`
 can access paths outside their starting directory. In-process tasks must include
 applicable constraints or tell workers which instruction files to read.
 
-The bundled scout and planner have no write or shell tools; the reviewer has
-`bash` and is read-only by instruction, not enforcement. Models resolve through
+The bundled scout, planner, and advisor have no write or shell tools. The
+investigator and reviewer have `bash` and are read-only by instruction, not
+enforcement. Shell access does not grant authorization to access a host or
+database. Models resolve through
 rosters, agent frontmatter, then the parent's active model as described below.
 Single mode always runs in-process, even when the agent is named `writer`.
 
@@ -347,12 +349,27 @@ master agent
 
 Frontmatter markdown, byte-compatible with the official example. Discovery: bundled (`agents/`) < user (`~/.pi/agent/agents/`) < project (`.pi/agents/`, trusted projects only).
 
-Before each main-agent turn, dispatch adds the current names, descriptions, and
-sources to its system context. This uses the same discovery and trust rules as
-execution, so installed custom roles and overrides are visible before a call.
+Before each main-agent turn, dispatch adds the current names, descriptions,
+sources, role tool lists, and shell availability to its system context. This
+uses the same discovery and trust rules as execution, including custom roles
+and overrides. Workers do not inherit the parent's tools; configured Linkup
+tools are added separately. Model tiers do not change tool access.
 Generic role labels in skills are not agent names; use an exact roster name.
 
-Bundled: `scout` (read-only recon — tier `cheap`), `reviewer` (code review — `balanced`), `planner` (implementation plans — `long`), `aggregator` (fan-in specialist, no local tools — `balanced`), `security-reviewer` (application security — `precise`), `advisor` (read-only second opinion on decisions and risky or finished work — `precise`), `writer` (worktree write tier — implements, commits, and reports a summary — `precise`; dispatch with `model:'long'` for long-context writing tasks). Tier names in agent frontmatter `model:` expand via `src/profiles.ts`; see [Effort tiers](#effort-tiers).
+Select by capability: `scout` locates code, `investigator` checks code and runtime
+causes, and `advisor` evaluates evidence and decisions. The investigator has
+read/search tools and `bash`, without edit/write tools. Its prompt limits shell
+use to authorized read-only diagnostics, including bounded SSH and database
+checks; it forbids edits, installs, deployments, restarts, requeues, and production
+writes. These limits are instructions, not a shell sandbox.
+
+Dispatch's coordinator guidance requires checking returned commands against the
+user's scope and safety rules, then completing authorized checks or delegating
+them to a capable role. A blocked check needs a specific tool, access, or approval
+blocker and a statement of what remains unverified. A worker's completed turn
+does not establish that the investigation is complete.
+
+Bundled: `scout` (read-only recon — tier `cheap`), `investigator` (code and runtime diagnostics — `precise`), `reviewer` (code review — `balanced`), `planner` (implementation plans — `long`), `aggregator` (fan-in specialist, no local tools — `balanced`), `security-reviewer` (application security — `precise`), `advisor` (read-only second opinion on decisions and risky or finished work — `precise`), `writer` (worktree write tier — implements, commits, and reports a summary — `precise`; dispatch with `model:'long'` for long-context writing tasks). Tier names in agent frontmatter `model:` expand via `src/profiles.ts`; see [Effort tiers](#effort-tiers).
 
 ## Install
 
