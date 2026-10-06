@@ -32,9 +32,9 @@ export function registerCouncilTool(pi: ExtensionAPI): void {
 			"Get three independent, read-only opinions in parallel: Opus 5.5, GPT-6 Astra, and GLM 5.3 or Kimi K3. Returns labeled reports; the caller synthesizes them.",
 		promptSnippet: "Consult three different models on a consequential decision",
 		promptGuidelines: [
-			"council: Use when the user asks for a council or several opinions, or a consequential decision has competing options that merit independent judgment. Prefer one advisor for a focused second opinion; use feature_plan for implementation planning. Skip routine tasks.",
-			"council: Supply a self-contained question and context: outcome, options, evidence, relevant paths, constraints, and applicable instructions. Workers cannot see this conversation.",
-			"council: Synthesize the reports into agreement, disagreement, your recommendation, and the smallest next check. Preserve dissent and missing voices; do not decide by majority vote or call fewer than three successful opinions a full council. Do not repeat without new evidence.",
+			"council: Use for requested multiple opinions or consequential competing options. Prefer one advisor for focused questions and feature_plan for implementation plans; skip routine work.",
+			"council: Supply outcome, options, evidence, paths, constraints, and applicable instructions; advisors do not see this conversation.",
+			"council: Summarize agreement, dissent, your recommendation, and the smallest next check. Name missing voices; fewer than three successful opinions is not a full council. Do not vote by majority or repeat without new evidence.",
 		],
 		parameters: Type.Object({
 			question: Type.String({ minLength: 1, description: "The decision or question to assess" }),

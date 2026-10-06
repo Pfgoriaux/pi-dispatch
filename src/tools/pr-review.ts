@@ -225,10 +225,8 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 		promptSnippet:
 			"Multi-model PR review with optional fixes",
 		promptGuidelines: [
-			"pr_review: Use when the user asks for a review, or on a PR you opened that changes 100+ lines or touches auth, data, migrations, or infrastructure. Self-review smaller PRs.",
-			"pr_review: fix:true requires explicit user intent to change code and a trusted, committed-clean repo root.",
-			"pr_review: fix:true uses the default writer tier (Kimi K3 by default). For auth, migrations, concurrency, or shared-interface fixes, review with fix:false, then dispatch an authorized writer task with worktree:true and model:'precise'.",
-			"pr_review: Always pass intent.",
+			"pr_review: Use for requested reviews or PRs you opened with 100+ changed lines, auth, data, migrations, or infrastructure. Self-review smaller PRs. Always pass intent.",
+			"pr_review: fix:true requires authorization to edit/commit and a trusted, clean feature repo root; it uses the default writer. For high-risk fixes, review only, then dispatch an authorized worktree writer with model:'precise'.",
 		],
 		parameters: Type.Object({
 			herdr: Type.Optional(

@@ -204,7 +204,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 	registerHerdrWatch(pi);
 	pi.on("before_agent_start", (event, ctx) => {
 		if (Number(process.env.PI_DISPATCH_DEPTH) > 0) return;
-		return { systemPrompt: `${event.systemPrompt}\n\n## Dispatch agents\nUse these exact names; never invent an agent name (skill role labels are not agent names). Workers do not inherit your tools. Shared Linkup web tools are added when configured; role tools and shell availability are listed below. Shell access is not a read-only sandbox; follow each role's constraints.\n${agentRosterHelp(discoverAgents(ctx).agents)}` };
+		return { systemPrompt: `${event.systemPrompt}\n\n## Dispatch agents\nUse these exact names; never invent an agent name; skill role labels are not agent names. Workers do not inherit your tools; configured Linkup tools are added. Shell access is not a sandbox.\n${agentRosterHelp(discoverAgents(ctx).agents)}` };
 	});
 
 	pi.registerTool({
@@ -218,14 +218,13 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 		promptSnippet:
 			"Get an advisor's second opinion or delegate parallel or context-heavy work",
 		promptGuidelines: [
-			"dispatch: Select by required capabilities before model strength. Use investigator for code/runtime cause investigation and authorized live diagnostics, scout for locating code, advisor for judging evidence and decisions. Check the live roster's tools, including overrides; model tiers and task wording cannot grant missing tools.",
-			"dispatch: Consult a single advisor for a consequential trade-off, work stuck after investigation, or a concrete unresolved risk before declaring complex work done. No parallel work or user request is required. Skip routine tasks and repeat consultations without new evidence.",
-			"dispatch: Otherwise use for 3+ independent areas worked in parallel, output that would flood your context, or when the user asks for sub-agents or multiple perspectives. Do routine work yourself.",
-			"dispatch: Tasks must be self-contained: goal, paths, constraints, output shape. Workers see no conversation.",
-			"dispatch: Worker completion is not task completion. Evaluate returned checks against the user's scope and safety rules, then run authorized checks yourself or delegate to a capable role before concluding. If blocked, report the specific missing tool, access, or approval and what remains unverified; do not stop at a generic worker limitation.",
-			"dispatch: For file edits use tasks:[{agent:'writer', worktree:true}] with authorization to commit. Set target to a clean feature checkout inside the session directory when needed. Branches are returned, not merged. Review and integrate only with user authorization; PR merges still require user review and authorization. Dispatch dependent tasks only after integration. Single mode is always in-process.",
-			"dispatch: Writers default to the long tier (Kimi K3 by default). Choose aperture/neuralwatt/glm-5.3 for small, well-bounded coding tasks; use precise for auth, migrations, concurrency, or shared-interface changes.",
-			"dispatch: Never launch pi, claude, codex or other agent CLIs through bash to bypass a rejected request, depth limit, or role tool restriction. Report the blocker instead. Shell access is not a sandbox.",
+			"dispatch: Select by required capabilities before model strength. Scout locates code; investigator diagnoses code/runtime; advisor judges decisions. Check the live roster: model choice cannot grant tools.",
+			"dispatch: Use one advisor for consequential trade-offs, stuck work, or unresolved risks. Otherwise delegate 3+ independent tasks, context-heavy work, or explicit requests. Do routine work directly; repeat consultations only with new evidence.",
+			"dispatch: Supply goal, paths, constraints, and output shape. Workers do not see this conversation or automatically inherit its instructions.",
+			"dispatch: Worker completion is not task completion. Evaluate returned checks against the user's scope and safety rules. Complete authorized verification; report specific access/approval blockers and what remains unverified.",
+			"dispatch: Writers require tasks with worktree:true and authorization to commit. Set target to a clean feature checkout when needed. Review returned branches, integrate only with authorization, then run dependent tasks. PR merges require user review and authorization.",
+			"dispatch: Writer default is long (Kimi K3). Use aperture/neuralwatt/glm-5.3 for small coding tasks; precise for auth, migrations, concurrency, or shared interfaces.",
+			"dispatch: Never launch agent CLIs through bash to bypass rejected requests, depth limits, or tool restrictions; report the blocker.",
 		],
 		parameters: Type.Object({
 			target: Type.Optional(Type.String({ description: "Clean feature repo root inside the session cwd that worktree tasks branch from; defaults to session cwd" })),
