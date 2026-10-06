@@ -79,16 +79,6 @@ export const PROFILE_TIERS: ReadonlySet<string> = new Set(
 	Object.keys(PROFILES),
 );
 
-/**
- * Cross-check pair for lightweight 2-model validation.
- * Different model families reduce shared blind spots.
- * Overridable with DISPATCH_DIVERSE_0_MODEL / DISPATCH_DIVERSE_1_MODEL.
- */
-export const DIVERSE_PAIR: readonly [string, string] = [
-	envModel("DISPATCH_DIVERSE_0_MODEL") ?? "aperture/neuralwatt/glm-5.3",
-	envModel("DISPATCH_DIVERSE_1_MODEL") ?? "aperture/neuralwatt/kimi-k3",
-];
-
 /** PR review models. Opus and Astra exclude each other on failover. */
 export const REVIEW_MODELS = {
 	opus: envModel("DISPATCH_REVIEW_OPUS_MODEL") ?? "anthropic/claude-opus-5-5",

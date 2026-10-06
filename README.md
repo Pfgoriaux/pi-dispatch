@@ -209,8 +209,8 @@ bottleneck percentage across all reported quota windows. Synthetic's 5-hour
 and weekly limits both count; a full 5-hour window cannot hide a depleted week.
 A healthy tie (at least 50% remaining) prefers Synthetic. Different model
 families keep their roster priority, and Codex stays the terminal fallback.
-Concrete per-task/frontmatter model pins, `inherit`, and `DISPATCH_DIVERSE_*_MODEL`
-overrides retain their provider order and existing failure fallbacks.
+Concrete per-task/frontmatter model pins and `inherit` retain their provider
+order and existing failure fallbacks.
 Every model attempt in both worker tiers checks the latest cache and skips providers
 with fresh, known zero headroom, including pinned, inherited, and fallback models.
 Models blocked at selection do not consume an attempt or claim a parallel model identity.
