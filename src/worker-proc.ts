@@ -387,7 +387,7 @@ async function runOneProc(
 		args.push("--no-tools");
 	}
 	// Recursion backstop: the child must never be able to dispatch.
-	args.push("--exclude-tools", "dispatch,pr_review,feature_plan,council");
+	args.push("--exclude-tools", "dispatch,pr_review,feature_plan,council,durable_batch");
 	// Same "inherit" semantics as resolveWorkerModel (model.ts): a literal
 	// "inherit" (or empty) spec means "use the parent's model". The raw
 	// string must never reach the child CLI as --model (pi exits 1 with

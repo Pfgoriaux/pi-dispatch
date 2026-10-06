@@ -349,7 +349,7 @@ master agent
 - Startup prunes only missing-worktree metadata; it never deletes existing
   directories by age. Dirty and locked worktrees remain under the worktree root
   for manual inspection/recovery.
-- Child pi runs `pi -p --no-session --mode json` with the agent's system prompt (`--system-prompt`), tool allowlist (`--tools`, or `--no-tools` for `tools: none`), `--exclude-tools dispatch,pr_review,feature_plan,council` (recursion backstop) and `PI_DISPATCH_DEPTH=<parent+1>` (max depth 2).
+- Child pi runs `pi -p --no-session --mode json` with the agent's system prompt (`--system-prompt`), tool allowlist (`--tools`, or `--no-tools` for `tools: none`), `--exclude-tools dispatch,pr_review,feature_plan,council,durable_batch` (recursion backstop) and `PI_DISPATCH_DEPTH=<parent+1>` (max depth 2).
 - Workers' commit summaries (not diffs) return through the same context firewall and aggregator as the research tier.
 - Successful write workers must leave a clean worktree before merge-back. Uncommitted
   edits change the result to an error with the retained worktree path.
@@ -373,6 +373,21 @@ node --import tsx src/durable/cli.ts resume batch.json   # continue after a stop
 node --import tsx src/durable/cli.ts status batch.json [--json]
 node --import tsx src/durable/cli.ts stop   batch.json [--cancel]
 ```
+
+Agents can prepare a batch with the `durable_batch` tool; the user approves the launch:
+
+- `draft` validates a configuration with the same parser as the CLI and saves
+  it as `~/.pi/agent/pi-dispatch/batches/<id>.json` (private directory and
+  file). It does nothing else, and refuses to change a batch that has a store.
+- `launch` shows the batch, repository, tasks, model, allowance, deadline, and
+  publication target in a Pi confirm dialog. Only an approval starts one
+  detached owner (`run`, or `resume` when the store exists), logging to
+  `<id>.log` next to the draft; the tool returns its PID. It refuses without
+  a dialog-capable UI (print and JSON modes), inside dispatch workers, and
+  while an owner is live.
+- `status` and `stop` (`cancel: true` to cancel workers) use the owner socket.
+- Child workers never get the tool. The pilot writer role lives in
+  `agents/durable/`, outside the dispatch roster.
 
 Every field is required, except `worker.piPrefixArgs`:
 

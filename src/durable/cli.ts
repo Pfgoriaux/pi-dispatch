@@ -185,8 +185,11 @@ function bundledAgent(file: string, onlyTools?: readonly string[]): AgentConfig 
 	};
 }
 
-/** Commit-only pilot writer. The model comes from the configuration. */
-export const writerAgent = (): AgentConfig => bundledAgent("durable-writer.md");
+/**
+ * Commit-only pilot writer. The model comes from the configuration. It lives in
+ * `agents/durable/`, outside the dispatch roster, so dispatch cannot pick it.
+ */
+export const writerAgent = (): AgentConfig => bundledAgent("durable/writer.md");
 
 /** The bundled reviewer with read-only tools only: it reads the saved diff instead of running Git. */
 export const reviewerAgent = (): AgentConfig => bundledAgent("reviewer.md", ["read", "grep", "find", "ls"]);
