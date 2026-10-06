@@ -343,6 +343,109 @@ master agent
 - Fresh worktrees don't contain gitignored build deps (`node_modules/` etc.) — tasks that need builds should install or be scoped to source edits.
 - Chain mode supports `worktree: true` per step; each step's branch merges before the next step runs.
 
+## Durable pilot batches
+
+A standalone CLI runs a fixed batch of writer tasks on a Durable store and
+leaves draft pull requests for human review. It never merges branches and
+never pushes to the base branch. It is separate from the `dispatch` tool.
+
+```bash
+node --import tsx src/durable/cli.ts run    batch.json   # create the batch and run it
+node --import tsx src/durable/cli.ts resume batch.json   # continue after a stop or crash
+node --import tsx src/durable/cli.ts status batch.json [--json]
+node --import tsx src/durable/cli.ts stop   batch.json [--cancel]
+```
+
+Every field is required, except `worker.piPrefixArgs`:
+
+```json
+{
+  "batch": { "id": "night-1", "tasks": [
+    { "id": "api", "dependencies": [], "ownedFiles": ["src/api/"],
+      "checks": [["npm", "run", "check"]], "prompt": "..." },
+    { "id": "docs", "dependencies": ["api"], "ownedFiles": ["README.md"],
+      "checks": [["npm", "run", "check"]], "prompt": "..." }
+  ] },
+  "spend": { "allowanceUsd": 20, "reservations": { "api": 5, "docs": 3 } },
+  "limits": { "maxWorkers": 3, "maxAttemptsPerTask": 2, "deadline": "2026-07-01T06:00:00+02:00" },
+  "store": "/abs/path/night-1.sqlite",
+  "repo": { "root": "/abs/repo", "baseBranch": "feat/x", "worktreesRoot": "/abs/.worktrees",
+            "sessionsRoot": "/abs/sessions", "branchPrefix": "pilot/night-1" },
+  "worker": { "piExecutable": "/abs/bin/pi", "model": "provider/id", "thinking": "high" },
+  "publication": { "remote": "origin", "url": "git@github.com:owner/repo.git",
+                   "repo": "owner/repo", "gh": "/abs/bin/gh" }
+}
+```
+
+- Validation lists every missing or invalid field and starts nothing. `maxWorkers`
+  is 1–3 and `maxAttemptsPerTask` is 1–2. Every task needs a positive
+  reservation, and reservations must fit the allowance. The deadline needs a
+  zone; `run` rejects one in the past or more than 24 days ahead.
+- The store's policy hash covers every configuration field. `resume`, `status`,
+  and `stop` need the same values; any change is refused.
+- `ownedFiles` entries are repository-relative files or directories ending in
+  `/`. Each task needs at least one check (argv, no shell). Checks run with the
+  CLI's environment, so start it without production credentials.
+
+```
+cli.ts run
+ ├─ validate config → open store (owner lock, recovery) → create root task → admit spend policy
+ ├─ preflight: reconcile unresolved effects, read attempts, harness.inspect()
+ │    └─ any blocker → print reasons and report, exit 2, scheduling never enabled
+ └─ harness.resume() → root task
+      ├─ spawn: one Durable task per batch task, in dependency order
+      │    ├─ no dependencies → base = baseBranch commit recorded at `run`
+      │    └─ dependencies → wait (allSettled) → base = verified parent head
+      │         ├─ a parent not verified, its branch moved, or heads diverge → blocked
+      │         └─ several parents: one head must contain the others (nothing is merged)
+      ├─ each task: Supervisor attempt from ref <branchPrefix>/base/<task> at that base
+      │    ├─ at most maxWorkers attempts at once; a failed attempt retries until the cap
+      │    └─ succeeded attempt → verified: head SHA, base SHA, and checks passed at that head
+      └─ after all tasks settle: publish in dependency order
+           ├─ root task → draft PR against baseBranch
+           ├─ dependent → draft PR stacked on the parent's branch, only if the parent is PR-ready
+           └─ PR-ready only when the pushed SHA and the PR head equal the verified head
+```
+
+The report gives each task a state:
+
+| State | Meaning |
+|---|---|
+| `pr-ready` | Verified, pushed, and an open draft PR has the verified head |
+| `verified` | Checks passed at the recorded head; not published (reason shown) |
+| `failed` | Attempts ran and none succeeded |
+| `blocked` | Not attempted or stopped by a dependency, the deadline, the budget, or a halted batch |
+| `running` / `pending` | Not settled yet |
+
+It also shows reported spend, halt reasons, and short reasons. It never shows
+prompts or worker output. Reasons are cut to one line of 240 characters.
+No automated review runs; the PR body says so.
+
+Ownership and stopping:
+
+- The `run`/`resume` process owns the store until it exits. It answers
+  `status` and `stop` on a Unix socket in `$TMPDIR/pi-dispatch-<uid>/`; the
+  directory must be private to the user.
+- `stop` drains: no new attempts or publications start, running attempts
+  finish, then the owner prints the report and exits. Unfinished tasks continue
+  on `resume`. `stop --cancel` also stops running workers; their spend becomes
+  unknown, which halts the batch. The first SIGINT/SIGTERM drains; a second
+  cancels.
+- `status` without a live owner opens the store, which runs recovery, and
+  prints the report without scheduling anything.
+- `resume` refuses while any attempt is blocked or interrupted, any spend is
+  unknown, or an effect cannot be observed. Effects proven absent rerun in their
+  publication step. A killed owner can leave its worker running; recovery
+  records it as blocked and nothing restarts it.
+
+Limits:
+
+- Reservations and the allowance gate new attempts against spend that workers
+  report. They are not a provider spending cap, and unpriced usage counts as
+  unknown spend, which halts the batch.
+- Workers and checks run as the user. Worktrees separate changes but do not
+  contain processes; a worker's descendants can outlive cancellation.
+
 ## Agents
 
 Frontmatter markdown, byte-compatible with the official example. Discovery: bundled (`agents/`) < user (`~/.pi/agent/agents/`) < project (`.pi/agents/`, trusted projects only).
