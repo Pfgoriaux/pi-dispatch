@@ -14,12 +14,13 @@ const THIRD = {
 } as const;
 
 function report(result: WorkerResult, requested: string) {
-	const failures = (result.failedAttempts ?? []).join("\n");
-	return truncateText([
+	const failures = (result.failedAttempts ?? []).map(error => truncateText(error, 512));
+	const output = truncateText([
 		`## ${requested} — ${result.status} (actual: ${result.model ?? "not run"})`,
-		failures ? `Failed attempts:\n${failures}` : "",
 		result.status === "ok" ? result.text : `Unavailable: ${result.error ?? result.status}`,
+		failures.length ? `Failed attempts:\n${failures.map(error => error.text).join("\n")}` : "",
 	].filter(Boolean).join("\n\n"));
+	return { text: output.text, truncated: [output, ...failures].some(part => part.truncated) };
 }
 
 export function registerCouncilTool(pi: ExtensionAPI): void {
@@ -53,8 +54,7 @@ export function registerCouncilTool(pi: ExtensionAPI): void {
 			const task = [
 				"Give an independent opinion on this decision. You cannot see the other opinions.",
 				"Read-only: do not edit files or execute shell commands. Inspect only relevant evidence.",
-				"Return at most 500 words: recommendation, evidence, strongest objection, uncertainty, and smallest next check.",
-				"Assess the options fairly; do not endorse a preferred answer by default. Do not produce implementation task contracts.",
+				"Return at most 500 words using the advisor's Recommendation/Why/Risks/Check format. Include the strongest objection and uncertainty under Risks.",
 				`Question:\n${params.question}`,
 				`Context:\n${params.context ?? "(none supplied)"}`,
 			].join("\n\n");
@@ -84,7 +84,6 @@ export function registerCouncilTool(pi: ExtensionAPI): void {
 						{ type: "text" as const, text: `${heading}. Synthesize the labeled reports; preserve disagreements and unavailable voices.` },
 						...reports.map(({ text }) => ({ type: "text" as const, text })),
 					],
-					isError: successful === 0 || signal?.aborted === true,
 					details: {
 						mode: "parallel", items: results, aggregated: false,
 						truncated: reports.some(result => result.truncated), total: 3,

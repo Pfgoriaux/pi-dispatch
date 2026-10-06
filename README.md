@@ -25,10 +25,7 @@ live in `details` (UI-only). Raw worker transcripts are not returned to the pare
 ## Advisor
 
 `dispatch({ agent: "advisor", task: "..." })` gives a read-only second opinion.
-The tool guidance permits a single consultation for consequential trade-offs,
-work stuck after investigation, or a concrete unresolved risk before completion.
-It does not require parallel work or an explicit user request. Routine tasks
-and repeat consultations without new evidence stay with the caller.
+Single consultations do not require parallel work or an explicit user request.
 
 Include the outcome, decision, relevant paths, evidence, and constraints.
 The advisor checks the evidence and returns a recommendation, reasons, risks,
@@ -63,8 +60,9 @@ failed attempts, and a count of successful opinions.
 
 Only the three seats run; no aggregator model is called. The caller synthesizes
 agreement, disagreement, its recommendation, and the smallest next check.
-Guidance preserves dissent rather than treating majority agreement as proof.
 Each labeled report is capped at 12 KB. `herdr: false` disables viewers.
+Zero successful opinions and cancellation are reported in the heading; like
+the other workflows, these results resolve normally so reports and usage survive.
 
 ## pr_review
 
@@ -398,7 +396,7 @@ blocks or fails a dispatch.
 **Live identities:** tool output shows each planned worker's role immediately,
 then its resolved provider/model, thinking level, attempt, and lifecycle state.
 You do not need to expand the result to identify running workers. This applies
-to `dispatch`, `pr_review`, and `feature_plan`.
+to `dispatch`, `council`, `pr_review`, and `feature_plan`.
 
 **Herdr viewers:** inside Herdr, workers get viewer tabs in the **calling
 workspace**, without moving focus. This works from non-Git directories such as

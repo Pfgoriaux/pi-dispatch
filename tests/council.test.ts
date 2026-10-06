@@ -11,7 +11,7 @@ import { isolateAgentDir } from "./isolated-agent-dir.ts";
 
 isolateAgentDir();
 
-function setup(t: TestContext, answer: (spec: string) => string | undefined = spec => `Opinion from ${spec}`) {
+function setup(t: TestContext, answer: (spec: string) => string | undefined = spec => `Opinion from ${spec}`, errorMessage = "402 insufficient credits") {
 	const calls: { spec: string; context: string }[] = [];
 	t.mock.method(ModelRuntime.prototype, "hasConfiguredAuth", () => true);
 	t.mock.method(ModelRuntime.prototype, "streamSimple", (model: Model<Api>, context: unknown) => {
@@ -22,7 +22,7 @@ function setup(t: TestContext, answer: (spec: string) => string | undefined = sp
 		const message: AssistantMessage = {
 			role: "assistant", api: model.api, provider: model.provider, model: model.id,
 			content: failed ? [] : [{ type: "text", text }],
-			stopReason: failed ? "error" : "stop", errorMessage: failed ? "402 insufficient credits" : undefined,
+			stopReason: failed ? "error" : "stop", errorMessage: failed ? errorMessage : undefined,
 			timestamp: Date.now(),
 			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.01 } },
@@ -49,10 +49,7 @@ function setup(t: TestContext, answer: (spec: string) => string | undefined = sp
 		const result = await tool!.execute("test", {
 			question: "Choose A or B", context: "Evidence: A is simpler.", herdr: false, ...params,
 		}, signal, undefined, ctx);
-		return {
-			...result, details: result.details as DispatchDetails,
-			isError: (result as typeof result & { isError: boolean }).isError,
-		};
+		return { ...result, details: result.details as DispatchDetails };
 	};
 	return { calls, run, registry };
 }
@@ -64,7 +61,6 @@ test("council is registered alongside existing workflows", () => {
 		registerTool: (tool: ToolDefinition) => names.push(tool.name),
 	} as unknown as ExtensionAPI);
 	assert.ok(names.includes("council"));
-	assert.ok(names.includes("feature_plan"));
 });
 
 test("three distinct opinions see the same task, not each other's answers; no fourth call", async (t) => {
@@ -89,7 +85,7 @@ test("three distinct opinions see the same task, not each other's answers; no fo
 	assert.equal(result.details.items.length, 3);
 	assert.equal(result.details.aggregated, false);
 	assert.equal(result.usage?.cost.total, 0.03);
-	assert.equal(result.isError, false);
+	assert.match(JSON.stringify(result.content), /3\/3 opinions/);
 });
 
 test("failed seats never borrow another seat or Sol; GLM may retry its other provider", async (t) => {
@@ -118,7 +114,6 @@ test("all failures are explicit, output is capped, and cancellation starts no re
 	let mode: "fail" | "long" = "fail";
 	const { calls, run } = setup(t, () => mode === "fail" ? undefined : "界".repeat(10000));
 	const failure = await run();
-	assert.equal(failure.isError, true);
 	assert.match(JSON.stringify(failure.content), /0\/3 opinions/);
 	mode = "long";
 	const long = await run();
@@ -128,7 +123,7 @@ test("all failures are explicit, output is capped, and cancellation starts no re
 	}
 	const before = calls.length;
 	const aborted = await run({}, AbortSignal.abort());
-	assert.equal(aborted.isError, true);
+	assert.match(JSON.stringify(aborted.content), /Council aborted/);
 	assert.ok(aborted.details.items.every(item => item.status === "aborted"));
 	assert.equal(calls.length, before);
 	await assert.rejects(run({ question: "  " }), /must not be blank/);
@@ -144,5 +139,45 @@ test("model allowlist checks resolved identity, not just the requested spec", as
 	}));
 	const result = await run();
 	assert.equal(calls.length, 0);
-	assert.equal(result.isError, true);
+	assert.match(JSON.stringify(result.content), /0\/3 opinions/);
+});
+
+test("long fallback errors cannot erase the successful opinion", async (t) => {
+	const { run } = setup(t, spec => spec === "aperture/neuralwatt/glm-5.3" ? undefined : "PRESERVED-OPINION", "x".repeat(20000));
+	const result = await run();
+	const third = result.content[3];
+	assert.equal(third.type, "text");
+	if (third.type !== "text") return;
+	assert.match(third.text, /PRESERVED-OPINION/);
+	assert.match(third.text, /Failed attempts/);
+	assert.ok(Buffer.byteLength(third.text) < 1500);
+	assert.equal(result.details.truncated, true);
+});
+
+test("cancellation during a model request settles every seat without new fallback calls", async (t) => {
+	const controller = new AbortController();
+	const { run, calls } = setup(t, () => {
+		controller.abort();
+		return undefined;
+	});
+	const result = await run({}, controller.signal);
+	assert.match(JSON.stringify(result.content), /Council aborted/);
+	assert.ok(result.details.items.every(item => item.status === "aborted"));
+	assert.ok(calls.length > 0 && calls.length <= 3);
+	assert.ok(!calls.some(call => call.spec.includes("synthetic")));
+});
+
+test("a quota-exhausted Opus seat remains unavailable rather than borrowing Astra", async (t) => {
+	const cache = path.join(process.env.PI_CODING_AGENT_DIR!, "cache", "usage-bar");
+	fs.mkdirSync(cache, { recursive: true });
+	const file = path.join(cache, "claude-v3.json");
+	fs.writeFileSync(file, JSON.stringify({ updatedAt: Date.now(), limits: [{ label: "week", remaining: 0, unit: "%" }] }));
+	t.after(() => fs.rmSync(file));
+	const { run, calls } = setup(t);
+	const result = await run();
+	assert.equal(calls.length, 2);
+	assert.ok(!calls.some(call => call.spec.startsWith("anthropic")));
+	assert.equal(result.details.items[0].attempts, 0);
+	assert.equal(result.details.items[0].status, "error");
+	assert.match(JSON.stringify(result.content), /2\/3 opinions/);
 });
