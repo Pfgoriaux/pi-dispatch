@@ -196,14 +196,17 @@ export function workerPrompt(config: PilotConfig, spec: BatchTaskSpec, base: Bas
 	].join("\n");
 }
 
-/** Bounded pool of attempt slots. Closing refuses new holders and resolves once every slot is free. */
+/**
+ * Bounded pool of attempt slots. Closing refuses new holders and resolves once
+ * every slot is free. `held` slots start taken, for workers a previous owner left running.
+ */
 class Slots {
 	#free: number;
 	#closed = false;
 	#waiters: ((granted: boolean) => void)[] = [];
 	#idle: (() => void)[] = [];
 
-	constructor(readonly size: number) { this.#free = size; }
+	constructor(readonly size: number, held: number) { this.#free = size - held; }
 
 	acquire(signal: AbortSignal): Promise<boolean> {
 		if (this.#closed || signal.aborted) return Promise.resolve(false);
@@ -320,6 +323,7 @@ export async function openBatch(config: PilotConfig, options: BatchOwnerOptions)
 export class BatchOwner {
 	readonly deadlineAt: number;
 	readonly #slots: Slots;
+	readonly #reserved: Set<string>;
 	readonly #cancel = new AbortController();
 	#claims: Promise<unknown> = Promise.resolve();
 	#draining = false;
@@ -336,7 +340,9 @@ export class BatchOwner {
 		private readonly options: BatchOwnerOptions,
 	) {
 		this.deadlineAt = Date.parse(config.limits.deadline);
-		this.#slots = new Slots(config.limits.maxWorkers);
+		// A worker left running by a previous owner keeps its slot until its task adopts it.
+		this.#reserved = new Set(store.recovery.orphaned.map((key) => key.split("#")[0]));
+		this.#slots = new Slots(config.limits.maxWorkers, this.#reserved.size);
 	}
 
 	get draining(): boolean { return this.#draining; }
@@ -423,16 +429,25 @@ export class BatchOwner {
 	stop(cancel = false): Promise<void> {
 		this.#draining = true;
 		if (cancel) this.#cancel.abort();
-		this.#stopped ??= this.#slots.close().then(() => this.#signalStopped());
+		if (!this.#stopped) {
+			const closed = this.#slots.close();
+			for (const key of this.#reserved) this.#releaseReserved(key);
+			this.#stopped = closed.then(() => this.#signalStopped());
+		}
 		return this.#stopped;
 	}
 
 	close(): Promise<void> { return this.store.close(); }
 
+	#releaseReserved(key: string): void {
+		if (this.#reserved.delete(key)) this.#slots.release();
+	}
+
+	/** `reserved`: the step already holds a slot reserved at open. */
 	async #withSlot<I, S extends { phase: string }, R>(
-		runtime: Runtime<I, S, R>, context: Context, step: () => Promise<Next<S, R> | Parked>,
+		runtime: Runtime<I, S, R>, context: Context, step: () => Promise<Next<S, R> | Parked>, reserved = false,
 	): Promise<void> {
-		if (!await this.#slots.acquire(runtime.signal)) return park(runtime.signal);
+		if (!reserved && !await this.#slots.acquire(runtime.signal)) return park(runtime.signal);
 		let next: Next<S, R> | Parked;
 		try {
 			next = await step();
@@ -479,9 +494,10 @@ export class BatchOwner {
 
 	run(key: string, checkpoint: WorkCheckpoint, runtime: Runtime<WorkInput, WorkCheckpoint, Verified>, context: Context): Promise<void> {
 		if (checkpoint.phase !== "run") throw new Error(`Unexpected checkpoint ${checkpoint.phase}.`);
+		const reserved = this.#reserved.delete(key);
 		return this.#withSlot(runtime, context, () => this.#attemptStep(key, checkpoint)
 			.catch((error) => error instanceof AttemptNotStartedError && this.#draining
-				? PARK : failure<WorkCheckpoint, Verified>("blocked", message(error))));
+				? PARK : failure<WorkCheckpoint, Verified>("blocked", message(error))), reserved);
 	}
 
 	/**
@@ -739,6 +755,13 @@ function reviewSection(review: ReviewState | null | undefined, headSha: string):
 	return [head, "", "<details><summary>Reviewer findings</summary>", "", review.findings, "", "</details>"];
 }
 
+/** Why a published task is not PR-ready: unresolved blockers or a review without a usable answer. */
+function reviewProblem(review: ReviewState | null | undefined): string | null {
+	const blocking = review?.blocking ?? 0;
+	if (blocking > 0) return `${blocking} unresolved blocking review finding${blocking === 1 ? "" : "s"}`;
+	return review?.status === "failed" ? `no usable review: ${review.reason ?? "reviewer failed"}` : null;
+}
+
 const reviewSummary = (review: ReviewState | null | undefined): TaskReport["review"] =>
 	review ? { status: review.status, blocking: review.blocking, other: review.other } : null;
 
@@ -767,9 +790,9 @@ function taskReport(id: string, snapshot: StoreSnapshot, child: AnyRecord, publi
 		...base, branch: verified.branch, headSha: verified.headSha, baseSha: verified.baseSha, parent: verified.parent, review: reviewSummary(stored?.review),
 	};
 	if (stored?.status !== "succeeded" || stored.headSha !== verified.headSha) return { ...bound, state: "blocked", reason: "store no longer shows this verified attempt" };
-	const blocking = stored.review?.blocking ?? 0;
 	if (publication?.state !== "pr-ready") return { ...bound, state: "verified", reason: publication ? `publication ${publication.state}: ${publication.reason}` : "not published yet" };
-	if (blocking > 0) return { ...bound, state: "verified", pr: publication.pr, reason: `draft PR has ${blocking} unresolved blocking review finding${blocking === 1 ? "" : "s"}` };
+	const problem = reviewProblem(stored.review);
+	if (problem) return { ...bound, state: "verified", pr: publication.pr, reason: `draft PR has ${problem}` };
 	return { ...bound, state: "pr-ready", pr: publication.pr, reason: null };
 }
 

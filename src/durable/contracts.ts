@@ -66,7 +66,7 @@ export type AttemptState = {
 	headSha: string | null;
 	pr: PullRequestIdentity | null;
 	reason: string | null;
-	/** Absent in stores written before reviews existed. */
+	/** `undefined` or `null`: no review recorded. */
 	review?: ReviewState | null;
 };
 

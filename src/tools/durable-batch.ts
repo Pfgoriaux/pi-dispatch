@@ -3,9 +3,11 @@
  * to launch it. Only the user's confirmation in the Pi UI starts work.
  *
  * - draft: validate with `parseConfig`, save `<agent dir>/pi-dispatch/batches/<id>.json`.
- * - launch: show the batch, ask `ctx.ui.confirm`, then start one detached
- *   owner (`cli.ts run`, or `resume` when the store exists) logging to
- *   `<id>.log` next to the draft. Refused without a UI or inside a worker.
+ * - launch: show the batch, including every command it runs, ask
+ *   `ctx.ui.confirm`, then start one detached owner (`cli.ts run`, or
+ *   `resume` when the store exists) logging to `<id>.log` next to the draft.
+ *   The owner gets the approved policy hash and refuses a changed file.
+ *   Refused without a UI or inside a worker.
  * - status / stop: talk to the live owner over its socket.
  */
 
@@ -17,7 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Type } from "@earendil-works/pi-ai";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ConfigError, loadConfig, parseConfig, request, socketPath } from "../durable/cli.ts";
-import { formatReport, type BatchReport, type PilotConfig } from "../durable/scheduler.ts";
+import { formatReport, policyHash, type BatchReport, type PilotConfig } from "../durable/scheduler.ts";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const CLI = fileURLToPath(new URL("../durable/cli.ts", import.meta.url));
@@ -66,16 +68,27 @@ function draft(config: unknown): string {
 	return `Draft saved: ${file}\n${summary(parsed, "run").join("\n")}\nAsk the user to approve, then call durable_batch with action "launch" and id "${parsed.batch.id}".`;
 }
 
+const argv = (parts: readonly string[]) => parts.map((part) => JSON.stringify(part)).join(" ");
+const PROMPT_CHARS = 200;
+
+/** Everything the user approves: targets, limits, and every command and prompt the batch runs. */
 function summary(config: PilotConfig, mode: "run" | "resume"): string[] {
-	const tasks = config.batch.tasks.map((t) => t.dependencies.length ? `${t.id} (after ${t.dependencies.join(", ")})` : t.id);
+	const { worker, publication, repo, limits } = config;
+	const tasks = config.batch.tasks.flatMap((t) => [
+		`- ${t.id}${t.dependencies.length ? ` (after ${t.dependencies.join(", ")})` : ""}; owns ${t.ownedFiles.join(", ")}`,
+		`  checks: ${t.checks.map(argv).join("; ")}`,
+		`  prompt: ${Array.from(t.prompt.replace(/\s+/g, " ")).slice(0, PROMPT_CHARS).join("")}${t.prompt.length > PROMPT_CHARS ? "…" : ""}`,
+	]);
 	return [
-		`Batch: ${config.batch.id} (${mode})`,
-		`Repository: ${config.repo.root}, base branch ${config.repo.baseBranch}`,
-		`Tasks (${tasks.length}): ${tasks.join(", ")}`,
-		`Worker model: ${config.worker.model} (${config.worker.thinking})`,
+		`Batch: ${config.batch.id} (${mode}), policy ${policyHash(config)}`,
+		`Repository: ${repo.root}, base branch ${repo.baseBranch}, branches ${repo.branchPrefix}/…`,
+		`Worker: ${argv([worker.piExecutable, ...(worker.piPrefixArgs ?? [])])}, model ${worker.model} (${worker.thinking})`,
 		`Spend allowance: $${config.spend.allowanceUsd} (reported usage, not a provider cap)`,
-		`Deadline: ${config.limits.deadline}; up to ${config.limits.maxWorkers} workers, ${config.limits.maxAttemptsPerTask} attempts per task`,
-		`Publication: draft PRs on ${config.publication.repo} via ${config.publication.remote} (${config.publication.url}); no merges`,
+		`Deadline: ${limits.deadline}; up to ${limits.maxWorkers} workers, ${limits.maxAttemptsPerTask} attempts per task`,
+		`Publication: draft PRs on ${publication.repo} via ${publication.remote} (${publication.url}) with ${publication.gh}; no merges`,
+		`Store: ${config.store}; worktrees ${repo.worktreesRoot}; sessions ${repo.sessionsRoot}`,
+		`Tasks (${config.batch.tasks.length}):`,
+		...tasks,
 	];
 }
 
@@ -116,13 +129,13 @@ async function launch(params: Params, ctx: ExtensionContext): Promise<string> {
 	const fd = fs.openSync(log, "a", 0o600);
 	let exited = false;
 	try {
-		const child = spawn(process.execPath, ["--import", tsxLoader(), CLI, mode, file], {
+		const child = spawn(process.execPath, ["--import", tsxLoader(), CLI, mode, file, `--expect-hash=${policyHash(config)}`], {
 			cwd: path.dirname(path.dirname(CLI)), detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, PI_DISPATCH_DEPTH: "0" },
 		});
 		child.once("exit", () => { exited = true; });
 		child.unref();
 		const answering = await waitForOwner(config, () => exited);
-		const state = answering ? "is running and answers status" : exited ? "exited early; read the log" : "has not answered status yet; read the log";
+		const state = exited ? "exited; read the log" : answering ? "is running and answers status" : "has not answered status yet; read the log";
 		return `Approved. Owner pid ${child.pid} ${state}.\nLog: ${log}`;
 	} finally {
 		fs.closeSync(fd);
@@ -153,6 +166,8 @@ export function registerDurableBatchTool(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"durable_batch: Draft only when the user asks for an unattended batch. launch shows the batch and asks the user; never say a batch started unless launch returned an owner pid.",
 		],
+		// Never run beside another call in the same turn: a parallel draft could replace the file under review.
+		executionMode: "sequential",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("draft"), Type.Literal("launch"), Type.Literal("status"), Type.Literal("stop")]),
 			config: Type.Optional(Type.Any({ description: "draft: full batch configuration (see README, Durable pilot batches)" })),

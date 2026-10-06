@@ -185,8 +185,10 @@ const POLL_MS = 500;
 const GRACE_MS = 5000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function signalGroup(pid: number, signal: NodeJS.Signals): void {
+/** Signal a worker's process group, and its leader only right after its start identity matched. */
+function signalWorker(pid: number, signal: NodeJS.Signals, leader: boolean): void {
 	try { process.kill(-pid, signal); } catch { /* group gone */ }
+	if (!leader) return;
 	try { process.kill(pid, signal); } catch { /* process gone */ }
 }
 
@@ -199,30 +201,38 @@ function groupAlive(pid: number): boolean {
 	}
 }
 
+const UNKNOWN_READS = 3;
+
 /**
- * Wait until a previous owner's worker exits. At the deadline or on
- * cancellation, signal its process group, escalating after a grace period.
- * Every signal follows a matching identity check, so a reused PID is never hit.
+ * Wait until a previous owner's worker and its process group exit. At the
+ * deadline or on cancellation, send SIGTERM, then SIGKILL after a grace
+ * period; a group that outlives three grace periods blocks. The leader PID is
+ * signalled only right after its identity matched; the group ID is used while
+ * the group still has members.
  */
 export async function awaitExit(worker: WorkerIdentity, limits: RunLimits): Promise<{ stopped: string | null } | { blocked: string }> {
 	let stopped: string | null = null;
 	let signalledAt = 0;
+	let unknown = 0;
 	for (;;) {
 		const identity = await processStartIdentity(worker.pid);
-		if (identity === undefined) return { blocked: `cannot read the identity of worker ${worker.pid}` };
-		if (identity !== worker.startedAt) break;
+		unknown = identity === undefined ? unknown + 1 : 0;
+		if (unknown >= UNKNOWN_READS) return { blocked: `cannot read the identity of worker ${worker.pid}` };
+		const leader = identity === worker.startedAt;
+		if (identity !== undefined && !leader && !groupAlive(worker.pid)) return { stopped };
 		const why = limits.signal?.aborted ? "cancelled" : Date.now() >= limits.deadlineAt ? "deadline exceeded" : null;
+		const waited = Date.now() - signalledAt;
 		if (why && !stopped) {
 			stopped = why;
 			signalledAt = Date.now();
-			signalGroup(worker.pid, "SIGTERM");
-		} else if (stopped && Date.now() - signalledAt > GRACE_MS) {
-			signalGroup(worker.pid, "SIGKILL");
+			signalWorker(worker.pid, "SIGTERM", leader);
+		} else if (stopped && waited > 3 * GRACE_MS) {
+			return { blocked: `worker ${worker.pid}'s process group survived SIGKILL` };
+		} else if (stopped && waited > GRACE_MS) {
+			signalWorker(worker.pid, "SIGKILL", leader);
 		}
 		await sleep(POLL_MS);
 	}
-	if (groupAlive(worker.pid)) return { blocked: `worker ${worker.pid}'s process group is still running` };
-	return { stopped };
 }
 
 /** Abort signal for checks: the caller's cancellation or the deadline, whichever comes first. */
@@ -495,7 +505,9 @@ export class Supervisor {
 			const result = await runPilotProc(request.agent, prompt, { ...options, model: request.model, thinking: request.thinking });
 			spawned ||= result.launched;
 			return judgeRun(result, stopped());
-		}).catch((error): Ran => ({ status: "blocked", spentUsd: spawned ? null : 0, reason: message(error) }));
+		}).catch((error): Ran => spawned
+			? { status: "blocked", spentUsd: null, reason: message(error) }
+			: { status: "failed", spentUsd: 0, reason: `review did not start: ${message(error)}` });
 		return this.#settleReview(attempt, request, ran);
 	}
 

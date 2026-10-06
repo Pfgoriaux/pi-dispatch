@@ -1,5 +1,5 @@
 /**
- * Durable pilot CLI: `node --import tsx src/durable/cli.ts run|resume|status|stop <config.json> [--json] [--cancel]`.
+ * Durable pilot CLI: `node --import tsx src/durable/cli.ts run|resume|status|stop <config.json> [--json] [--cancel] [--expect-hash=<policy hash>]`.
  *
  * The process that runs or resumes a batch owns its store until it exits and
  * answers `status`/`stop` over a Unix socket in a private per-user directory.
@@ -16,7 +16,7 @@ import { bundledAgentsDir } from "../agents.ts";
 import { THINKING_LEVELS, type AgentConfig, type ThinkingLevel } from "../types.ts";
 import { DurableStoreLockedError } from "./store.ts";
 import {
-	dependencyOrder, formatReport, MAX_ATTEMPTS_PER_TASK, MAX_WORKERS, openBatch,
+	dependencyOrder, formatReport, MAX_ATTEMPTS_PER_TASK, MAX_WORKERS, openBatch, policyHash,
 	type BatchOwner, type BatchReport, type BatchTaskSpec, type PilotConfig,
 } from "./scheduler.ts";
 
@@ -342,12 +342,14 @@ async function stop(config: PilotConfig, cancel: boolean, io: Io): Promise<numbe
 	return reply.ok ? 0 : 1;
 }
 
-const USAGE = "Usage: node --import tsx src/durable/cli.ts run|resume|status|stop <config.json> [--json] [--cancel]";
+const USAGE = "Usage: node --import tsx src/durable/cli.ts run|resume|status|stop <config.json> [--json] [--cancel] [--expect-hash=<policy hash>]";
+const EXPECT = "--expect-hash=";
 
 export async function main(argv: readonly string[], io: Io = { out: console.log, err: console.error, json: false }): Promise<number> {
 	const flags = new Set(argv.filter((arg) => arg.startsWith("--")));
 	const [command, file, ...rest] = argv.filter((arg) => !arg.startsWith("--"));
-	const unknown = [...flags].filter((flag) => flag !== "--json" && flag !== "--cancel");
+	const expected = [...flags].find((flag) => flag.startsWith(EXPECT))?.slice(EXPECT.length);
+	const unknown = [...flags].filter((flag) => flag !== "--json" && flag !== "--cancel" && !flag.startsWith(EXPECT));
 	if (!file || rest.length > 0 || unknown.length > 0 || !["run", "resume", "status", "stop"].includes(command)) {
 		io.err(USAGE);
 		return 64;
@@ -355,6 +357,8 @@ export async function main(argv: readonly string[], io: Io = { out: console.log,
 	const ioWithFormat = { ...io, json: flags.has("--json") };
 	try {
 		const config = loadConfig(file);
+		// A launch approved in the Pi UI runs only the configuration the user saw.
+		if (expected !== undefined && policyHash(config) !== expected) throw new ConfigError(`${file} changed after approval; nothing started.`);
 		if (command === "status") return await status(config, ioWithFormat);
 		if (command === "stop") return await stop(config, flags.has("--cancel"), ioWithFormat);
 		return await own(config, command as "run" | "resume", ioWithFormat);

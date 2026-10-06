@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ConfigError, parseConfig, request, reviewerAgent, socketPath, writerAgent } from '../src/durable/cli.ts';
+import { ConfigError, main, parseConfig, request, reviewerAgent, socketPath, writerAgent } from '../src/durable/cli.ts';
 import { formatReport, openBatch, policyHash, type BatchOwner, type PilotConfig } from '../src/durable/scheduler.ts';
 import { processStartIdentity } from '../src/durable/store.ts';
 import { parseReview, pilotSessionId } from '../src/durable/supervisor.ts';
@@ -43,8 +43,8 @@ function script(name: string, body: string): string {
 
 /**
  * Fake Pi. Writes JSON events to stdout and a Pi 1.0.4-format session file to --session-dir.
- * Worker behaviour per task id: ok, slow, outside (commits outside owned paths), hang, gate (waits for release()).
- * Reviewer behaviour per `<id>:review`: clean (default), block, block-once, unpriced, gate.
+ * Worker behaviour per task id: ok, slow, outside (commits outside owned paths), hang, stubborn (hangs, ignores SIGTERM), gate (waits for release()).
+ * Reviewer behaviour per `<id>:review`: clean (default), blank, block, block-once, unpriced, gate.
  * Logs start and end of each spawn for concurrency checks.
  */
 function fakePi(behaviour: Record<string, string>) {
@@ -71,8 +71,8 @@ const finish=(text='done',usage=${JSON.stringify(usage)})=>{const message={role:
 const commit=(f)=>{fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSync(f,id+' '+Date.now()+'\\n');cp.execFileSync('git',['add','--',f]);cp.execFileSync('git',['commit','-q','-m','worker '+id]);};
 const blocker='## [blocker] Broken '+id+'\\n- File: src/'+id+'.txt:1\\n- Problem: wrong value\\n- Fix: correct it\\n';
 const gate=(then)=>{const f=path.join(${JSON.stringify(gates)},kind+'-'+id);const t=setInterval(()=>{if(fs.existsSync(f)){clearInterval(t);then();}},50);};
-const reviewer={clean:()=>finish('No findings.'),block:()=>finish(blocker),'block-once':()=>finish(earlier===0?blocker:'No findings.'),unpriced:()=>finish('No findings.',{...${JSON.stringify(usage)},cost:undefined}),gate:()=>gate(()=>finish('No findings.'))};
-const work={ok:()=>{commit('src/'+id+'.txt');finish();},slow:()=>setTimeout(()=>{commit('src/'+id+'.txt');finish();},700),outside:()=>{commit('docs/'+id+'.md');finish();},hang:()=>setInterval(()=>{},1000),gate:()=>gate(()=>{commit('src/'+id+'.txt');finish();})};
+const reviewer={blank:()=>finish(''),clean:()=>finish('No findings.'),block:()=>finish(blocker),'block-once':()=>finish(earlier===0?blocker:'No findings.'),unpriced:()=>finish('No findings.',{...${JSON.stringify(usage)},cost:undefined}),gate:()=>gate(()=>finish('No findings.'))};
+const work={ok:()=>{commit('src/'+id+'.txt');finish();},slow:()=>setTimeout(()=>{commit('src/'+id+'.txt');finish();},700),outside:()=>{commit('docs/'+id+'.md');finish();},hang:()=>setInterval(()=>{},1000),stubborn:()=>{process.on('SIGTERM',()=>{});setInterval(()=>{},1000);},gate:()=>gate(()=>{commit('src/'+id+'.txt');finish();})};
 setTimeout(()=>(review?reviewer:work)[mode](),300);
 `);
  const events = () => fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
@@ -527,9 +527,9 @@ test('recovery: missing or inconsistent session evidence keeps the attempt block
  assert.deepEqual([pi.starts('a').length, pi.reviews('a').length, gh.prs().length], [1, 0, 0]);
 });
 
-test('recovery: an adopted worker is stopped at the deadline with unknown spend', async () => {
+test('recovery: an adopted worker that ignores SIGTERM is killed at the deadline with unknown spend', async () => {
  const w = workspace();
- const pi = fakePi({ a: 'hang' });
+ const pi = fakePi({ a: 'stubborn' });
  const gh = fakeGh(w.bare);
  const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin, { deadlineMs: 12_000 });
  const file = batchFile(w, cfg);
@@ -585,7 +585,7 @@ test('durable_batch: drafts are validated and saved privately', async () => {
  const file = /Draft saved: (\S+)/.exec(saved)![1];
  assert.equal(path.dirname(file), batchesDir());
  assert.equal(fs.statSync(file).mode & 0o777, 0o600); assert.equal(fs.statSync(batchesDir()).mode & 0o777, 0o700);
- assert.match(saved, /Tasks \(1\): a/);
+ assert.match(saved, /Tasks \(1\):\n- a; owns src\/\n  checks: ".*node" "-e" "process.exit\(0\)"\n  prompt: do a/);
  fs.writeFileSync(cfg.store, '');
  assert.match(await call({ action: 'draft', config: cfg }), /already has a store/);
  assert.match(await call({ action: 'launch', id: '../etc' }).catch((e) => String(e)), /must name a drafted batch/);
@@ -619,7 +619,7 @@ test('durable_batch: an approved launch starts exactly one owner; status and sto
  assert.match(launched, /Approved\. Owner pid \d+ is running and answers status/);
  const owner = Number(/pid (\d+)/.exec(launched)![1]);
  leftovers.push(owner);
- for (const shown of [`Batch: ${id} (run)`, `Repository: ${w.repo}`, 'Tasks (1): a', 'Worker model: fake/model', 'Spend allowance: $10', `Deadline: ${cfg.limits.deadline}`, 'Publication: draft PRs on owner/proj']) {
+ for (const shown of [`Batch: ${id} (run), policy sha256:`, `Repository: ${w.repo}`, '- a; owns src/', `Worker: ${JSON.stringify(pi.bin)}, model fake/model`, 'Spend allowance: $10', `Deadline: ${cfg.limits.deadline}`, `Publication: draft PRs on owner/proj via origin (${w.bare}) with ${gh.bin}`, `Store: ${cfg.store}`]) {
   assert.ok(asked[0].includes(shown), shown);
  }
  assert.match(await call({ action: 'launch', id }), /already has a live owner/);
@@ -634,4 +634,52 @@ test('durable_batch: an approved launch starts exactly one owner; status and sto
  assert.equal(fs.statSync(path.join(batchesDir(), `${id}.log`)).mode & 0o777, 0o600);
  assert.match(await call({ action: 'status', id }), /No live owner/);
  assert.equal(pi.starts('a').length, 1);
+});
+
+test('recovery: a reserved slot keeps an adopted worker from starving other tasks at maxWorkers 1', async () => {
+ const w = workspace();
+ const pi = fakePi({ a: 'gate' });
+ const gh = fakeGh(w.bare);
+ // Durable order p, c, a: a takes the only slot between p's attempt and p's review, so p's review is pending at the crash.
+ const cfg = config(w, [{ id: 'c', dependencies: ['p'] }, { id: 'p' }, { id: 'a' }], pi.bin, gh.bin, { maxWorkers: 1 });
+ const file = batchFile(w, cfg);
+ await crashOwner(file, cfg, pi, 'a');
+ assert.equal(pi.reviews('p').length, 0);
+ const resumed = owner(file, 'resume');
+ await waitFor(() => fs.existsSync(socketPath(cfg.store)), 30_000);
+ await new Promise((r) => setTimeout(r, 1500));
+ assert.equal(pi.reviews('p').length, 0, "p's review waits for the adopted worker's slot");
+ pi.release('a');
+ assert.equal(await resumed.exited, 0, resumed.output().stderr);
+ assert.match(resumed.output().stdout, /Tasks: 3 pr-ready/);
+ assert.deepEqual([pi.starts('a').length, pi.starts('p').length, pi.starts('c').length, pi.reviews('p').length], [1, 1, 1, 1]);
+});
+
+test('review: a review without a usable answer or that cannot start keeps the task short of pr-ready without halting', async () => {
+ const w = workspace();
+ const pi = fakePi({ 'a:review': 'blank' });
+ const gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a' }, { id: 'b' }], pi.bin, gh.bin);
+ // Evidence of an earlier review spawn of b#1 makes its review refuse to start.
+ fs.mkdirSync(path.join(cfg.repo.sessionsRoot, pilotSessionId(cfg.batch.id, 'b#1/review')), { recursive: true });
+ const { report } = await runBatch(cfg);
+ const { a, b } = byId(report);
+ assert.deepEqual(report.halted, []);
+ assert.equal(a.state, 'verified'); assert.match(a.reason, /no usable review: blank response/); assert.equal(a.review.status, 'failed');
+ assert.equal(b.state, 'verified'); assert.match(b.reason, /no usable review: review did not start/);
+ assert.equal(gh.prs().length, 2);
+ assert.equal(report.spentUsd, 0.75, 'two attempts and a\'s failed review; b\'s review never spawned');
+});
+
+test('cli: a configuration changed after approval starts nothing', async () => {
+ const w = workspace();
+ const pi = fakePi({});
+ const cfg = config(w, [{ id: 'a' }], pi.bin, fakeGh(w.bare).bin);
+ const file = batchFile(w, cfg);
+ const approved = policyHash(cfg);
+ fs.writeFileSync(file, JSON.stringify({ ...cfg, spend: { ...cfg.spend, allowanceUsd: 9 } }));
+ const errors: string[] = [];
+ const code = await main(['run', file, `--expect-hash=${approved}`], { out: () => undefined, err: (t) => errors.push(t), json: false });
+ assert.equal(code, 1); assert.match(errors.join('\n'), /changed after approval; nothing started/);
+ assert.equal(fs.existsSync(cfg.store), false); assert.equal(pi.starts().length, 0);
 });

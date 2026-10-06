@@ -372,22 +372,25 @@ node --import tsx src/durable/cli.ts run    batch.json   # create the batch and 
 node --import tsx src/durable/cli.ts resume batch.json   # continue after a stop or crash
 node --import tsx src/durable/cli.ts status batch.json [--json]
 node --import tsx src/durable/cli.ts stop   batch.json [--cancel]
+# run/resume also take --expect-hash=<policy hash> and then start nothing if the file has another hash
 ```
 
 Agents can prepare a batch with the `durable_batch` tool; the user approves the launch:
 
 - `draft` validates a configuration with the same parser as the CLI and saves
   it as `~/.pi/agent/pi-dispatch/batches/<id>.json` (private directory and
-  file). It does nothing else, and refuses to change a batch that has a store.
-- `launch` shows the batch, repository, tasks, model, allowance, deadline, and
-  publication target in a Pi confirm dialog. Only an approval starts one
-  detached owner (`run`, or `resume` when the store exists), logging to
-  `<id>.log` next to the draft; the tool returns its PID. It refuses without
-  a dialog-capable UI (print and JSON modes), inside dispatch workers, and
-  while an owner is live.
+  file). It refuses to change a batch that has a store.
+- `launch` shows a Pi confirm dialog with the policy hash, repository,
+  worker executable and model, allowance, deadline, publication target and
+  `gh`, store and roots, and each task's owned paths, checks, and prompt (first
+  200 characters). Only an approval starts one detached owner (`run`, or
+  `resume` when the store exists), logging to `<id>.log` next to the draft;
+  the tool returns its PID. The owner gets `--expect-hash=<policy hash>` and
+  starts nothing if the file changed after approval. The tool runs alone in a
+  turn. It refuses without a dialog-capable UI (print and JSON modes), inside
+  dispatch workers, and while an owner is live.
 - `status` and `stop` (`cancel: true` to cancel workers) use the owner socket.
-- Child workers never get the tool. The pilot writer role lives in
-  `agents/durable/`, outside the dispatch roster.
+- The pilot writer role lives in `agents/durable/`, outside the dispatch roster.
 
 Every field is required, except `worker.piPrefixArgs`:
 
@@ -451,8 +454,8 @@ The report gives each task a state:
 
 | State | Meaning |
 |---|---|
-| `pr-ready` | Verified, pushed, an open draft PR has the verified head, and its review has no validated blocking findings |
-| `verified` | Checks passed at the recorded head; not published, or published with unresolved blocking findings (reason shown) |
+| `pr-ready` | Verified, pushed, an open draft PR has the verified head, and its review found no validated blocker or was skipped |
+| `verified` | Checks passed at the recorded head; not published, or published with unresolved blockers or a review without a usable answer (reason shown) |
 | `failed` | Attempts ran and none succeeded |
 | `blocked` | Not attempted or stopped by a dependency, the deadline, the budget, or a halted batch |
 | `running` / `pending` | Not settled yet |
@@ -464,11 +467,13 @@ text. Reasons are cut to one line of 240 characters.
 Review:
 
 - After an attempt succeeds, one reviewer child runs with the bundled
-  `reviewer` agent, restricted to `read`, `grep`, `find`, and `ls`, on the
-  configured worker model. It gets the `pr_review` correctness-and-security
+  `reviewer` agent, restricted to `read`, `grep`, `find`, and `ls` (plus
+  Linkup web tools when configured), on the configured worker model. It gets the `pr_review` correctness-and-security
   prompt and the saved diff from the task base to the head.
 - The review is recorded on the attempt before it spawns, bound to the head
-  SHA, and never repeated for that SHA. It takes a worker slot. It needs the
+  SHA, and never repeated for that SHA. It takes a worker slot. A review
+  that cannot start or ends without an answer is recorded as failed and does
+  not halt the batch. It needs the
   task's reservation of headroom in the allowance; without it, or after the
   deadline, it is skipped. Unknown review spend halts the batch.
 - A `[blocker]` finding counts as validated only when it cites a file the
@@ -502,9 +507,10 @@ Recovery after a killed owner:
   `sessionsRoot`, not to a pipe, so a worker keeps running when its owner
   dies. Pi writes its own session file there through `--session-id` and
   `--session-dir`.
-- On `resume`, an attempt or review still marked running is adopted in a
-  worker slot; it is never respawned. A worker with the recorded PID and start
-  time is awaited. At the deadline or on `stop --cancel`, its process group
+- On `resume`, an attempt or review still marked running is adopted; it is
+  never respawned. Its slot is reserved when the store opens, so other tasks
+  cannot take it first. The worker (recorded PID and start time) and its
+  process group are awaited. At the deadline or on `stop --cancel`, the group
   gets SIGTERM, then SIGKILL after five seconds.
 - Once it has exited, it is judged from its files. Completion needs
   `agent_settled` in `events.log`. Spend and the final answer come from the
@@ -512,9 +518,9 @@ Recovery after a killed owner:
   settled attempt then goes through the normal branch, ownership, and check
   verification.
 - A worker that exited without settling fails with unknown spend. Missing or
-  inconsistent files, a surviving process group, an unreadable identity, a
-  worker recorded on another host, or no recorded worker leave the attempt
-  blocked with unknown spend.
+  inconsistent files, a process group that survives SIGKILL, an identity that
+  stays unreadable, a worker recorded on another host, or no recorded worker
+  leave the attempt blocked with unknown spend.
 
 Limits:
 
@@ -524,7 +530,7 @@ Limits:
 - Workers and checks run as the user. Worktrees separate changes but do not
   contain processes; a worker's descendants can outlive cancellation.
 - The review is one model's read-only pass, not the multi-model `pr_review`
-  workflow. Validation checks only that a blocker cites a changed file.
+  workflow.
 
 ## Agents
 
