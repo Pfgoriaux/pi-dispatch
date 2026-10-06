@@ -90,7 +90,7 @@ const TaskItemSchema = Type.Object({
 	worktree: Type.Optional(
 		Type.Boolean({
 			description:
-				"Run in an isolated git worktree (write tier, child process)",
+				"Run in an isolated git worktree (tasks mode only; required for writer)",
 		}),
 	),
 	herdr: Type.Optional(
@@ -224,6 +224,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 			"dispatch: Tasks must be self-contained: goal, paths, constraints, output shape. Workers see no conversation.",
 			"dispatch: Worker completion is not task completion. Evaluate returned checks against the user's scope and safety rules, then run authorized checks yourself or delegate to a capable role before concluding. If blocked, report the specific missing tool, access, or approval and what remains unverified; do not stop at a generic worker limitation.",
 			"dispatch: For file edits use tasks:[{agent:'writer', worktree:true}] with authorization to commit. Set target to a clean feature checkout inside the session directory when needed. Branches are returned, not merged. Review and integrate only with user authorization; PR merges still require user review and authorization. Dispatch dependent tasks only after integration. Single mode is always in-process.",
+			"dispatch: Writers default to the long tier (Kimi K3 by default). Choose aperture/neuralwatt/glm-5.3 for small, well-bounded coding tasks; use precise for auth, migrations, concurrency, or shared-interface changes.",
 			"dispatch: Never launch pi, claude, codex or other agent CLIs through bash to bypass a rejected request, depth limit, or role tool restriction. Report the blocker instead. Shell access is not a sandbox.",
 		],
 		parameters: Type.Object({
@@ -354,6 +355,9 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 		// meaningless and conflicting. Checked BEFORE validateTaskCwd so the
 		// error the caller sees is the clearer of the two.
 		const wantsWorktree = items.some((i) => i.worktree === true);
+		if (items.some(i => i.agent === "writer" && i.worktree !== true)) {
+			throw new Error("dispatch: writer requires tasks:[{agent:'writer', task, worktree:true}]; single/resume writers are not isolated");
+		}
 		if (params.target !== undefined && !wantsWorktree) throw new Error("dispatch: target requires worktree tasks");
 		if (mode === "chain" && wantsWorktree) throw new Error("dispatch: chain worktrees are not supported; use tasks, then dispatch dependent work after authorized integration");
 		if (wantsWorktree) {

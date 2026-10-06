@@ -11,7 +11,7 @@
  *              Fast, low-cost. Use for scouts doing file discovery or
  *              straightforward extraction tasks.
  *
- *   balanced — Everyday coding, standard reviews, general-purpose work.
+ *   balanced — Standard reviews, synthesis, general-purpose work.
  *              Good cost/quality ratio. Sonnet 5.5 / Sol 6.1 with
  *              quota-aware routing between them.
  *
@@ -19,9 +19,8 @@
  *              production-critical code. Top-tier models (Opus 5.5 / Astra)
  *              with quota-aware routing between them.
  *
- *   long     — Huge codebases, multi-file refactors, codebase-wide analysis,
- *              research across many files. Kimi 3 (1M context).
- *              Use when context exceeds 100K tokens or spans 10+ files.
+ *   long     — Default implementation, multi-file refactors, and research
+ *              across many files. Kimi K3.
  *
  * Tiers express *effort*, not identity: pick a tier by how hard a task is,
  * not by who does it. Cross-check scouting and duplicate code review need
@@ -54,7 +53,7 @@ export const PROFILES: Record<ProfileTier, ModelProfile> = {
 			"aperture/neuralwatt/deepseek-v4.1-flash",
 		thinking: "off",
 	},
-	// BALANCED: Everyday coding, standard reviews, general work.
+	// BALANCED: Standard reviews, synthesis, general work.
 	// Sonnet 5.5 (with Sol 6.1 as quota-routed counterpart via withProviderFallbacks).
 	balanced: {
 		model: envModel("DISPATCH_PROFILE_BALANCED_MODEL") ?? "anthropic/claude-sonnet-5-5",
@@ -67,8 +66,8 @@ export const PROFILES: Record<ProfileTier, ModelProfile> = {
 			envModel("DISPATCH_PROFILE_PRECISE_MODEL") ?? "anthropic/claude-opus-5-5",
 		thinking: "high",
 	},
-	// LONG: Huge context (>100K tokens), multi-file refactors, codebase research.
-	// Kimi 3
+	// LONG: Default writer model, multi-file refactors, codebase research.
+	// Kimi K3
 	long: {
 		model: envModel("DISPATCH_PROFILE_LONG_MODEL") ?? "aperture/neuralwatt/kimi-k3",
 		thinking: "high",

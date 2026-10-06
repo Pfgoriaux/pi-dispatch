@@ -8,6 +8,7 @@ import { ModelRuntime, type ExtensionAPI, type ModelRegistry } from "@earendil-w
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import { registerPrReviewTool } from "../src/tools/pr-review.ts";
 import { isolateAgentDir } from "./isolated-agent-dir.ts";
+import { PROFILES } from "../src/profiles.ts";
 
 isolateAgentDir();
 
@@ -86,6 +87,7 @@ for (const scenario of ["short", "review-long", "final-long", "verify-failed", "
 		} else if (scenario === "fixed") {
 			const entry = result.details.worktrees[0];
 			assert.equal(entry.commits, 1);
+			assert.equal(result.details.items.at(-1).model, PROFILES.long.model);
 			assert.equal(entry.status, "ok");
 			assert.ok(fs.existsSync(entry.path));
 			assert.equal(execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), initialHead);

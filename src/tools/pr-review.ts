@@ -227,6 +227,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"pr_review: Use when the user asks for a review, or on a PR you opened that changes 100+ lines or touches auth, data, migrations, or infrastructure. Self-review smaller PRs.",
 			"pr_review: fix:true requires explicit user intent to change code and a trusted, committed-clean repo root.",
+			"pr_review: fix:true uses the default writer tier (Kimi K3 by default). For auth, migrations, concurrency, or shared-interface fixes, review with fix:false, then dispatch an authorized writer task with worktree:true and model:'precise'.",
 			"pr_review: Always pass intent.",
 		],
 		parameters: Type.Object({
@@ -477,7 +478,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 							"\n\n" + formatHandoff(repoRoot, worktrees);
 					} else if (!wantFix) {
 						fixReport =
-							"\n\n(Fix skipped: fix=false. Ask to fix the findings, or run dispatch writer when ready.)";
+							"\n\n(Fix skipped: fix=false. For authorized fixes, use dispatch tasks:[{agent:'writer', task:<findings>, worktree:true, model:<chosen model>}].)";
 					} else if (!fixRequested) {
 						fixReport = truncated
 							? "\n\n(Fix skipped: review material was truncated. Rerun a narrower review before applying fixes.)"

@@ -2,9 +2,8 @@
 name: writer
 description: Implementation worker for confined code changes in a worktree
 tools: read, edit, write, bash
-# Effort tier (expanded by src/profiles.ts): code writing defaults to the top
-# tier unless it is a long task — dispatch with model:'long' (Kimi-3) for those.
-model: precise
+# Kimi K3 by default; choose GLM 5.3 for small tasks or precise for high-risk work.
+model: long
 ---
 
 You are an implementation worker intended for the worktree write tier. The

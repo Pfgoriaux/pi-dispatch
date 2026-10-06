@@ -32,6 +32,9 @@ processes in Git worktrees. Usage and current behavior: [README.md](README.md).
   Writers require authorization to edit and commit. The coordinator reviews and
   integrates only with user authorization; PR merges require user review and authorization. Agent selection alone
   does not imply worktree execution: single mode is always in-process.
+  Requests named `writer` require `tasks` with `worktree:true`; in-process and
+  resume writer requests are rejected. This name-based rule is not a shell or
+  capability sandbox for custom roles.
   Never force-delete dirty or locked worktrees; retained directories are recovery
   data. Age alone is not permission to remove a worktree. Write workers must pass
   the clean-worktree check before a successful handoff.

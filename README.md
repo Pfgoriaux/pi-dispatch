@@ -109,6 +109,9 @@ starts at that pinned commit. Invalid diffs fail before reviewers start; empty
 diffs skip model calls. Truncated reviews skip fixes and request a narrower review.
 The coordinator reviews the returned branch, integrates only with user authorization,
 and tests the combined result. PR merges require user review and authorization.
+For auth, migrations, concurrency, or shared-interface fixes, use review-only
+mode, then dispatch the authorized fixes with `model: "precise"` and
+`worktree: true`. The built-in `fix: true` path uses the default writer tier.
 
 ## feature_plan
 
@@ -165,9 +168,10 @@ applicable constraints or tell workers which instruction files to read.
 The bundled scout, planner, and advisor have no write or shell tools. The
 investigator and reviewer have `bash` and are read-only by instruction, not
 enforcement. Shell access does not grant authorization to access a host or
-database. Models resolve through
+database. In-process models resolve through
 rosters, agent frontmatter, then the parent's active model as described below.
-Single mode always runs in-process, even when the agent is named `writer`.
+Single mode always runs in-process. The `writer` role requires `tasks` with
+`worktree: true`; single, resume, and non-worktree writer requests are rejected.
 
 ## Model-specific guidance
 
@@ -401,7 +405,7 @@ them to a capable role. A blocked check needs a specific tool, access, or approv
 blocker and a statement of what remains unverified. A worker's completed turn
 does not establish that the investigation is complete.
 
-Bundled: `scout` (read-only recon — tier `cheap`), `investigator` (code and runtime diagnostics — `precise`), `reviewer` (code review — `balanced`), `planner` (implementation plans — `long`), `aggregator` (fan-in specialist, no local tools — `balanced`), `security-reviewer` (application security — `precise`), `advisor` (read-only second opinion on decisions and risky or finished work — `precise`), `writer` (worktree write tier — implements, commits, and reports a summary — `precise`; dispatch with `model:'long'` for long-context writing tasks). Tier names in agent frontmatter `model:` expand via `src/profiles.ts`; see [Effort tiers](#effort-tiers).
+Bundled: `scout` (read-only recon — tier `cheap`), `investigator` (code and runtime diagnostics — `precise`), `reviewer` (code review — `balanced`), `planner` (implementation plans — `precise`), `aggregator` (fan-in specialist, no local tools — `balanced`), `security-reviewer` (application security — `precise`), `slop-reviewer` (unnecessary code and docs — `balanced`), `advisor` (read-only second opinion on decisions and risky or finished work — `precise`), `writer` (worktree write tier — implements, commits, and reports a summary — `long`, Kimi K3). Tier names in agent frontmatter `model:` expand via `src/profiles.ts`; see [Effort tiers](#effort-tiers).
 
 ## Install
 
@@ -545,18 +549,22 @@ live in `src/profiles.ts` and are overridable with
 | Tier | Default model | Thinking | When to use |
 |---|---|---|---|
 | `cheap` | `aperture/neuralwatt/deepseek-v4.1-flash` | `off` | Simple lookups, grep-and-report, boilerplate |
-| `balanced` | `anthropic/claude-sonnet-5-5` (Sol 6.1 peer) | `high` | Everyday coding, standard reviews, general work |
+| `balanced` | `anthropic/claude-sonnet-5-5` (Sol 6.1 peer) | `high` | Standard reviews, synthesis, general work |
 | `precise` | `anthropic/claude-opus-5-5` | `high` | Security, architecture, complex features, production-critical |
-| `long` | `aperture/neuralwatt/kimi-k3` | `high` | Huge context (>100K tokens), multi-file refactors, research |
+| `long` | `aperture/neuralwatt/kimi-k3` | `high` | Default coding, multi-file refactors, research |
 
-Tasks may also pick a model directly: `tasks: [{agent: "writer", model: "long", task}]`
-accepts a tier name or an explicit `provider/id` and skips the agent's roster —
-the standard way to run long-context writes on Kimi-3 while `writer` defaults
-to `precise` (Opus 5.5).
+Tasks may also pick a model directly: `tasks: [{agent: "writer", worktree: true, model: "aperture/neuralwatt/glm-5.3", task}]`
+accepts a tier name or an explicit `provider/id` and overrides agent frontmatter.
+Select GLM 5.3 for small, well-bounded tasks or `precise` for auth,
+migrations, concurrency, and shared-interface work. Without an override, the
+bundled writer uses `long` (Kimi K3), including `pr_review` fixes. The bundled
+standalone planner uses `precise`; `feature_plan` explicitly assigns Astra and
+Opus to its architect and challenger. User/project agent definitions, tier
+environment overrides, quota steering, and existing failure fallbacks still apply.
 
 ### Rosters as failover
 
-`~/.pi/agent/settings/subagent-models.json` rosters win over frontmatter tiers,
-so they are tuned tier-aligned: each agent's heaviest-weight entry is its tier
-model, lower weights are failover ladders. Keep it that way when editing — the
-roster exists for cooldowns and failover, not for overriding effort intent.
+In-process workers use `~/.pi/agent/settings/subagent-models.json` rosters before
+frontmatter tiers; a per-task model override bypasses the roster. Worktree writers
+and review-fix children do not read those rosters. They use the task override or
+agent frontmatter, followed by their provider fallback chain.

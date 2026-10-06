@@ -135,7 +135,7 @@ const OPENAI_FALLBACK = "openai-codex/gpt-6.1-sol";
 
 // Anthropic ↔ OpenAI Codex peers, interchangeable at the same effort level.
 // top-tier: Opus 5.5 ↔ Astra 6 (complex features, architecture, security).
-// mid-tier: Sonnet 5.5 → Sol 6.1 (everyday coding, reviews, synthesis).
+// mid-tier: Sonnet 5.5 → Sol 6.1 (reviews, synthesis, general work).
 // Sol is also every chain's terminal fallback, so it never expands to Sonnet
 // (that would make re-expansion non-idempotent); both still share a quota family.
 const CROSS_PROVIDER_PEERS = new Map<string, { peer?: string; family: "top-tier" | "mid-tier" }>([

@@ -7,6 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { createWorktree, removeWorktree, pruneStale, assertCleanTree, ensureExcluded } from '../src/worktree.ts';
 import { runWorkerProc } from '../src/worker-proc.ts';
 import extension from '../src/index.ts';
+import { PROFILES } from '../src/profiles.ts';
+import { recordWorkerSession } from '../src/worker.ts';
 
 // All Git writes and fake children are confined to this disposable fixture.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-write-tier-'));
@@ -47,6 +49,34 @@ const call=(cwd:string,params:any,signal?:AbortSignal)=>dispatch.execute('test',
 test('reject invalid dispatch inputs before launching workers', async()=>{
  const dir=repo();
  for(const params of [{},{agent:'nonexistent',task:'x'},{tasks:Array.from({length:9},()=>({agent:'scout',task:'x'}))},{chain:Array.from({length:9},()=>({agent:'scout',task:'x'}))},{tasks:[{agent:'scout',task:'x'}],chain:[{agent:'scout',task:'x'}]},{resume:'missing',task:'x'},{tasks:[{agent:'writer',task:'x',worktree:true,cwd:'.'}]}]) await assert.rejects(()=>call(dir,params));
+});
+
+test('writer requests without worktree isolation fail before selecting a model',async()=>{
+ const dir=repo();
+ recordWorkerSession('legacy-writer',path.join(root,'unused-session.jsonl'),'writer');
+ for(const params of [
+  {agent:'writer',task:'x'},
+  {tasks:[{agent:'writer',task:'x'}]},
+  {chain:[{agent:'writer',task:'x'}]},
+  {resume:'legacy-writer',task:'x'},
+  {tasks:[{agent:'writer',task:'x',worktree:false}]},
+  {tasks:[{agent:'writer',task:'x',worktree:true},{agent:'writer',task:'x'}]},
+ ]) await assert.rejects(()=>call(dir,params),/writer requires/);
+ assert.equal(git(dir,'branch','--list','dispatch/*'),'');
+});
+
+test('default writer selects Kimi; GLM and precise remain explicit choices',async()=>{
+ const dir=repo();
+ fake(`const args=process.argv.slice(2); console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:JSON.stringify({model:args[args.indexOf('--model')+1],thinking:args[args.indexOf('--thinking')+1]})}],stopReason:'stop'}}));`);
+ for(const [model,expected] of [
+  [undefined,PROFILES.long.model],
+  ['aperture/neuralwatt/glm-5.3','aperture/neuralwatt/glm-5.3'],
+  ['precise',PROFILES.precise.model],
+ ]) {
+  const result=await call(dir,{tasks:[{agent:'writer',task:'fixture',model,worktree:true}],aggregate:false});
+  assert.equal(result.details.items[0].status,'ok');
+  assert.deepEqual(JSON.parse(result.details.items[0].text),{model:expected,thinking:'high'});
+ }
 });
 test('reject traversal and symlink cwd escapes', async()=>{
  const dir=repo(); fs.symlinkSync(root,path.join(dir,'escape'));
