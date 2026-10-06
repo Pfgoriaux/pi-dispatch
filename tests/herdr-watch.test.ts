@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { HerdrWatcher, registerHerdrWatch, type Watch } from "../src/herdr-watch.ts";
 import type { WatchedAgent } from "../src/herdr.ts";
 
@@ -164,7 +164,7 @@ test("extension queues a follow-up with triggerTurn, restores pending watches an
 	Object.assign(process.env, { HERDR_ENV: "1", HERDR_SOCKET_PATH: "/tmp/test.sock", HERDR_WORKSPACE_ID: "w1", HERDR_PANE_ID: "w1:p1" });
 	t.after(() => { process.env = oldEnv; });
 	t.mock.timers.enable({ apis: ["setTimeout"] });
-	type Handler = (event: never, ctx: ExtensionContext) => unknown;
+	type Handler = (event: never, ctx: ExtensionToolContext) => unknown;
 	const handlers = new Map<string, Handler>();
 	const notices: { content: string; details: { ids: string[] }; options: unknown }[] = [];
 	const entries: unknown[] = [];
@@ -183,7 +183,7 @@ test("extension queues a follow-up with triggerTurn, restores pending watches an
 		isIdle: () => true,
 		sessionManager: { getSessionId: () => "parent", getBranch: () => entries },
 		ui: { notify: () => {} },
-	} as unknown as ExtensionContext;
+	} as unknown as ExtensionToolContext;
 	registerHerdrWatch(pi, async () => agent(status), async () => ({ pane: "w1:p1", workspace, socket }));
 	await handlers.get("session_start")!(undefined as never, ctx);
 	await tool.execute("watch", { action: "watch", targets: ["worker"] }, undefined, undefined, ctx);
@@ -203,8 +203,8 @@ test("extension queues a follow-up with triggerTurn, restores pending watches an
 	t.mock.timers.tick(3000);
 	await new Promise(resolve => setImmediate(resolve));
 	assert.equal(notices.length, 1);
-	await assert.rejects(tool.execute("watch", { action: "watch", targets: ["worker"] }, undefined, undefined, { ...ctx, mode: "print" } as ExtensionContext), /print mode/);
-	const other = { ...ctx, sessionManager: { ...ctx.sessionManager, getSessionId: () => "other" } } as ExtensionContext;
+	await assert.rejects(tool.execute("watch", { action: "watch", targets: ["worker"] }, undefined, undefined, { ...ctx, mode: "print" } as ExtensionToolContext), /print mode/);
+	const other = { ...ctx, sessionManager: { ...ctx.sessionManager, getSessionId: () => "other" } } as ExtensionToolContext;
 	await handlers.get("session_start")!(undefined as never, other);
 	t.mock.timers.tick(3000);
 	await new Promise(resolve => setImmediate(resolve));

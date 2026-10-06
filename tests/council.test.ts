@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { ModelRuntime, type ExtensionAPI, type ExtensionContext, type ModelRegistry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, type ExtensionAPI, type ExtensionToolContext, type ModelRegistry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import dispatchExtension from "../src/index.ts";
 import { registerCouncilTool } from "../src/tools/council.ts";
@@ -44,7 +44,7 @@ function setup(t: TestContext, answer: (spec: string) => string | undefined = sp
 	registerCouncilTool({ registerTool: (value: ToolDefinition) => { tool = value; } } as unknown as ExtensionAPI);
 	const ctx = {
 		cwd: path.resolve(import.meta.dirname, ".."), isProjectTrusted: () => false, modelRegistry: registry,
-	} as ExtensionContext;
+	} as ExtensionToolContext;
 	const run = async (params: Record<string, unknown> = {}, signal?: AbortSignal) => {
 		const result = await tool!.execute("test", {
 			question: "Choose A or B", context: "Evidence: A is simpler.", herdr: false, ...params,
@@ -78,7 +78,12 @@ test("three distinct opinions see the same task, not each other's answers; no fo
 		assert.match(call.context, /Choose A or B/);
 		assert.match(call.context, /Evidence: A is simpler/);
 		assert.ok(!call.context.includes("Opinion from"));
-		const toolNames = JSON.parse(call.context).tools.map((tool: { name: string }) => tool.name);
+		const context = JSON.parse(call.context);
+		const declaredTools = context.messages
+			.filter((message: { role: string }) => message.role === "system")
+			.flatMap((message: { toolsAdded?: { name: string }[] }) => message.toolsAdded ?? []);
+		assert.ok(declaredTools.some((tool: { name: string }) => tool.name === "read"));
+		const toolNames = declaredTools.map((tool: { name: string }) => tool.name);
 		for (const forbidden of ["bash", "edit", "write", "dispatch", "council", "feature_plan", "pr_review"])
 			assert.ok(!toolNames.includes(forbidden), forbidden);
 	}
