@@ -123,9 +123,11 @@ Each successful step saves its complete report in a private Markdown file under
 `<getAgentDir()>/pi-dispatch/plans/`, outside the repository. Reports are retained
 until manually removed. Model-visible previews keep the 12 KB text cap and include
 the saved path; later workers are instructed to read truncated reports in full.
-If saving fails, the result reports the failure; full worker text remains in
-`details.items` in the session. With
-default models, architect and challenger use Astra or Opus 5.5, then GLM 5.3,
+If a truncated report cannot be saved, the workflow stops and returns its preview
+with a warning. Full worker text remains in the tool result's `details.items`;
+the warning includes the persisted session path when available.
+
+With default models, architect and challenger use Astra or Opus 5.5, then GLM 5.3,
 never the same model; the final step never uses the challenger's model. The
 pre-mortem falls back to Synthetic DeepSeek, Sonnet 5.5, then GLM 5.3. GLM 5.3
 runs on Neuralwatt, then Synthetic. No step uses Sol 6.1. A failed draft stops

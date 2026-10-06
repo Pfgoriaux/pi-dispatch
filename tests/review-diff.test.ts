@@ -237,6 +237,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 		calls.length = 0;
 		return tool.execute("test", { idea: "test architect flow", herdr: false }, signal, undefined, {
 			cwd: path.resolve(import.meta.dirname, ".."), isProjectTrusted: () => false, modelRegistry: registry,
+			sessionManager: { getSessionFile: () => "/sessions/plan-recovery.jsonl" },
 		});
 	};
 	const promptOf = (step: string) => calls.find(c => c.step === step)?.prompt ?? "";
@@ -307,16 +308,26 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 	assert.equal(aborted.details.items.length, 1);
 	assert.match(aborted.content[0].text, /aborted during the architect draft/);
 
-	onStep = () => {};
-	report = (step) => `${step}${"x".repeat(13000)}END`;
 	const directory = path.join(process.env.PI_CODING_AGENT_DIR!, "pi-dispatch", "plans");
-	fs.rmSync(directory, { recursive: true, force: true });
-	fs.writeFileSync(directory, "not a directory");
-	const unsaved = await runPlan();
-	assert.equal(calls.length, 1, "no downstream steps receive an unrecoverable truncated draft");
-	assert.equal(unsaved.details.aggregated, false);
-	assert.equal(unsaved.details.items[0].text, report("DRAFT-TEXT"));
-	assert.match(unsaved.content[0].text, /Report could not be saved/);
+	for (const [index, target] of ["DRAFT-TEXT", "PREMORTEM-TEXT", "CHALLENGE-TEXT", "FINAL-TEXT"].entries()) {
+		fs.rmSync(directory, { recursive: true, force: true });
+		report = (step) => step === target ? `${step}${"x".repeat(13000)}END` : step;
+		onStep = (step) => {
+			if (step !== target) return;
+			fs.rmSync(directory, { recursive: true, force: true });
+			fs.mkdirSync(path.dirname(directory), { recursive: true });
+			fs.writeFileSync(directory, "not a directory");
+		};
+		const unsaved = await runPlan();
+		assert.equal(calls.length, index + 1, "no downstream step receives an unrecoverable truncated input");
+		assert.equal(unsaved.details.aggregated, false);
+		assert.equal(unsaved.details.truncated, true);
+		assert.equal(unsaved.details.items[index].text, report(target));
+		assert.equal(unsaved.details.items[index].status, "ok", "storage failure does not rewrite model status");
+		assert.ok(unsaved.content[0].text.startsWith(target), "retain the completed report preview");
+		assert.match(unsaved.content[0].text, /Report could not be saved/);
+		assert.match(unsaved.content[0].text, /\/sessions\/plan-recovery.jsonl/);
+	}
 });
 
 test("PR fix schema advertises opt-in commits", () => {

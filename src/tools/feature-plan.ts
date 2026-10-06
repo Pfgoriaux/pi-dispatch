@@ -45,6 +45,8 @@ interface StepModel {
 	excludeModels?: string[];
 }
 
+class PlanStorageError extends Error {}
+
 /** Shown when the final step fails: the material the architect would have resolved. */
 function fallbackPlan(results: WorkerResult[], outputOf: (r: WorkerResult) => string): string {
 	const [draft, preMortem, challenge, final] = results;
@@ -127,12 +129,8 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 				);
 				results.push(result);
 				if (result.status !== "ok") return result;
-				const report = await savePlanReport(result.text || "(no output)");
-				if (report.truncated && !report.saved) {
-					result.status = "error";
-					result.error = "Report could not be saved. Recover the complete text from this tool result's details.items in the session; do not restart feature_plan to recover text.";
-					return result;
-				}
+				const report = await savePlanReport(result.text || "(no output)", ctx.sessionManager?.getSessionFile());
+				if (report.truncated && !report.saved) throw new PlanStorageError(report.text);
 				reports.set(result, report);
 				return result;
 			};
@@ -182,6 +180,9 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 				if (final.status !== "ok") return finish(fallbackPlan(results, outputOf), false);
 				const plan = reports.get(final)!;
 				return finish(plan.text, true, plan.truncated);
+			} catch (error) {
+				if (!(error instanceof PlanStorageError)) throw error;
+				return finish(error.message, false, true);
 			} finally {
 				await progress.end();
 			}

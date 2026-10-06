@@ -108,7 +108,7 @@ export function architectFinalTask(c: PlanContext, draft: string, preMortem: str
 		"Keep independent tasks separate so they can run in parallel; order dependent tasks. Put exact shared interfaces in the contracts that need them without repeating a separate architecture section.",
 		"Answer technical questions yourself. Ask the human only about product decisions the code cannot answer.",
 		"",
-		"Return the following Markdown, omitting empty or redundant sections. Complete reports are saved; long previews can be read from their saved files.",
+		"Return the following Markdown, omitting empty or redundant sections.",
 		"",
 		"# Feature plan: <short title>",
 		"## Goal",

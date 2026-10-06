@@ -5,7 +5,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { truncateText } from "../worker.ts";
 
 /** Keep complete reports outside the repository and beyond temporary-file cleanup. */
-export async function savePlanReport(text: string) {
+export async function savePlanReport(text: string, sessionFile?: string) {
 	const preview = truncateText(text);
 	const directory = join(getAgentDir(), "pi-dispatch", "plans");
 	const file = join(directory, `${randomUUID()}.md`);
@@ -20,10 +20,15 @@ export async function savePlanReport(text: string) {
 				: ""}`,
 		};
 	} catch {
+		const recovery = sessionFile
+			? `Read the full report from this session file's tool-result details.items after this call completes: ${sessionFile}`
+			: "No persisted session path is available. Ask the user to recover the full report from the tool result metadata.";
 		return {
 			...preview,
 			saved: false,
-			text: `${preview.text}\n\nReport could not be saved. Full text remains in this tool result's details.items; recover it from the session before using truncated contracts. Do not restart feature_plan just to recover text.`,
+			text: `${preview.text}\n\nReport could not be saved.${preview.truncated
+				? ` This preview is incomplete; do not execute it. ${recovery}`
+				: " The complete report is shown above."}`,
 		};
 	}
 }
