@@ -211,6 +211,11 @@ test('spawn diagnostics return codes without leaking paths or stderr secrets', a
  const failed=await runWorkerProc(agent,'fixture',{cwd:root});
  assert.match(failed.error!,/ERR_MODULE_NOT_FOUND/);
  assert.ok(!failed.error!.includes('very-private'));
+ fake(`process.stderr.write('private ENOENT\\nERR_MODULE_'); setTimeout(()=>{process.stderr.write('NOT_FOUND private');process.exit(3)},50);`);
+ const split=await runWorkerProc(agent,'fixture',{cwd:root});
+ assert.match(split.error!,/ERR_MODULE_NOT_FOUND/);
+ assert.ok(!split.error!.includes('private'));
+ assert.ok(!('startupFailure' in missing));
 });
 
 test('silent startup is bounded, but healthy slow children are not timed out', async(t)=>{
@@ -222,4 +227,33 @@ test('silent startup is bounded, but healthy slow children are not timed out', a
  assert.equal(timed.status,'error'); assert.match(timed.error!,/did not start/); assert.equal(timed.attempts,1);
  fake(`console.log(JSON.stringify({type:'agent_start'})); setTimeout(()=>{${final}},1500);`);
  assert.equal((await runWorkerProc(agent,'fixture',{cwd:root})).status,'ok');
+});
+
+for(const detached of [false,true]) test(`changed worker branch is not ready and reports the real commit (detached=${detached})`,async()=>{
+ const dir=repo(),base=git(dir,'rev-parse','HEAD');
+ fake(`const fs=require('fs'),cp=require('child_process'); cp.execFileSync('git',${JSON.stringify(detached?['checkout','--detach']:['switch','-c','worker-other'])}); fs.writeFileSync('rescue.txt','valuable'); cp.execFileSync('git',['add','--','rescue.txt']); cp.execFileSync('git',['commit','-m','preserve me']);`+final);
+ const result=await call(dir,{tasks:[{agent:'writer',task:'fixture',model:'fake/model',worktree:true}],aggregate:false});
+ const entry=result.details.worktrees[0];
+ assert.equal(result.details.items[0].status,'error');
+ assert.equal(entry.status,'error');
+ assert.notEqual(entry.head,base);
+ assert.equal(git(entry.path,'rev-parse','HEAD'),entry.head);
+ assert.equal(git(dir,'show',`${entry.head}:rescue.txt`),'valuable');
+ assert.match(result.content[0].text,/not ready/);
+ assert.match(result.content[0].text,/preserve the reported HEAD/);
+ assert.ok(fs.existsSync(entry.path));
+});
+
+test('aborted dispatch returns the retained worktree handoff',async()=>{
+ const dir=repo(),marker=path.join(root,'abort-started');
+ fake(`require('fs').writeFileSync(${JSON.stringify(marker)},'started'); console.log(JSON.stringify({type:'agent_start'})); setInterval(()=>{},1000);`);
+ const controller=new AbortController();
+ const pending=call(dir,{tasks:[{agent:'writer',task:'fixture',model:'fake/model',worktree:true}],aggregate:false},controller.signal);
+ for(let i=0;i<150&&!fs.existsSync(marker);i++) await new Promise(r=>setTimeout(r,20));
+ controller.abort();
+ const result=await pending;
+ assert.equal(result.details.items[0].status,'aborted');
+ assert.equal(result.details.worktrees[0].status,'aborted');
+ assert.ok(fs.existsSync(result.details.worktrees[0].path));
+ assert.match(result.content[0].text,/aborted — not ready/);
 });

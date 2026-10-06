@@ -40,7 +40,6 @@ import {
 } from "./pr-review-prompts.ts";
 import { pinFixHead, assertFixHead } from "./review-target.ts";
 import {
-	assertCleanTree,
 	createWorktree,
 	ensureExcluded,
 	resolveWorktreeTarget,
@@ -437,7 +436,6 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					const fixRequested = wantFix && aggregateResult.status === "ok" && !truncated;
 					if (fixRequested && !signal?.aborted) {
 						await assertFixHead(repoRoot, fixHead!);
-						await assertCleanTree(repoRoot);
 						ensureExcluded(repoRoot);
 						const target = await resolveWorktreeTarget(repoRoot);
 						await pruneStale(repoRoot);
@@ -468,11 +466,14 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 								),
 							signal,
 						);
-						worktrees.push(await describeWorktree(repoRoot, worktree, {
+						const handoff = await describeWorktree(repoRoot, worktree, {
 							task: 1, agent: "writer", status: fixResult.status,
 							base: target.base, baseCommit: fixHead!,
-						}));
-						fixReport = "\n\n" + cap(fixResult.text || fixResult.error || fixResult.status) +
+						});
+						worktrees.push(handoff);
+						if (fixResult.status === "ok" && handoff.error) fixResult = { ...fixResult, status: "error", error: handoff.error };
+						fixReport = "\n\n" + cap(fixResult.text || fixResult.status) +
+							(fixResult.error ? "\nFix error: " + cap(fixResult.error) : "") +
 							"\n\n" + formatHandoff(repoRoot, worktrees);
 					} else if (!wantFix) {
 						fixReport =

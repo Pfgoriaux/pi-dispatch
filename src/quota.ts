@@ -4,9 +4,8 @@ import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { quotaFamily, type RankedCandidate } from "./roster.ts";
 
-/** Threshold below which a provider is considered "running low" (%). */
 
-/** All tracked providers for global fallback. */
+/** Providers whose quota snapshots are read. */
 const ALL_PROVIDERS = ["codex", "synthetic", "neuralwatt", "claude"] as const;
 
 interface Limit {

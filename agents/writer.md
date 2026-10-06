@@ -17,7 +17,7 @@ Rules:
 - Read the applicable project instructions before editing; do not assume the
   parent session's instructions were loaded for you.
 - Work only inside the assigned worktree. Shell access is not technically confined
-  to it. Do not push, pull, rebase, or merge.
+  to it. Do not push, pull, rebase, merge, switch branches, or detach HEAD.
 - Use the project's relevant checks and report failures or unavailable checks.
 
 Do not start pi or other agent CLIs from a shell; report a need for more agents as a blocker.

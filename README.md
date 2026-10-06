@@ -345,7 +345,9 @@ user → review and authorize PR merge
   use `<repo>/.dispatch/worktrees/`; `.dispatch/` is added to Git's local
   `info/exclude`, never to tracked `.gitignore`.
 - Each successful writer must leave committed, clean edits. Uncommitted edits
-  produce an error, with the worktree retained. No empty commit is required.
+  produce an error, with the worktree retained. A changed branch or base ancestry
+  also produces a not-ready handoff naming the actual worktree HEAD for recovery.
+  No empty commit is required.
 - Once workers start, all their worktrees remain, including failed and aborted
   tasks. One task's exception becomes an error result; siblings finish normally.
   Branch references appear outside aggregator text and in `details.worktrees`.
@@ -374,7 +376,6 @@ workers' total runtime.
 
 Spawn errors report an OS error code. Child stderr is never returned verbatim;
 only recognized module/filesystem diagnostic codes can accompany an exit failure.
-Model-provider errors retain their existing reporting.
 
 ## Agents
 
@@ -404,13 +405,15 @@ Bundled: `scout` (read-only recon — tier `cheap`), `investigator` (code and ru
 
 ## Install
 
-Local development (dogfood inside this repo — `.pi/settings.json` is committed):
+Development checks:
 
 ```bash
 npm ci --ignore-scripts
 npm run check
-pi -p "dispatch two scouts …"
 ```
+
+The repository does not auto-load its development extension into project sessions.
+For an isolated extension load, use `pi -ne -e ./src/index.ts`.
 
 `npm run check` runs TypeScript and deterministic tests without calling models,
 operating live Herdr, or committing in real project repositories. Git integration

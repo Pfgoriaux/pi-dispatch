@@ -130,7 +130,7 @@ export async function dirtyLines(repoRoot: string): Promise<string[]> {
 
 export async function assertCleanTree(repoRoot: string): Promise<void> {
 	const dirty = await dirtyLines(repoRoot);
-	if (dirty.length) throw new Error("write tier requires a clean working tree — commit task changes first");
+	if (dirty.length) throw new Error(`write tier requires a clean working tree at ${repoRoot} — uncommitted: ${dirty.slice(0, 3).join(", ")}`);
 }
 
 /** Pin every worker in a call to the same clean feature commit. */
@@ -196,7 +196,7 @@ export async function branchOfWorktree(
 /**
  * Remove a worktree (idempotent — never throws on a missing worktree).
  * `deleteBranch` deletes the task branch; pass false to keep it for audit
- * (aborted dispatches, failed merges, failed workers). The default is
+ * during setup-failure cleanup. Git refuses unmerged branches. The default is
  * normalized inside so that `removeWorktree(root, path, {})` truly means
  * `{ deleteBranch: true }`.
  */

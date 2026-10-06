@@ -11,9 +11,9 @@ import { isolateAgentDir } from "./isolated-agent-dir.ts";
 
 isolateAgentDir();
 
-for (const scenario of ["short", "review-long", "final-long", "verify-failed", "errors-long", "truncated-fix", "fixed"]) {
+for (const scenario of ["short", "review-long", "final-long", "verify-failed", "errors-long", "truncated-fix", "fixed", "fix-uncommitted"]) {
 	test(`PR review tracks truncation: ${scenario}`, async (t) => {
-		const fix = scenario === "truncated-fix" || scenario === "fixed";
+		const fix = ["truncated-fix", "fixed", "fix-uncommitted"].includes(scenario);
 		let cwd = path.resolve(import.meta.dirname, "..");
 		let initialHead = "";
 		if (fix) {
@@ -25,11 +25,11 @@ for (const scenario of ["short", "review-long", "final-long", "verify-failed", "
 			const previous = process.env.PI_DISPATCH_PI_BIN;
 			process.env.PI_DISPATCH_PI_BIN = path.join(cwd, "must-not-spawn");
 			initialHead = execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-			if (scenario === "fixed") {
+			if (scenario === "fixed" || scenario === "fix-uncommitted") {
 				const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "review-fake-child-"));
 				t.after(() => fs.rmSync(binDir, { recursive: true, force: true }));
 				process.env.PI_DISPATCH_PI_BIN = path.join(binDir, "pi");
-				fs.writeFileSync(process.env.PI_DISPATCH_PI_BIN, `#!/usr/bin/env node\nconst fs=require("fs"),cp=require("child_process"); fs.writeFileSync("fix.txt","ok"); cp.execFileSync("git",["add","--","fix.txt"]); cp.execFileSync("git",["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","commit.gpgsign=false","commit","-m","fix"]); console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"fixed"}],stopReason:"stop"}}));`, { mode: 0o700 });
+				fs.writeFileSync(process.env.PI_DISPATCH_PI_BIN, `#!/usr/bin/env node\nconst fs=require("fs"),cp=require("child_process"); fs.writeFileSync("fix.txt","ok"); ${scenario === "fixed" ? 'cp.execFileSync("git",["add","--","fix.txt"]); cp.execFileSync("git",["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","commit.gpgsign=false","commit","-m","fix"]);' : ""} console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"fixed"}],stopReason:"stop"}}));`, { mode: 0o700 });
 			}
 			t.after(() => {
 				if (previous === undefined) delete process.env.PI_DISPATCH_PI_BIN;
@@ -71,7 +71,7 @@ for (const scenario of ["short", "review-long", "final-long", "verify-failed", "
 		const result = await tool.execute("test", { pr: fix ? "HEAD" : "main...HEAD", fix, herdr: false }, undefined, undefined, {
 			cwd, isProjectTrusted: () => fix, modelRegistry: registry,
 		});
-		assert.equal(result.details.truncated, scenario !== "short" && scenario !== "fixed");
+		assert.equal(result.details.truncated, !["short", "fixed", "fix-uncommitted"].includes(scenario));
 		assert.ok(!result.content[0].text.includes("�"));
 		if (scenario === "verify-failed") {
 			for (const label of ["Correctness + security reviewer", "Correctness reviewer", "Pre-mortem", "Slop reviewer"])
@@ -79,6 +79,10 @@ for (const scenario of ["short", "review-long", "final-long", "verify-failed", "
 		}
 		if (scenario === "errors-long") {
 			assert.match(result.content[0].text, /Slop: docs rules/);
+		} else if (scenario === "fix-uncommitted") {
+			assert.equal(result.details.worktrees[0].status, "error");
+			assert.match(result.content[0].text, /Worker left uncommitted edits/);
+			assert.ok(fs.existsSync(result.details.worktrees[0].path));
 		} else if (scenario === "fixed") {
 			const entry = result.details.worktrees[0];
 			assert.equal(entry.commits, 1);

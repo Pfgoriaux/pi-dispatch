@@ -580,10 +580,12 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 				for (let i = 0; i < worktrees.length; i++) {
 					const wt = worktrees[i];
 					if (!wt) continue;
-					handoffs.push(await describeWorktree(repoRoot!, wt, {
+					const handoff = await describeWorktree(repoRoot!, wt, {
 						task: i + 1, agent: items[i].agent, status: results[i].status,
 						base: target!.base, baseCommit: target!.baseCommit,
-					}));
+					});
+					handoffs.push(handoff);
+					if (results[i].status === "ok" && handoff.error) results[i] = { ...results[i], status: "error", error: handoff.error };
 				}
 			}
 

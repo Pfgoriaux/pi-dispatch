@@ -189,7 +189,7 @@ export async function runWorkerProc(
 			continue;
 		}
 		let toolsStarted = false;
-		const attempt = await runOneProc(agent, task, {
+		const { startupFailure, ...attempt } = await runOneProc(agent, task, {
 			...options,
 			modelOverride: candidate.modelSpec,
 			thinking: candidate.thinking,
@@ -200,7 +200,7 @@ export async function runWorkerProc(
 		attempts.push(result);
 		if (options.signal?.aborted) result = { ...result, status: "aborted" };
 		// A fresh process cannot safely replay a writer after tools may have changed files.
-		if (result.status !== "error" || toolsStarted || attempt.startupFailure) break;
+		if (result.status !== "error" || toolsStarted || startupFailure) break;
 	}
 	return {
 		...result,
@@ -375,7 +375,7 @@ async function runOneProc(
 	let wasAborted = false;
 	let startupFailure = false;
 	let spawnCode: string | undefined;
-	let stderrCode: string | undefined;
+	let stderrTail = "";
 	const invocation = getPiInvocation(args);
 	const proc = spawn(invocation.command, invocation.args, {
 		cwd: options.cwd,
@@ -393,7 +393,7 @@ async function runOneProc(
 	});
 	// Preserve only known diagnostic codes, never raw stderr (may contain credentials).
 	proc.stderr.on("data", (data: Buffer) => {
-		stderrCode ??= data.toString().match(/\b(?:ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|ENOENT|EACCES|EADDRINUSE)\b/)?.[0];
+		stderrTail = (stderrTail + data.toString()).slice(-4096);
 	});
 
 	let exitCode: number | null = null;
@@ -453,6 +453,8 @@ async function runOneProc(
 	}
 
 	if (exitCode !== 0) {
+		const codes = ["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND", "EACCES", "EADDRINUSE", "ENOENT"];
+		const stderrCode = codes.find(code => new RegExp(`\\b${code}\\b`).test(stderrTail));
 		const why =
 			lastError?.errorMessage ||
 			(exitSignal ? `child pi terminated by ${exitSignal}` : undefined) ||
