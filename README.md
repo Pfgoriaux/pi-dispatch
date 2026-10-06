@@ -22,6 +22,18 @@ live in `details` (UI-only). Raw worker transcripts are not returned to the pare
 - `parallel` — `{ tasks: [{agent, task, cwd?}] }`, max 8 tasks, concurrency 4; results distilled by `aggregator` unless `aggregate: false`
 - `chain` — `{ chain: [{agent, task}] }`, sequential; `{previous}` = prior step's output
 
+## Advisor
+
+`dispatch({ agent: "advisor", task: "..." })` gives a read-only second opinion.
+The tool guidance permits a single consultation for consequential trade-offs,
+work stuck after investigation, or a concrete unresolved risk before completion.
+It does not require parallel work or an explicit user request. Routine tasks
+and repeat consultations without new evidence stay with the caller.
+
+Include the outcome, decision, relevant paths, evidence, and constraints.
+The advisor checks the evidence and returns a recommendation, reasons, risks,
+and the smallest verification step. It cannot see the caller's conversation.
+
 ## pr_review
 
 "Review a PR" without leaving dispatch. Resolves the diff (GitHub PR number
