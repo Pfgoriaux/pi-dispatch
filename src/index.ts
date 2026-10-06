@@ -203,7 +203,7 @@ function sumUsages(results: WorkerResult[]) {
 export default function dispatchExtension(pi: ExtensionAPI): void {
 	registerHerdrWatch(pi);
 	pi.on("before_agent_start", (event, ctx) => ({
-		systemPrompt: `${event.systemPrompt}\n\n## Dispatch agents\nUse these exact names; never invent an agent name (skill role labels are not agent names):\n${agentRosterHelp(discoverAgents(ctx).agents)}`,
+		systemPrompt: `${event.systemPrompt}\n\n## Dispatch agents\nUse these exact names; never invent an agent name (skill role labels are not agent names). Workers do not inherit your tools. Shared Linkup web tools are added when configured; role tools and shell availability are listed below. Shell access is not a read-only sandbox; follow each role's constraints.\n${agentRosterHelp(discoverAgents(ctx).agents)}`,
 	}));
 
 	pi.registerTool({
@@ -216,9 +216,11 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 		promptSnippet:
 			"Get an advisor's second opinion or delegate parallel or context-heavy work",
 		promptGuidelines: [
+			"dispatch: Select by required capabilities before model strength. Use investigator for code/runtime cause investigation and authorized live diagnostics, scout for locating code, advisor for judging evidence and decisions. Check the live roster's tools, including overrides; model tiers and task wording cannot grant missing tools.",
 			"dispatch: Consult a single advisor for a consequential trade-off, work stuck after investigation, or a concrete unresolved risk before declaring complex work done. No parallel work or user request is required. Skip routine tasks and repeat consultations without new evidence.",
 			"dispatch: Otherwise use for 3+ independent areas worked in parallel, output that would flood your context, or when the user asks for sub-agents or multiple perspectives. Do routine work yourself.",
 			"dispatch: Tasks must be self-contained: goal, paths, constraints, output shape. Workers see no conversation.",
+			"dispatch: Worker completion is not task completion. Evaluate returned checks against the user's scope and safety rules, then run authorized checks yourself or delegate to a capable role before concluding. If blocked, report the specific missing tool, access, or approval and what remains unverified; do not stop at a generic worker limitation.",
 			"dispatch: For file edits use tasks:[{agent:'writer', worktree:true}] from a feature branch with a committed-clean repo root, only when the user authorized commits and merges. Single mode always runs in-process, without isolation.",
 		],
 		parameters: Type.Object({

@@ -39,14 +39,20 @@ test("the live roster is advertised before dispatch, respects trust, and refresh
 	assert.ok(untrusted.startsWith(event.systemPrompt));
 	assert.match(untrusted, /- scout: .*\(bundled\)/);
 	assert.match(untrusted, /- planner: /);
+	assert.match(untrusted, /- investigator: .*role tools: read, grep, find, ls, bash; shell available/);
+	assert.match(untrusted, /- advisor: .*role tools: read, grep, find, ls; no shell/);
 	assert.match(untrusted, /- custom-analyst: User analyst \(user\)/);
+	assert.match(untrusted, /- custom-analyst: .*role tools: none; no shell/);
 	assert.ok(!untrusted.includes("- researcher:"));
 	assert.ok(!untrusted.includes("Fixture instructions"), "only metadata, never worker prompts");
 	assert.match(untrusted, /never invent an agent name/);
+	assert.match(untrusted, /Workers do not inherit your tools/);
 
+	writeAgent(path.join(cwd, ".pi/agents"), "investigator", "Restricted project investigator");
 	const trusted = beforeStart(event, context(true)).systemPrompt;
 	assert.match(trusted, /- researcher: Project researcher \(project\)/);
 	assert.match(trusted, /- scout: Project override \(project\)/);
+	assert.match(trusted, /- investigator: Restricted project investigator \(project\) — role tools: none; no shell/);
 	assert.equal(trusted.split("- scout:").length, 2, "overrides appear once");
 	writeAgent(path.join(agentDir, "agents"), "new-role", "Added mid-session");
 	const refreshed = beforeStart(event, context(false)).systemPrompt;
@@ -57,6 +63,10 @@ test("the live roster is advertised before dispatch, respects trust, and refresh
 	const dispatch = tools.find((tool) => tool.name === "dispatch")!;
 	assert.match(dispatch.description, /Dispatch agents roster/);
 	assert.match(untrusted, /skill role labels are not agent names/);
+	const guidance = dispatch.promptGuidelines!.join("\n");
+	assert.match(guidance, /Select by required capabilities before model strength/);
+	assert.match(guidance, /Worker completion is not task completion/);
+	assert.match(guidance, /Evaluate returned checks against the user's scope and safety rules/);
 	await assert.rejects(
 		() => dispatch.execute("fixture", { tasks: Array.from({ length: 5 }, () => ({ agent: "researcher", task: "fixture" })) }, undefined, undefined, context(false)),
 		(error: Error) => {
