@@ -104,6 +104,8 @@ session cwd and authorization for commits and automatic merge-back. `fix` defaul
 to **false**. Invalid diffs fail before reviewers start; empty diffs skip model calls.
 Fixes require the reviewed head to match the checkout; the checkout is rechecked
 before writing and merging so findings cannot silently target another revision.
+If any review material is truncated, the tool skips automatic fixes and asks for
+a narrower review.
 
 ## feature_plan
 

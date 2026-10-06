@@ -403,7 +403,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 							.map((r, i) => `- ${STEPS[i].task}: ${cap(r.error ?? r.status)}`)
 							.join("\n");
 						return {
-							content: [{ type: "text", text: cap(`pr_review: both code reviewers failed.\n${errors}`) }],
+							content: [{ type: "text", text: `pr_review: both code reviewers failed.\n${errors}` }],
 							details: {
 								mode: "parallel",
 								items: reviews,
@@ -432,7 +432,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					// ---- optional fix step (write tier worktree) ----
 					let fixReport = "";
 					let fixResult: WorkerResult | undefined;
-					const fixRequested = wantFix && aggregateResult.status === "ok";
+					const fixRequested = wantFix && aggregateResult.status === "ok" && !truncated;
 					if (fixRequested && !signal?.aborted) {
 						await assertFixHead(repoRoot, fixHead!);
 						await assertCleanTree(repoRoot);
@@ -482,7 +482,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 								);
 								merged = outcome.merged.includes(worktree.branch);
 								if (!merged && outcome.failed.length > 0) {
-									fixReport = `\n\nFix MERGE FAILED: ${outcome.failed[0].error} (branch kept: ${outcome.failed[0].branch})`;
+									fixReport = `\n\nFix MERGE FAILED: ${cap(outcome.failed[0].error)} (branch kept: ${outcome.failed[0].branch})`;
 								}
 							} else if (fixResult.status !== "ok") {
 								fixReport = `\n\nFix FAILED (${fixResult.status}): ${cap(fixResult.error ?? "")}. Branch kept for inspection: ${worktree.branch}`;
@@ -505,7 +505,9 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 						fixReport =
 							"\n\n(Fix skipped: fix=false. Ask to fix the findings, or run dispatch writer when ready.)";
 					} else if (!fixRequested) {
-						fixReport = "\n\n(Fix skipped: verification did not finish, so no findings are validated.)";
+						fixReport = truncated
+							? "\n\n(Fix skipped: review material was truncated. Rerun a narrower review before applying fixes.)"
+							: "\n\n(Fix skipped: verification did not finish, so no findings are validated.)";
 					}
 
 					// ---- notification & result ----
@@ -526,7 +528,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 						content: [
 							{
 								type: "text",
-								text: cap(`# PR review — ${label}\n\n${findings}${fixReport}`),
+								text: `# PR review — ${label}\n\n${findings}${fixReport}`,
 							},
 						],
 						usage: sumWorkerUsage(items),
