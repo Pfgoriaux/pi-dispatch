@@ -10,7 +10,7 @@ worktrees. Usage, model routing, installation and Herdr: [README.md](README.md).
   saved plans, retained branches). `details` is UI-only; never put the only
   copy of a recovery reference there.
 - Use `truncateText` for reports and errors: 12 KB of UTF-8 per text, preserving
-  code points. Combined reports and metadata can exceed that per-text cap.
+  code points, plus a truncation marker. Combined reports and metadata can exceed that per-text cap.
 - In-process workers disable context-file, skill and general extension discovery.
   Their tasks must carry applicable constraints or point to instruction files.
   Only configured Linkup entrypoints load. Child writers load project context

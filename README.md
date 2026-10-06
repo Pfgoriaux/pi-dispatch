@@ -248,7 +248,7 @@ fails explicitly. Never send secrets/private code in queries.
 
 Final reports and recovery references enter model-visible `content`.
 Status, usage and previews are in UI-only `details`. Worker/error texts have
-a 12 KB UTF-8 cap per text, not per combined result. Raw transcripts stay inside
+a 12 KB UTF-8 cap per text plus a truncation marker, not per combined result. Raw transcripts stay inside
 workers; saved reports/session references allow recovery without repeating work.
 
 ## Herdr
