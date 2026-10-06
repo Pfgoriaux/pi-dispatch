@@ -174,16 +174,24 @@ export function loadConfig(file: string): PilotConfig {
 	return parseConfig(raw);
 }
 
-/** Commit-only pilot writer. The model comes from the configuration. */
-export function writerAgent(): AgentConfig {
-	const filePath = path.join(bundledAgentsDir(), "durable-writer.md");
+function bundledAgent(file: string, onlyTools?: readonly string[]): AgentConfig {
+	const filePath = path.join(bundledAgentsDir(), file);
 	const { frontmatter, body } = parseFrontmatter<{ name?: unknown; description?: unknown; tools?: unknown }>(fs.readFileSync(filePath, "utf8"));
-	const tools = typeof frontmatter.tools === "string" ? frontmatter.tools.split(",").map((t) => t.trim()).filter(Boolean) : undefined;
+	const listed = typeof frontmatter.tools === "string" ? frontmatter.tools.split(",").map((t) => t.trim()).filter(Boolean) : undefined;
+	const tools = onlyTools ? listed?.filter((tool) => onlyTools.includes(tool)) : listed;
 	return {
-		name: String(frontmatter.name ?? "writer"), description: String(frontmatter.description ?? ""), tools,
+		name: String(frontmatter.name ?? path.basename(file, ".md")), description: String(frontmatter.description ?? ""), tools,
 		systemPrompt: body.trim(), source: "bundled", filePath,
 	};
 }
+
+/** Commit-only pilot writer. The model comes from the configuration. */
+export const writerAgent = (): AgentConfig => bundledAgent("durable-writer.md");
+
+/** The bundled reviewer with read-only tools only: it reads the saved diff instead of running Git. */
+export const reviewerAgent = (): AgentConfig => bundledAgent("reviewer.md", ["read", "grep", "find", "ls"]);
+
+const batchAgents = () => ({ agent: writerAgent(), reviewer: reviewerAgent() });
 
 /** Owner socket for a store: a private per-user directory, keyed by the store path. */
 export function socketPath(storePath: string): string {
@@ -269,7 +277,7 @@ const print = (io: Io, report: BatchReport, extra: object = {}) =>
 
 /** Own the store for a run or resume: preflight, serve IPC, schedule, report. */
 async function own(config: PilotConfig, mode: "run" | "resume", io: Io): Promise<number> {
-	const owner = await openBatch(config, { agent: writerAgent(), onWarning: (warning) => io.err(`warning: ${warning}`) });
+	const owner = await openBatch(config, { ...batchAgents(), onWarning: (warning) => io.err(`warning: ${warning}`) });
 	const file = socketPath(config.store);
 	let server: net.Server | undefined;
 	let signals = 0;
@@ -309,7 +317,7 @@ async function status(config: PilotConfig, io: Io): Promise<number> {
 		return 0;
 	}
 	if (!fs.existsSync(config.store)) throw new Error(`Store ${config.store} does not exist.`);
-	const owner = await openBatch(config, { agent: writerAgent() }).catch((error: unknown) => {
+	const owner = await openBatch(config, batchAgents()).catch((error: unknown) => {
 		if (error instanceof DurableStoreLockedError) throw new Error("Another process owns the store, but its status socket does not answer.");
 		throw error;
 	});

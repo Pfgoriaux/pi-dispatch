@@ -37,11 +37,13 @@ export interface StoreSnapshot {
 	readonly effects: readonly Readonly<EffectState>[];
 }
 export interface RecoveryReport {
+	/** Running attempts and reviews whose recorded worker this host can judge; the scheduler adopts them. */
+	readonly orphaned: readonly string[];
 	readonly interrupted: readonly string[];
 	readonly blocked: readonly string[];
 	readonly unresolvedEffects: readonly string[];
 	readonly unknownSpend: readonly string[];
-	/** True when any of the lists above prevents further automatic work. */
+	/** True when any list other than `orphaned` prevents further automatic work. */
 	readonly halted: boolean;
 }
 
@@ -89,14 +91,22 @@ export async function workerIdentity(pid: number): Promise<WorkerIdentity> {
 	return { pid, startedAt, host: os.hostname() };
 }
 
-type Liveness = "dead" | "alive" | "unknown";
+type Liveness = "dead" | "alive" | "unknown" | "unrecorded";
 
-async function workerLiveness(worker: WorkerIdentity | null): Promise<Liveness> {
-	if (!worker || worker.host !== os.hostname()) return "unknown";
+async function workerLiveness(worker: WorkerIdentity | null | undefined): Promise<Liveness> {
+	if (!worker) return "unrecorded";
+	if (worker.host !== os.hostname()) return "unknown";
 	const current = await processStartIdentity(worker.pid);
 	if (current === undefined) return "unknown";
 	return current === worker.startedAt ? "alive" : "dead";
 }
+
+/** Worker of the attempt's running step: the attempt itself, else its review. */
+function runningWorker(attempt: Readonly<AttemptState>): WorkerIdentity | null | undefined {
+	return attempt.status === "running" ? attempt.worker : attempt.review?.worker;
+}
+
+const adoptable = (state: Liveness | undefined) => state === "alive" || state === "dead";
 
 function assertPositiveInteger(name: string, value: number): void {
 	if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${name} must be a positive integer.`);
@@ -142,7 +152,7 @@ function reservedAttempt(task: TaskReservation): AttemptState {
 export class DurableStore {
 	readonly contracts: DurableContracts;
 	readonly context: DurableContext;
-	recovery: RecoveryReport = { interrupted: [], blocked: [], unresolvedEffects: [], unknownSpend: [], halted: false };
+	recovery: RecoveryReport = { orphaned: [], interrupted: [], blocked: [], unresolvedEffects: [], unknownSpend: [], halted: false };
 	#closed = false;
 
 	constructor(
@@ -190,43 +200,46 @@ export class DurableStore {
 	}
 
 	/**
-	 * Settle state left by a previous owner. Running attempts become
-	 * `interrupted` when their worker is gone, else `blocked`; intended effects
-	 * become `unresolved`. Unknown identity or spend halts instead of retrying.
+	 * Settle state left by a previous owner. A running attempt or review whose
+	 * recorded worker this host can check (alive or dead) stays running for the
+	 * scheduler to adopt; one with no recorded or checkable worker becomes
+	 * `blocked` with unknown spend. Intended effects become `unresolved`.
 	 */
 	async recover(): Promise<RecoveryReport> {
 		const before = await this.read();
-		const running = before.attempts.filter((attempt) => attempt.status === "running");
-		const liveness = new Map(await Promise.all(running.map(async (a) => [a.key, await workerLiveness(a.worker)] as const)));
-		if (liveness.size > 0 || before.effects.some((effect) => effect.status === "intended")) {
-			await this.harness.commit((tx) => this.#settle(tx, running, liveness, before.effects), this.context);
+		const orphans = before.attempts.filter((a) => a.status === "running" || a.review?.status === "running");
+		const liveness = new Map(await Promise.all(orphans.map(async (a) => [a.key, await workerLiveness(runningWorker(a))] as const)));
+		const unadoptable = orphans.filter((a) => !adoptable(liveness.get(a.key)));
+		if (unadoptable.length > 0 || before.effects.some((effect) => effect.status === "intended")) {
+			await this.harness.commit((tx) => this.#settle(tx, unadoptable, liveness, before.effects), this.context);
 		}
 		const after = await this.read();
 		const keys = <T extends { key: string }>(items: readonly T[], keep: (item: T) => boolean) => items.filter(keep).map((item) => item.key);
 		const report = {
 			interrupted: keys(after.attempts, (a) => a.status === "interrupted"),
-			blocked: keys(after.attempts, (a) => a.status === "blocked"),
+			blocked: keys(after.attempts, (a) => a.status === "blocked" || a.review?.status === "blocked"),
 			unresolvedEffects: keys(after.effects, (e) => e.status === "unresolved"),
-			unknownSpend: keys(after.attempts, (a) => a.spentUsd === null),
+			unknownSpend: keys(after.attempts, (a) => a.spentUsd === null || a.review?.spentUsd === null),
 		};
-		this.recovery = { ...report, halted: Object.values(report).some((list) => list.length > 0) };
+		const orphaned = keys(after.attempts, (a) => a.status === "running" || a.review?.status === "running");
+		this.recovery = { orphaned, ...report, halted: Object.values(report).some((list) => list.length > 0) };
 		return this.recovery;
 	}
 
 	async #settle(
 		tx: DurableModule.Tx,
-		running: readonly Readonly<AttemptState>[],
+		unadoptable: readonly Readonly<AttemptState>[],
 		liveness: ReadonlyMap<string, Liveness>,
 		effects: readonly Readonly<EffectState>[],
 	): Promise<void> {
 		const { AttemptDoc, EffectDoc } = this.contracts;
-		for (const seen of running) {
+		for (const seen of unadoptable) {
 			const attempt = await tx.doc(AttemptDoc, seen.key, seen);
-			const state = liveness.get(seen.key);
-			if (attempt.status !== "running") continue;
-			attempt.status = state === "dead" ? "interrupted" : "blocked";
-			attempt.spentUsd = null;
-			attempt.reason = state === "dead" ? "worker exited without a recorded outcome" : `worker identity is ${state}`;
+			const run = attempt.status === "running" ? attempt : attempt.review;
+			if (run?.status !== "running") continue;
+			run.status = "blocked";
+			run.spentUsd = null;
+			run.reason = `worker identity is ${liveness.get(seen.key)}`;
 		}
 		for (const effect of effects.filter((e) => e.status === "intended")) {
 			(await tx.doc(EffectDoc, effect.key, effect)).status = "unresolved";

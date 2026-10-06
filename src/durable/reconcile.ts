@@ -8,7 +8,7 @@
 
 import fs from "node:fs";
 import os from "node:os";
-import { putEffect, type AttemptState, type EffectState } from "./contracts.ts";
+import { putEffect, runningWorkers, type AttemptState, type EffectState } from "./contracts.ts";
 import {
 	branchSha, observePullRequest, observePush,
 	type Observation, type PullRequestTarget, type PushTarget,
@@ -32,6 +32,8 @@ export function blockers(snapshot: StoreSnapshot, allow: ReadonlySet<string> = n
 	const attempts = snapshot.attempts.flatMap((a) => [
 		...(a.status === "blocked" || a.status === "interrupted" ? [`${a.key} is ${a.status}${a.reason ? `: ${a.reason}` : ""}`] : []),
 		...(a.spentUsd === null ? [`${a.key} has unknown spend`] : []),
+		...(a.review?.status === "blocked" ? [`review of ${a.key} is blocked${a.review.reason ? `: ${a.review.reason}` : ""}`] : []),
+		...(a.review && a.review.spentUsd === null ? [`review of ${a.key} has unknown spend`] : []),
 	]);
 	const effects = snapshot.effects
 		.filter((e) => e.status === "unresolved" && !allow.has(e.key))
@@ -137,7 +139,7 @@ export interface ReconcileReport {
  */
 export async function reconcileEffects(store: DurableStore, adapters: ReconcileAdapters = {}): Promise<ReconcileReport> {
 	const before = await store.read();
-	if (before.attempts.some((a) => a.status === "running") || before.effects.some((e) => e.status === "intended")) {
+	if (runningWorkers(before.attempts) > 0 || before.effects.some((e) => e.status === "intended")) {
 		throw new Error("Reconcile only while no attempt or effect is in flight.");
 	}
 	const applied: string[] = [];

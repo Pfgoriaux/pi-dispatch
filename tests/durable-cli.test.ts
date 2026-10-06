@@ -5,9 +5,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ConfigError, parseConfig, request, socketPath, writerAgent } from '../src/durable/cli.ts';
+import { ConfigError, parseConfig, request, reviewerAgent, socketPath, writerAgent } from '../src/durable/cli.ts';
 import { formatReport, openBatch, policyHash, type BatchOwner, type PilotConfig } from '../src/durable/scheduler.ts';
 import { processStartIdentity } from '../src/durable/store.ts';
+import { parseReview, pilotSessionId } from '../src/durable/supervisor.ts';
 
 // Every repository, remote, store, fake Pi, and fake gh lives in this disposable workspace.
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -39,30 +40,43 @@ function script(name: string, body: string): string {
 }
 
 /**
- * Fake Pi. Behaviour per task id (parsed from the prompt): ok, slow, outside (commits outside owned paths), hang.
+ * Fake Pi. Writes JSON events to stdout and a Pi 1.0.4-format session file to --session-dir.
+ * Worker behaviour per task id: ok, slow, outside (commits outside owned paths), hang, gate (waits for release()).
+ * Reviewer behaviour per `<id>:review`: clean (default), block, block-once, unpriced, gate.
  * Logs start and end of each spawn for concurrency checks.
  */
 function fakePi(behaviour: Record<string, string>) {
  const log = path.join(W, `spawns-${uid()}.log`);
+ const gates = fs.mkdtempSync(path.join(W, 'gates-'));
  const bin = script('fake-pi', `
 const fs=require('fs'),cp=require('child_process'),path=require('path');
-const args=process.argv.slice(2), sid=args[args.indexOf('--session-id')+1], prompt=args[args.length-1];
-const id=/task ([^ ]+)\\. You work/.exec(prompt)[1], mode=${JSON.stringify(behaviour)}[id]??'ok';
-const log=(event)=>fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({event,id,pid:process.pid,at:Date.now(),prompt})+'\\n');
+const args=process.argv.slice(2), sid=args[args.indexOf('--session-id')+1], dir=args[args.indexOf('--session-dir')+1], prompt=args[args.length-1];
+const review=/CODE REVIEW/.test(prompt), kind=review?'review':'work';
+const id=review?/INTENT[^\\n]*\\ndo (\\S+)/.exec(prompt)[1]:/task ([^ ]+)\\. You work/.exec(prompt)[1];
+const mode=${JSON.stringify(behaviour)}[review?id+':review':id]??(review?'clean':'ok');
+const read=()=>fs.existsSync(${JSON.stringify(log)})?fs.readFileSync(${JSON.stringify(log)},'utf8').trim().split('\\n').map(l=>JSON.parse(l)):[];
+const earlier=read().filter(e=>e.event==='start'&&e.id===id&&e.kind===kind).length;
+const log=(event)=>fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({event,id,kind,pid:process.pid,at:Date.now(),prompt})+'\\n');
 log('start');
+const now=()=>new Date().toISOString();
+const file=path.join(dir,now().replace(/[:.]/g,'-')+'_'+sid+'.jsonl');
+const entry=(o)=>fs.appendFileSync(file,JSON.stringify(o)+'\\n');
 const out=(o)=>process.stdout.write(JSON.stringify(o)+'\\n');
-const finish=()=>{log('end');out({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'done'}],stopReason:'stop',model:'fake',usage:${JSON.stringify(usage)}}});out({type:'agent_end',messages:[]});out({type:'agent_settled'});};
-const commit=(file)=>{fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,id+' '+Date.now()+'\\n');cp.execFileSync('git',['add','--',file]);cp.execFileSync('git',['commit','-q','-m','worker '+id]);};
-out({type:'session',version:3,id:sid,timestamp:new Date().toISOString(),cwd:process.cwd()});
-setTimeout(()=>{
- if(mode==='hang') return setInterval(()=>{},1000);
- if(mode==='outside'){commit('docs/'+id+'.md');return finish();}
- setTimeout(()=>{commit('src/'+id+'.txt');finish();}, mode==='slow'?700:0);
-},300);
+out({type:'session',version:3,id:sid,timestamp:now(),cwd:process.cwd()});
+entry({type:'session',version:3,id:sid,timestamp:now(),cwd:process.cwd()});
+entry({type:'message',id:'u1',parentId:null,timestamp:now(),message:{role:'user',content:[{type:'text',text:'task'}]}});
+const finish=(text='done',usage=${JSON.stringify(usage)})=>{const message={role:'assistant',content:[{type:'text',text}],stopReason:'stop',model:'fake',usage};out({type:'message_end',message});entry({type:'message',id:'a1',parentId:'u1',timestamp:now(),message});log('end');out({type:'agent_end',messages:[]});out({type:'agent_settled'});};
+const commit=(f)=>{fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSync(f,id+' '+Date.now()+'\\n');cp.execFileSync('git',['add','--',f]);cp.execFileSync('git',['commit','-q','-m','worker '+id]);};
+const blocker='## [blocker] Broken '+id+'\\n- File: src/'+id+'.txt:1\\n- Problem: wrong value\\n- Fix: correct it\\n';
+const gate=(then)=>{const f=path.join(${JSON.stringify(gates)},kind+'-'+id);const t=setInterval(()=>{if(fs.existsSync(f)){clearInterval(t);then();}},50);};
+const reviewer={clean:()=>finish('No findings.'),block:()=>finish(blocker),'block-once':()=>finish(earlier===0?blocker:'No findings.'),unpriced:()=>finish('No findings.',{...${JSON.stringify(usage)},cost:undefined}),gate:()=>gate(()=>finish('No findings.'))};
+const work={ok:()=>{commit('src/'+id+'.txt');finish();},slow:()=>setTimeout(()=>{commit('src/'+id+'.txt');finish();},700),outside:()=>{commit('docs/'+id+'.md');finish();},hang:()=>setInterval(()=>{},1000),gate:()=>gate(()=>{commit('src/'+id+'.txt');finish();})};
+setTimeout(()=>(review?reviewer:work)[mode](),300);
 `);
  const events = () => fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
- const starts = (id?: string) => events().filter((e) => e.event === 'start' && (!id || e.id === id));
- return { bin, events, starts };
+ const starts = (id?: string, kind = 'work') => events().filter((e) => e.event === 'start' && e.kind === kind && (!id || e.id === id));
+ const release = (id: string, kind = 'work') => fs.writeFileSync(path.join(gates, `${kind}-${id}`), '');
+ return { bin, events, starts, reviews: (id?: string) => starts(id, 'review'), release };
 }
 
 /** Fake gh backed by a JSON file; PR heads follow the bare remote like GitHub. */
@@ -117,9 +131,10 @@ function config(w: ReturnType<typeof workspace>, tasks: Spec[], pi: string, gh: 
  };
 }
 
-const agent = writerAgent();
+const agents = { agent: writerAgent(), reviewer: reviewerAgent() };
+const agent = agents.agent;
 async function runBatch(cfg: PilotConfig, mode: 'run' | 'resume' = 'run', during?: (owner: BatchOwner) => Promise<void>) {
- const owner = await openBatch(cfg, { agent });
+ const owner = await openBatch(cfg, agents);
  try {
   if (mode === 'run') await owner.create(); else await owner.attach();
   assert.deepEqual(await owner.preflight(), []);
@@ -163,6 +178,7 @@ test('config: missing inputs, caps, deadline, and spend fail closed', () => {
  // The policy hash covers every input, so a resume with changed inputs is refused by the store.
  assert.notEqual(policyHash(valid), policyHash({ ...valid, limits: { ...valid.limits, maxWorkers: 2 } }));
  assert.match(agent.systemPrompt, /Commits on the assigned branch are authorized/);
+ assert.deepEqual(agents.reviewer.tools, ['read', 'grep', 'find', 'ls'], 'the reviewer gets no edit, write, or shell tool');
  assert.doesNotMatch(agent.systemPrompt, /authorization for.*merge-back/);
 });
 
@@ -182,7 +198,7 @@ test('cli: missing configuration and past deadlines start nothing', async () => 
  fs.writeFileSync(file, JSON.stringify(past));
  const late = await cli(['run', file]);
  assert.equal(late.code, 1); assert.match(late.stderr, /Deadline must be in the future/);
- const owner = await openBatch(past, { agent });
+ const owner = await openBatch(past, agents);
  try { assert.equal(await owner.rootId(), undefined); assert.equal((await owner.store.read()).policy, undefined); } finally { await owner.close(); }
 });
 
@@ -196,7 +212,10 @@ test('scheduler: stacked dependencies, worker cap, PR-ready report, no merges', 
  const tasks = byId(report);
  assert.equal(report.phase, 'finished');
  assert.deepEqual(report.tasks.map((t) => t.state), ['pr-ready', 'pr-ready', 'pr-ready', 'pr-ready']);
- assert.equal(report.spentUsd, 1); assert.deepEqual(report.halted, []);
+ // Four attempts and four clean reviews at $0.25 each.
+ assert.equal(report.spentUsd, 2); assert.deepEqual(report.halted, []);
+ assert.equal(pi.reviews().length, 4);
+ assert.ok(report.tasks.every((t) => t.review?.status === 'done' && t.review.blocking === 0));
  // b started from a's verified head, and its draft PR is stacked on a's branch.
  assert.equal(tasks.b.baseSha, tasks.a.headSha); assert.equal(tasks.b.parent, 'a');
  assert.equal(tasks.a.baseSha, feature);
@@ -214,6 +233,10 @@ test('scheduler: stacked dependencies, worker cap, PR-ready report, no merges', 
  let live = 0, peak = 0;
  for (const e of events) { live += e.event === 'start' ? 1 : -1; peak = Math.max(peak, live); }
  assert.equal(peak, 2); assert.equal(pi.starts().length, 4);
+ // Reviews read the task diff from its base: b's review covers only b's commit.
+ assert.match(pi.reviews('b')[0].prompt, /task\.diff/);
+ const bodies = gh.calls().filter((c) => c[1] === 'create').map((c) => c[c.indexOf('--body') + 1]);
+ assert.ok(bodies.every((body) => /Automatic read-only review of the diff from the base to this head: 0 validated blocking, 0 other findings\./.test(body)));
  // Workers get constraints only; the report carries no prompts or transcripts.
  assert.match(pi.starts('b')[0].prompt, /starts from the verified work of task a at [0-9a-f]{40}/);
  assert.doesNotMatch(formatReport(report), /do a|done/);
@@ -229,7 +252,7 @@ test('scheduler: a failed dependency blocks dependents and attempts stop at two'
  assert.equal(tasks.b.state, 'blocked'); assert.match(tasks.b.reason, /dependency a is not verified/);
  assert.equal(tasks.c.state, 'pr-ready');
  assert.equal(pi.starts('a').length, 2); assert.equal(pi.starts('b').length, 0);
- assert.equal(report.spentUsd, 0.75);
+ assert.equal(report.spentUsd, 1, 'two failed attempts of a, plus c and its review');
 });
 
 test('scheduler: the deadline cancels running work and blocks the rest', async () => {
@@ -258,15 +281,18 @@ test('restart: a drained stop resumes from the store without duplicate spawns', 
  });
  const before = byId(first.report);
  assert.equal(first.report.phase, 'running');
- assert.equal(before.a.state, 'verified'); assert.equal(before.b.state, 'pending');
+ // a's attempt finished, but its review waits for the resume.
+ assert.equal(before.a.state, 'pending'); assert.equal(before.b.state, 'pending');
+ assert.equal(pi.reviews('a').length, 0);
  assert.equal(pi.starts('b').length, 0);
  const second = await runBatch(cfg, 'resume');
  const after = byId(second.report);
  assert.deepEqual([after.a.state, after.b.state], ['pr-ready', 'pr-ready']);
- assert.equal(after.b.baseSha, before.a.headSha);
+ assert.equal(after.b.baseSha, first.attempts.find((x) => x.key === 'a#1')!.headSha);
  assert.deepEqual([pi.starts('a').length, pi.starts('b').length], [1, 1]);
+ assert.deepEqual([pi.reviews('a').length, pi.reviews('b').length], [1, 1]);
  // A changed configuration is a different policy and cannot reopen the store.
- await assert.rejects(openBatch({ ...cfg, spend: { ...cfg.spend, allowanceUsd: 11 } }, { agent }), /does not match/);
+ await assert.rejects(openBatch({ ...cfg, spend: { ...cfg.spend, allowanceUsd: 11 } }, agents), /does not match/);
 });
 
 test('offline publication keeps verified work, reports it, and refuses an ambiguous resume', async () => {
@@ -282,7 +308,7 @@ test('offline publication keeps verified work, reports it, and refuses an ambigu
  assert.equal(tasks.b.state, 'verified'); assert.match(tasks.b.reason, /not published yet/);
  assert.deepEqual(effects.map((e) => [e.kind, e.status]), [['push', 'unresolved']]);
  assert.deepEqual(gh.calls(), []);
- const owner = await openBatch(cfg, { agent });
+ const owner = await openBatch(cfg, agents);
  try {
   await owner.attach();
   const refused = await owner.preflight();
@@ -316,9 +342,9 @@ test('IPC client refuses symlinked private directory', async () => {
  await assert.rejects(request(path.join(link, 'owner.sock'), { op: 'stop', cancel: true }), /private directory/);
 });
 
-/** Run the CLI in its own process; resolves once its first worker has started. */
-function owner(file: string) {
- const child = spawn(process.execPath, ['--import', 'tsx', path.join(repoRoot, 'src/durable/cli.ts'), 'run', file], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+/** Run the CLI in its own process. */
+function owner(file: string, mode: 'run' | 'resume' = 'run') {
+ const child = spawn(process.execPath, ['--import', 'tsx', path.join(repoRoot, 'src/durable/cli.ts'), mode, file], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
  let stdout = '', stderr = '';
  child.stdout.on('data', (chunk) => { stdout += chunk; });
  child.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -342,7 +368,7 @@ test('cli: terminal hangup cancels its owned worker', async () => {
  assert.notEqual(await processStartIdentity(pid), identity);
 });
 
-test('cli: status and stop over the owner socket; a killed owner blocks resume', async () => {
+test('cli: status and stop over the owner socket', async () => {
  const w = workspace();
  const pi = fakePi({ a: 'slow', h: 'hang' });
  const gh = fakeGh(w.bare);
@@ -358,28 +384,174 @@ test('cli: status and stop over the owner socket; a killed owner blocks resume',
  assert.equal((fs.statSync(sock).mode & 0o077), 0);
  assert.equal((await request(sock, { op: 'stop', cancel: false }))?.stopping, true);
  assert.equal(await run.exited, 0);
- assert.match(run.output().stdout, /verified +a .*\n.*pending +b/);
+ assert.match(run.output().stdout, /pending +a .*\n.*pending +b/);
  assert.equal(await request(sock, { op: 'status' }), undefined, 'no owner after exit');
+});
 
- // Crash: the owner dies while its worker keeps running; resume must not start anything.
+test('review: validated blocking findings get one fix attempt from the reviewed head', async () => {
+ const w = workspace();
+ const pi = fakePi({ 'a:review': 'block-once' });
+ const gh = fakeGh(w.bare);
+ const { report, attempts } = await runBatch(config(w, [{ id: 'a' }], pi.bin, gh.bin));
+ const a = byId(report).a;
+ assert.equal(a.state, 'pr-ready'); assert.equal(a.attempts, 2);
+ assert.deepEqual(a.review, { status: 'done', blocking: 0, other: 0 });
+ assert.deepEqual([pi.starts('a').length, pi.reviews('a').length], [2, 2]);
+ const [first, fix] = attempts.filter((x) => x.taskKey === 'a');
+ assert.deepEqual([first.review?.blocking, fix.baseSha], [1, first.headSha], 'the fix starts from the reviewed head');
+ assert.equal(a.headSha, fix.headSha); assert.equal(a.baseSha, first.baseSha);
+ assert.match(pi.starts('a')[1].prompt, /starts from your previous verified commit [0-9a-f]{40}[\s\S]*## \[blocker\] Broken a/);
+ assert.equal(report.spentUsd, 1);
+ assert.equal(gh.prs().length, 1);
+});
+
+test('review: findings that survive the fix stay on the verified task and in the PR body', async () => {
+ const w = workspace();
+ const pi = fakePi({ 'a:review': 'block' });
+ const gh = fakeGh(w.bare);
+ const { report } = await runBatch(config(w, [{ id: 'a' }], pi.bin, gh.bin));
+ const a = byId(report).a;
+ assert.equal(a.state, 'verified'); assert.equal(a.pr?.number, 1); assert.match(a.reason, /1 unresolved blocking review finding$/);
+ assert.deepEqual([a.attempts, pi.starts('a').length, pi.reviews('a').length], [2, 2, 2], 'one fix attempt, never a third');
+ const body = gh.calls().find((c) => c[1] === 'create')!;
+ assert.match(body[body.indexOf('--body') + 1], /1 validated blocking, 0 other findings[\s\S]*## \[blocker\] Broken a/);
+ assert.match(formatReport(report), /review 1 blocking, 0 other/);
+ assert.doesNotMatch(formatReport(report), /Broken a/, 'the morning report carries counts, not reviewer text');
+});
+
+test('review: unknown review spend halts publication; a tight budget skips the review', async () => {
+ const w = workspace();
+ const pi = fakePi({ 'a:review': 'unpriced' });
+ const gh = fakeGh(w.bare);
+ const { report } = await runBatch(config(w, [{ id: 'a' }], pi.bin, gh.bin));
+ assert.equal(report.spentUsd, null);
+ assert.match(report.halted.join('\n'), /review of a#1 has unknown spend/);
+ assert.equal(byId(report).a.state, 'verified'); assert.deepEqual(gh.prs(), []);
+
  const w2 = workspace();
- const cfg2 = config(w2, [{ id: 'h' }], pi.bin, gh.bin);
- const file2 = path.join(w2.ws, 'batch.json');
- fs.writeFileSync(file2, JSON.stringify(cfg2));
- const crash = owner(file2);
- await waitFor(() => pi.starts('h').length === 1, 30_000);
- const worker = pi.starts('h')[0].pid as number;
+ const tight = config(w2, [{ id: 'a' }], pi.bin, fakeGh(w2.bare).bin);
+ const { report: skipped } = await runBatch({ ...tight, spend: { allowanceUsd: 1, reservations: { a: 1 } } });
+ assert.deepEqual(byId(skipped).a.review, { status: 'skipped', blocking: 0, other: 0 });
+ assert.equal(byId(skipped).a.state, 'pr-ready');
+});
+
+test('review: a blocker counts only when it cites a changed file', () => {
+ const text = '## [blocker] A\n- File: `src/a.ts:3`\n## [blocker] B\n- File: docs/x.md:1\n## [minor] C\n- File: src/a.ts:9\n';
+ assert.deepEqual(parseReview(text, ['src/a.ts']), { blocking: 1, other: 2, findings: text.trim() });
+ assert.deepEqual(parseReview('No findings.', ['src/a.ts']), { blocking: 0, other: 0, findings: null });
+});
+
+/** Start an owner, wait for the first `kind` spawn of `id`, then SIGKILL the owner. Returns the worker PID. */
+async function crashOwner(file: string, cfg: PilotConfig, pi: ReturnType<typeof fakePi>, id: string, kind = 'work') {
+ const run = owner(file);
+ await waitFor(() => pi.starts(id, kind).length === 1, 30_000);
+ const worker = pi.starts(id, kind)[0].pid as number;
  leftovers.push(worker);
- await waitFor(() => fs.existsSync(socketPath(cfg2.store)));
- crash.child.kill('SIGKILL');
- await crash.exited;
- const resumed = spawn(process.execPath, ['--import', 'tsx', path.join(repoRoot, 'src/durable/cli.ts'), 'resume', file2], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
- let stderr = '';
- resumed.stderr.on('data', (chunk) => { stderr += chunk; });
- const code = await new Promise((resolve) => resumed.on('exit', resolve));
- assert.equal(code, 2);
- assert.match(stderr, /h#1 is blocked: worker identity is alive/);
- assert.equal(pi.starts('h').length, 1);
- process.kill(worker, 'SIGKILL');
- fs.rmSync(socketPath(cfg2.store), { force: true }); // left by the killed owner
+ await waitFor(() => fs.existsSync(socketPath(cfg.store)));
+ run.child.kill('SIGKILL');
+ await run.exited;
+ fs.rmSync(socketPath(cfg.store), { force: true }); // left by the killed owner
+ return worker;
+}
+
+function batchFile(w: ReturnType<typeof workspace>, cfg: PilotConfig) {
+ const file = path.join(w.ws, `batch-${uid()}.json`);
+ fs.writeFileSync(file, JSON.stringify(cfg));
+ return file;
+}
+
+async function exitOf(pid: number, identity: string | null | undefined) {
+ const until = Date.now() + 30_000;
+ while (await processStartIdentity(pid) === identity) {
+  if (Date.now() > until) throw new Error('worker did not exit');
+  await new Promise((r) => setTimeout(r, 50));
+ }
+}
+
+test('recovery: SIGKILL while the worker runs; resume waits for it and publishes once', async () => {
+ const w = workspace();
+ const pi = fakePi({ a: 'gate' });
+ const gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin);
+ const file = batchFile(w, cfg);
+ const worker = await crashOwner(file, cfg, pi, 'a');
+ assert.ok(await processStartIdentity(worker), 'the worker outlives its owner');
+ const resumed = owner(file, 'resume');
+ await waitFor(() => fs.existsSync(socketPath(cfg.store)), 30_000);
+ const live = await request(socketPath(cfg.store), { op: 'status' });
+ assert.equal((live?.report as any).tasks[0].state, 'running');
+ pi.release('a');
+ assert.equal(await resumed.exited, 0, resumed.output().stderr);
+ assert.match(resumed.output().stdout, /pr-ready +a \(1 attempt, \$0\.50\)/);
+ assert.deepEqual([pi.starts('a').length, pi.reviews('a').length, gh.prs().length], [1, 1, 1]);
+});
+
+test('recovery: a worker that finished while its owner was dead is judged from its session files', async () => {
+ const w = workspace();
+ const pi = fakePi({ a: 'gate' });
+ const gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a' }, { id: 'b', dependencies: ['a'] }], pi.bin, gh.bin);
+ const file = batchFile(w, cfg);
+ const worker = await crashOwner(file, cfg, pi, 'a');
+ const identity = await processStartIdentity(worker);
+ pi.release('a');
+ await exitOf(worker, identity);
+ const resumed = owner(file, 'resume');
+ assert.equal(await resumed.exited, 0, resumed.output().stderr);
+ assert.match(resumed.output().stdout, /pr-ready +a [\s\S]*pr-ready +b/);
+ assert.deepEqual([pi.starts('a').length, pi.starts('b').length, gh.prs().length], [1, 1, 2]);
+ assert.match(resumed.output().stdout, /Spend reported by workers: \$1\.00/);
+});
+
+test('recovery: missing or inconsistent session evidence keeps the attempt blocked', async () => {
+ const w = workspace();
+ const pi = fakePi({ a: 'gate' });
+ const gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin);
+ const file = batchFile(w, cfg);
+ const worker = await crashOwner(file, cfg, pi, 'a');
+ const identity = await processStartIdentity(worker);
+ pi.release('a');
+ await exitOf(worker, identity);
+ const dir = path.join(cfg.repo.sessionsRoot, pilotSessionId(cfg.batch.id, 'a#1'));
+ for (const name of fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))) fs.rmSync(path.join(dir, name));
+ const resumed = owner(file, 'resume');
+ assert.equal(await resumed.exited, 0, resumed.output().stderr);
+ assert.match(resumed.output().stdout, /blocked +a .*expected one Pi session file/);
+ assert.match(resumed.output().stdout, /a#1 has unknown spend/);
+ const again = owner(file, 'resume');
+ assert.equal(await again.exited, 2);
+ assert.match(again.output().stderr, /a#1 is blocked/);
+ assert.deepEqual([pi.starts('a').length, pi.reviews('a').length, gh.prs().length], [1, 0, 0]);
+});
+
+test('recovery: an adopted worker is stopped at the deadline with unknown spend', async () => {
+ const w = workspace();
+ const pi = fakePi({ a: 'hang' });
+ const gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin, { deadlineMs: 12_000 });
+ const file = batchFile(w, cfg);
+ const worker = await crashOwner(file, cfg, pi, 'a');
+ const identity = await processStartIdentity(worker);
+ const resumed = owner(file, 'resume');
+ assert.equal(await resumed.exited, 0, resumed.output().stderr);
+ assert.notEqual(await processStartIdentity(worker), identity);
+ assert.match(resumed.output().stdout, /failed +a \(1 attempt, unknown\).*deadline exceeded/);
+ assert.deepEqual([pi.starts('a').length, gh.prs().length], [1, 0]);
+});
+
+test('recovery: a review interrupted by an owner crash is adopted, not repeated', async () => {
+ const w = workspace();
+ const pi = fakePi({ 'a:review': 'gate' });
+ const gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin);
+ const file = batchFile(w, cfg);
+ const reviewer = await crashOwner(file, cfg, pi, 'a', 'review');
+ assert.ok(await processStartIdentity(reviewer), 'the reviewer outlives its owner');
+ const resumed = owner(file, 'resume');
+ await waitFor(() => fs.existsSync(socketPath(cfg.store)), 30_000);
+ pi.release('a', 'review');
+ assert.equal(await resumed.exited, 0, resumed.output().stderr);
+ assert.match(resumed.output().stdout, /pr-ready +a .*review clean/);
+ assert.deepEqual([pi.starts('a').length, pi.reviews('a').length, gh.prs().length], [1, 1, 1]);
 });

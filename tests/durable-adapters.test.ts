@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { putAttempt } from '../src/durable/contracts.ts';
+import { readEvidence } from '../src/durable/evidence.ts';
 import { runEffect } from '../src/durable/reconcile.ts';
 import { openDurableStore, processStartIdentity } from '../src/durable/store.ts';
 import { pilotSessionId, Supervisor, SupervisorBlockedError, type SupervisorOptions } from '../src/durable/supervisor.ts';
@@ -102,7 +103,7 @@ test('pilot child: explicit executable, documented session flags, stripped coord
  }
  assert.equal(noFallback.spawns().length, 0, 'PI_DISPATCH_PI_BIN is never used');
  // A model with fallback routes still gets exactly one spawn.
- const failed = await runPilotProc(agent, 'x', { ...base, model: 'anthropic/claude-opus-5-5', piExecutable: noFallback.bin });
+ const failed = await runPilotProc(agent, 'x', { ...base, sessionDir: path.join(dir, 's0'), model: 'anthropic/claude-opus-5-5', piExecutable: noFallback.bin });
  assert.equal(failed.status, 'error'); assert.equal(noFallback.spawns().length, 1);
  assert.equal(failed.settled, false);
 
@@ -121,9 +122,13 @@ test('pilot child: explicit executable, documented session flags, stripped coord
  assert.deepEqual(args.slice(args.indexOf('--session-id'), args.indexOf('--session-id') + 4), ['--session-id', 'pd-test-1', '--session-dir', base.sessionDir]);
  assert.ok(!args.includes('--no-session'));
  assert.deepEqual(args.slice(-2), ['--', '--looks-like-a-flag']);
+ // stdout is a file in the session directory, so the child survives a dead owner; a second spawn there is refused.
+ assert.match(fs.readFileSync(path.join(base.sessionDir, 'events.log'), 'utf8'), /"type":"agent_settled"/);
+ await assert.rejects(runPilotProc(agent, 'x', { ...base, piExecutable: ok.bin }), /EEXIST/);
+ assert.equal(ok.spawns().length, 1);
 
  const wrongSession = fakePi('finish();', "'other'");
- const mismatch = await runPilotProc(agent, 'x', { ...base, piExecutable: wrongSession.bin });
+ const mismatch = await runPilotProc(agent, 'x', { ...base, sessionDir: path.join(dir, 's2'), piExecutable: wrongSession.bin });
  assert.equal(mismatch.status, 'error'); assert.match(mismatch.error!, /does not match/);
 });
 
@@ -137,6 +142,27 @@ test('pilot child: an unrecorded identity stops the child', async () => {
  assert.equal(result.status, 'error'); assert.match(result.error!, /not recorded: store unavailable/);
  assert.equal(result.launched, true);
  assert.equal(await alive(result.spawned!.pid, result.spawned!.startIdentity), false);
+});
+
+test('evidence: completion needs agent_settled and a session file that agrees with the event log', () => {
+ const dir = fs.mkdtempSync(path.join(W, 'evidence-'));
+ const sid = 'pd-ev';
+ const message = (text: string, u: unknown = usage) => ({ role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop', usage: u });
+ const write = (file: string, lines: object[], torn = '') => fs.writeFileSync(path.join(dir, file), lines.map((l) => JSON.stringify(l)).join('\n') + '\n' + torn);
+ const header = { type: 'session', version: 3, id: sid, timestamp: 't', cwd: dir };
+ assert.match((readEvidence(dir, sid) as any).reason, /event log is missing/);
+ write('events.log', [header, { type: 'message_end', message: message('done') }]);
+ assert.deepEqual(readEvidence(dir, sid), { state: 'unsettled' });
+ write('events.log', [header, { type: 'message_end', message: message('done') }, { type: 'agent_settled' }], '{"type":"tor');
+ assert.match((readEvidence(dir, sid) as any).reason, /found 0/);
+ write(`2026-01-01T00-00-00-000Z_${sid}.jsonl`, [header, { type: 'message', id: 'u', message: { role: 'user', content: 'x' } }]);
+ assert.match((readEvidence(dir, sid) as any).reason, /0 assistant messages, event log 1/);
+ write(`2026-01-01T00-00-00-000Z_${sid}.jsonl`, [header, { type: 'message', id: 'a', message: message('done') }]);
+ assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: 0.25, text: 'done', problem: null });
+ write(`2026-01-01T00-00-00-000Z_${sid}.jsonl`, [header, { type: 'message', id: 'a', message: message('', { ...usage, cost: undefined }) }]);
+ assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: null, text: '', problem: 'blank response from child pi' });
+ write(`2026-01-01T00-00-00-000Z_${sid}.jsonl`, [{ ...header, id: 'other' }]);
+ assert.match((readEvidence(dir, sid) as any).reason, /another header/);
 });
 
 test('supervisor: success records identity and spend, stays in owned paths, retains work without merging', async () => {

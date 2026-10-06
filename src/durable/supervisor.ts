@@ -7,8 +7,11 @@
  *   committed from `onSpawn`. A crash in between leaves `running` with no
  *   worker, which recovery blocks.
  * - The deadline timer belongs to this process, so a lost client cannot keep
- *   a child running. If this process dies, the child can outlive it; recovery
- *   then blocks on the live identity instead of retrying.
+ *   a child running. If this process dies, the child keeps running (its
+ *   stdout is a file). `adopt` waits for it, never respawns it, and judges it
+ *   from its session evidence (evidence.ts).
+ * - `review` runs one read-only reviewer child per succeeded head, recorded on
+ *   the attempt before it spawns, so a review is never repeated for a SHA.
  * - Pushes and pull requests go through `runEffect` (reconcile.ts).
  *   Target branches are never merged or removed.
  */
@@ -21,9 +24,14 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../types.ts";
+import { correctnessSecurityTask } from "../tools/pr-review-prompts.ts";
 import { runPilotProc, type PilotProcResult } from "../worker-proc.ts";
-import { dirtyLines } from "../worktree.ts";
-import { attemptKey, putAttempt, type AttemptState, type WorkerIdentity } from "./contracts.ts";
+import { dirtyLines, gitThrow } from "../worktree.ts";
+import {
+	attemptKey, committedUsd, putAttempt, runningWorkers,
+	type AttemptState, type ReviewState, type WorkerIdentity,
+} from "./contracts.ts";
+import { readEvidence } from "./evidence.ts";
 import {
 	applyPullRequest, applyPush, assertPublishTargets, branchSha, changedFiles, ensureTaskWorktree,
 	isAncestor, observePullRequest, observePush, outsideOwnership, PROTECTED_BRANCHES,
@@ -97,6 +105,17 @@ export interface PublishRequest {
 	readonly body: string;
 }
 
+export interface ReviewRequest {
+	/** Read-only reviewer: no edit, write, or shell tools. */
+	readonly agent: AgentConfig;
+	readonly model: string;
+	readonly thinking: string;
+	/** The task description, given to the reviewer as intent. */
+	readonly intent: string;
+	/** Start of the reviewed diff: the task's verified base. */
+	readonly baseSha: string;
+}
+
 type Outcome = Pick<AttemptState, "status" | "spentUsd" | "reason"> & { headSha?: string | null };
 
 const MAX_TIMER_MS = 2 ** 31 - 1;
@@ -118,16 +137,37 @@ export function planAttempt(snapshot: StoreSnapshot, taskKey: string): { attempt
 	if (halted.length > 0) throw new SupervisorBlockedError(`Batch is halted: ${halted.join("; ")}`);
 	const mine = attempts.filter((a) => a.taskKey === taskKey).sort((a, b) => a.attempt - b.attempt);
 	const last = mine.at(-1);
-	if (last && last.status !== "reserved" && last.status !== "failed") throw new SupervisorBlockedError(`${last.key} is ${last.status}.`);
+	const open = !last || last.status === "reserved" || last.status === "failed" || needsFix(last);
+	if (!open) throw new SupervisorBlockedError(`${last.key} is ${last.status}.`);
 	const attempt = !last ? 1 : last.status === "reserved" ? last.attempt : last.attempt + 1;
 	if (attempt > policy.maxAttemptsPerTask) throw new SupervisorBlockedError(`${taskKey} used all ${policy.maxAttemptsPerTask} attempts.`);
-	if (attempts.filter((a) => a.status === "running").length >= policy.maxWorkers) {
-		throw new SupervisorBlockedError(`All ${policy.maxWorkers} workers are busy.`);
-	}
-	const committed = attempts.reduce((sum, a) => sum + (a.status === "reserved" || a.status === "running" ? a.reservedUsd : a.spentUsd ?? Infinity), 0);
+	if (runningWorkers(attempts) >= policy.maxWorkers) throw new SupervisorBlockedError(`All ${policy.maxWorkers} workers are busy.`);
 	const extra = last?.status === "reserved" ? 0 : task.reserveUsd;
-	if (committed + extra > policy.budgetUsd) throw new SupervisorBlockedError(`Attempt ${attempt} of ${taskKey} would exceed the budget.`);
+	if (committedUsd(attempts) + extra > policy.budgetUsd) throw new SupervisorBlockedError(`Attempt ${attempt} of ${taskKey} would exceed the budget.`);
 	return { attempt, reserveUsd: task.reserveUsd };
+}
+
+/** A succeeded attempt whose finished review of its head found validated blocking findings. */
+export function needsFix(attempt: Readonly<AttemptState>): boolean {
+	const review = attempt.review;
+	return attempt.status === "succeeded" && review?.status === "done" && review.headSha === attempt.headSha && review.blocking > 0;
+}
+
+/**
+ * Reserve for a review of `key`'s head, or the reason it is skipped. Throws
+ * when the batch is halted or every worker is busy.
+ */
+export function planReview(snapshot: StoreSnapshot, key: string, deadlineAt: number): { reserveUsd: number } | { skip: string } {
+	const { policy, attempts } = snapshot;
+	const halted = blockers(snapshot);
+	if (halted.length > 0) throw new SupervisorBlockedError(`Batch is halted: ${halted.join("; ")}`);
+	if (runningWorkers(attempts) >= (policy?.maxWorkers ?? 0)) throw new SupervisorBlockedError("All workers are busy.");
+	const attempt = attempts.find((a) => a.key === key);
+	const reserveUsd = policy?.tasks.find((t) => t.key === attempt?.taskKey)?.reserveUsd;
+	if (attempt?.status !== "succeeded" || reserveUsd === undefined) throw new SupervisorBlockedError(`${key} is not a succeeded attempt.`);
+	if (Date.now() >= deadlineAt) return { skip: "deadline passed before review" };
+	if (committedUsd(attempts) + reserveUsd > policy!.budgetUsd) return { skip: "review would exceed the budget" };
+	return { reserveUsd };
 }
 
 /** True when the process or its process group may still run; unknown counts as running. */
@@ -139,6 +179,96 @@ async function mayStillRun(spawned: NonNullable<PilotProcResult["spawned"]>): Pr
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code !== "ESRCH";
 	}
+}
+
+const POLL_MS = 500;
+const GRACE_MS = 5000;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function signalGroup(pid: number, signal: NodeJS.Signals): void {
+	try { process.kill(-pid, signal); } catch { /* group gone */ }
+	try { process.kill(pid, signal); } catch { /* process gone */ }
+}
+
+function groupAlive(pid: number): boolean {
+	try {
+		process.kill(-pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ESRCH";
+	}
+}
+
+/**
+ * Wait until a previous owner's worker exits. At the deadline or on
+ * cancellation, signal its process group, escalating after a grace period.
+ * Every signal follows a matching identity check, so a reused PID is never hit.
+ */
+export async function awaitExit(worker: WorkerIdentity, limits: RunLimits): Promise<{ stopped: string | null } | { blocked: string }> {
+	let stopped: string | null = null;
+	let signalledAt = 0;
+	for (;;) {
+		const identity = await processStartIdentity(worker.pid);
+		if (identity === undefined) return { blocked: `cannot read the identity of worker ${worker.pid}` };
+		if (identity !== worker.startedAt) break;
+		const why = limits.signal?.aborted ? "cancelled" : Date.now() >= limits.deadlineAt ? "deadline exceeded" : null;
+		if (why && !stopped) {
+			stopped = why;
+			signalledAt = Date.now();
+			signalGroup(worker.pid, "SIGTERM");
+		} else if (stopped && Date.now() - signalledAt > GRACE_MS) {
+			signalGroup(worker.pid, "SIGKILL");
+		}
+		await sleep(POLL_MS);
+	}
+	if (groupAlive(worker.pid)) return { blocked: `worker ${worker.pid}'s process group is still running` };
+	return { stopped };
+}
+
+/** Abort signal for checks: the caller's cancellation or the deadline, whichever comes first. */
+const checkSignal = (limits: RunLimits) => AbortSignal.any([
+	...(limits.signal ? [limits.signal] : []), AbortSignal.timeout(Math.max(0, limits.deadlineAt - Date.now())),
+]);
+
+const REVIEW_RULES = [
+	"",
+	"Before answering, check every finding against the code at this commit and report only findings you confirmed.",
+	"Use [blocker] only for a defect that must be fixed before merge, and cite a file the diff changes.",
+	"If nothing qualifies, answer exactly: No findings.",
+];
+
+/** Count findings in the shared pr_review format. A blocker counts only when it cites a changed file. */
+export function parseReview(text: string, changed: readonly string[]): Pick<ReviewState, "blocking" | "other" | "findings"> {
+	const sections = text.split(/^(?=## \[(?:blocker|major|minor)\])/m).filter((s) => /^## \[/.test(s));
+	const cited = (section: string) => /^- File:\s*`?([^\s`:]+)/m.exec(section)?.[1];
+	const blocking = sections.filter((s) => s.startsWith("## [blocker]") && changed.includes(cited(s) ?? "")).length;
+	return { blocking, other: sections.length - blocking, findings: sections.length > 0 ? Array.from(text.trim()).slice(0, 6000).join("") : null };
+}
+
+/** A finished child: settled with its answer, or a terminal outcome. */
+type Ran =
+	| { status: "settled"; spentUsd: number | null; text: string }
+	| { status: "blocked" | "failed"; spentUsd: number | null; reason: string };
+
+async function judgeRun(result: PilotProcResult, stopped?: string): Promise<Ran> {
+	const spentUsd = spendOf(result);
+	if (result.spawned && await mayStillRun(result.spawned)) {
+		return { status: "blocked", spentUsd: null, reason: `worker ${result.spawned.pid} or its process group is still running` };
+	}
+	if (result.launched && !result.spawned) return { status: "blocked", spentUsd: null, reason: result.error ?? "worker identity was never recorded" };
+	if (result.status !== "ok") return { status: "failed", spentUsd, reason: stopped ?? result.error ?? result.status };
+	return { status: "settled", spentUsd, text: result.text };
+}
+
+/** Judge a previous owner's child once it exits, from its session evidence only. */
+async function judgeOrphan(worker: WorkerIdentity, dir: string, sessionId: string, limits: RunLimits): Promise<Ran> {
+	const exit = await awaitExit(worker, limits);
+	if ("blocked" in exit) return { status: "blocked", spentUsd: null, reason: exit.blocked };
+	const evidence = readEvidence(dir, sessionId);
+	if (evidence.state === "ambiguous") return { status: "blocked", spentUsd: null, reason: evidence.reason };
+	if (evidence.state === "unsettled") return { status: "failed", spentUsd: null, reason: exit.stopped ?? "worker exited before it settled" };
+	if (evidence.problem) return { status: "failed", spentUsd: evidence.spentUsd, reason: evidence.problem };
+	return { status: "settled", spentUsd: evidence.spentUsd, text: evidence.text };
 }
 
 /** Spend is known only when the child never spawned or reported `agent_settled`. */
@@ -203,7 +333,8 @@ export class Supervisor {
 		return attempt;
 	}
 
-	async #execute(task: PilotTask, attempt: AttemptState, limits: RunLimits, markSpawned: () => void): Promise<AttemptState> {
+	/** Run `fn` with a signal that aborts at the deadline or on cancellation; `stopped` names which. */
+	async #bounded<T>(limits: RunLimits, fn: (signal: AbortSignal, stopped: () => string | undefined) => Promise<T>): Promise<T> {
 		const controller = new AbortController();
 		let stopped: string | undefined;
 		const stop = (why: string) => { stopped ??= why; controller.abort(); };
@@ -211,25 +342,43 @@ export class Supervisor {
 		const cancel = () => stop("cancelled");
 		limits.signal?.addEventListener("abort", cancel, { once: true });
 		try {
-			await ensureTaskWorktree(this.options.featureRoot, attempt.worktree!, attempt.branch!, attempt.baseSha!);
-			const sessionId = pilotSessionId(this.options.store.identity.batchId, attempt.key);
-			const sessionDir = this.#claimSessionDir(sessionId);
-			const result = await runPilotProc(task.agent, task.prompt, {
-				cwd: attempt.worktree!, piExecutable: this.options.piExecutable, piPrefixArgs: this.options.piPrefixArgs,
-				model: task.model, thinking: task.thinking, sessionId, sessionDir, signal: controller.signal,
-				requireCleanWorktree: true, registry: this.options.registry, onWarning: this.options.onWarning,
-				onSpawn: async (pid, startedAt) => {
-					markSpawned();
-					await this.#recordWorker(attempt, { pid, startedAt, host: os.hostname() });
-				},
-			});
-			if (result.launched) markSpawned();
-			const outcome = await this.#judge(task, attempt, result, controller.signal, stopped);
-			return await this.#finish(attempt, outcome);
+			return await fn(controller.signal, () => stopped);
 		} finally {
 			clearTimeout(timer);
 			limits.signal?.removeEventListener("abort", cancel);
 		}
+	}
+
+	/** Session ID and directory of one run: an attempt key, or `<attempt key>/review`. */
+	#session(run: string): { sessionId: string; dir: string } {
+		const sessionId = pilotSessionId(this.options.store.identity.batchId, run);
+		return { sessionId, dir: path.join(this.options.sessionsRoot, sessionId) };
+	}
+
+	/** Spawn options shared by workers and reviewers; `onSpawn` records the identity first. */
+	#spawn(run: string, cwd: string, signal: AbortSignal, onSpawn: (worker: WorkerIdentity) => Promise<void>) {
+		const { sessionId } = this.#session(run);
+		return {
+			cwd, piExecutable: this.options.piExecutable, piPrefixArgs: this.options.piPrefixArgs, sessionId,
+			sessionDir: this.#claimSessionDir(sessionId), signal, registry: this.options.registry, onWarning: this.options.onWarning,
+			onSpawn: (pid: number, startedAt: string) => onSpawn({ pid, startedAt, host: os.hostname() }),
+		};
+	}
+
+	async #execute(task: PilotTask, attempt: AttemptState, limits: RunLimits, markSpawned: () => void): Promise<AttemptState> {
+		return this.#bounded(limits, async (signal, stopped) => {
+			await ensureTaskWorktree(this.options.featureRoot, attempt.worktree!, attempt.branch!, attempt.baseSha!);
+			const result = await runPilotProc(task.agent, task.prompt, {
+				...this.#spawn(attempt.key, attempt.worktree!, signal, async (worker) => {
+					markSpawned();
+					await this.#recordWorker(attempt, worker);
+				}),
+				model: task.model, thinking: task.thinking, requireCleanWorktree: true,
+			});
+			if (result.launched) markSpawned();
+			const outcome = await this.#judge(task, attempt, result, signal, stopped());
+			return await this.#finish(attempt, outcome);
+		});
 	}
 
 	/** An existing session directory proves an earlier spawn of this attempt. */
@@ -255,14 +404,12 @@ export class Supervisor {
 	}
 
 	async #judge(task: PilotTask, attempt: AttemptState, result: PilotProcResult, signal: AbortSignal, stopped?: string): Promise<Outcome> {
-		const spentUsd = spendOf(result);
-		if (result.spawned && await mayStillRun(result.spawned)) {
-			return { status: "blocked", spentUsd: null, reason: `worker ${result.spawned.pid} or its process group is still running` };
-		}
-		if (result.launched && !result.spawned) {
-			return { status: "blocked", spentUsd: null, reason: result.error ?? "worker identity was never recorded" };
-		}
-		if (result.status !== "ok") return { status: "failed", spentUsd, reason: stopped ?? result.error ?? result.status };
+		const ran = await judgeRun(result, stopped);
+		if (ran.status !== "settled") return ran;
+		return this.#verified(task, attempt, ran.spentUsd, signal);
+	}
+
+	async #verified(task: PilotTask, attempt: AttemptState, spentUsd: number | null, signal: AbortSignal): Promise<Outcome> {
 		const problem = await this.#verifyBranch(task, attempt, signal).catch(message);
 		if (typeof problem === "string") return { status: "failed", spentUsd, reason: problem };
 		return { status: "succeeded", spentUsd, reason: null, headSha: problem.head };
@@ -294,9 +441,113 @@ export class Supervisor {
 		await store.harness.commit(async (tx) => {
 			Object.assign(await tx.doc(store.contracts.AttemptDoc, attempt.key, attempt), outcome);
 		}, store.context);
-		const stored = await store.harness.snapshot(store.contracts.AttemptDoc, attempt.key, store.context);
-		if (!stored) throw new Error(`${attempt.key} disappeared from the store.`);
+		return this.#stored(attempt.key);
+	}
+
+	async #stored(key: string): Promise<AttemptState> {
+		const { store } = this.options;
+		const stored = await store.harness.snapshot(store.contracts.AttemptDoc, key, store.context);
+		if (!stored) throw new Error(`${key} disappeared from the store.`);
 		return structuredClone(stored) as AttemptState;
+	}
+
+	/** Finish a running attempt a previous owner started: wait for its worker, then judge it. Never spawns. */
+	async adopt(task: PilotTask, key: string, limits: RunLimits): Promise<AttemptState> {
+		const attempt = await this.#stored(key);
+		if (attempt.status !== "running" || !attempt.worker) throw new SupervisorBlockedError(`${key} has no recorded worker to adopt.`);
+		const outcome = await this.#judgeAdopted(task, attempt, limits).catch((error): Outcome => ({ status: "blocked", spentUsd: null, reason: message(error) }));
+		return this.#finish(attempt, outcome);
+	}
+
+	async #judgeAdopted(task: PilotTask, attempt: AttemptState, limits: RunLimits): Promise<Outcome> {
+		const { sessionId, dir } = this.#session(attempt.key);
+		const ran = await judgeOrphan(attempt.worker!, dir, sessionId, limits);
+		if (ran.status !== "settled") return ran;
+		if ((await dirtyLines(attempt.worktree!, false)).length > 0) {
+			return { status: "failed", spentUsd: ran.spentUsd, reason: `Worker left uncommitted edits; worktree retained at ${attempt.worktree}` };
+		}
+		return this.#verified(task, attempt, ran.spentUsd, checkSignal(limits));
+	}
+
+	/**
+	 * Review the head of succeeded attempt `key` once: return a recorded review,
+	 * adopt a running one, or record intent and run a read-only reviewer on the
+	 * diff from `request.baseSha` to the head.
+	 */
+	async review(key: string, request: ReviewRequest, limits: RunLimits): Promise<ReviewState> {
+		const attempt = await this.#stored(key);
+		if (attempt.status !== "succeeded" || !attempt.headSha) throw new SupervisorBlockedError(`${key} is not a succeeded attempt.`);
+		const recorded = attempt.review;
+		if (recorded && recorded.headSha !== attempt.headSha) throw new SupervisorBlockedError(`${key} has a review of another head.`);
+		if (recorded?.status === "running") return this.#adoptReview(attempt, recorded, request, limits);
+		if (recorded) return recorded;
+		const review = await this.#queue(() => this.#claimReview(attempt, limits));
+		if (review.status !== "running") return review;
+		let spawned = false;
+		const ran = await this.#bounded(limits, async (signal, stopped) => {
+			const options = this.#spawn(`${attempt.key}/review`, attempt.worktree!, signal, async (worker) => {
+				spawned = true;
+				await this.#recordReviewWorker(attempt, worker);
+			});
+			const diffFile = path.join(options.sessionDir, "task.diff");
+			fs.writeFileSync(diffFile, await gitThrow(attempt.worktree!, ["diff", "--no-ext-diff", "--no-textconv", request.baseSha, attempt.headSha!, "--"]));
+			const prompt = [correctnessSecurityTask({ cwd: attempt.worktree!, diffFile, intent: request.intent }), ...REVIEW_RULES].join("\n");
+			const result = await runPilotProc(request.agent, prompt, { ...options, model: request.model, thinking: request.thinking });
+			spawned ||= result.launched;
+			return judgeRun(result, stopped());
+		}).catch((error): Ran => ({ status: "blocked", spentUsd: spawned ? null : 0, reason: message(error) }));
+		return this.#settleReview(attempt, request, ran);
+	}
+
+	async #claimReview(attempt: AttemptState, limits: RunLimits): Promise<ReviewState> {
+		const { store } = this.options;
+		const plan = planReview(await store.read(), attempt.key, limits.deadlineAt);
+		const skip = "skip" in plan ? plan.skip : null;
+		const review: ReviewState = {
+			headSha: attempt.headSha!, status: skip ? "skipped" : "running", reservedUsd: "reserveUsd" in plan ? plan.reserveUsd : 0,
+			spentUsd: 0, worker: null, blocking: 0, other: 0, findings: null, reason: skip,
+		};
+		await store.harness.commit(async (tx) => {
+			if (!skip && (limits.signal?.aborted || limits.canStart?.() === false)) throw new AttemptNotStartedError("Stopped before review.");
+			const draft = await tx.doc(store.contracts.AttemptDoc, attempt.key, attempt);
+			if (draft.review) throw new SupervisorBlockedError(`${attempt.key} already has a review.`);
+			draft.review = review;
+		}, store.context);
+		return review;
+	}
+
+	async #recordReviewWorker(attempt: AttemptState, worker: WorkerIdentity): Promise<void> {
+		const { store } = this.options;
+		await store.harness.commit(async (tx) => {
+			const review = (await tx.doc(store.contracts.AttemptDoc, attempt.key, attempt)).review;
+			if (review?.status !== "running" || review.worker) throw new Error(`Review of ${attempt.key} cannot take a second worker.`);
+			review.worker = worker;
+		}, store.context);
+	}
+
+	async #adoptReview(attempt: AttemptState, review: ReviewState, request: ReviewRequest, limits: RunLimits): Promise<ReviewState> {
+		if (!review.worker) throw new SupervisorBlockedError(`Review of ${attempt.key} has no recorded worker to adopt.`);
+		const { sessionId, dir } = this.#session(`${attempt.key}/review`);
+		const ran = await judgeOrphan(review.worker, dir, sessionId, limits)
+			.catch((error): Ran => ({ status: "blocked", spentUsd: null, reason: message(error) }));
+		return this.#settleReview(attempt, request, ran);
+	}
+
+	async #settleReview(attempt: AttemptState, request: ReviewRequest, ran: Ran): Promise<ReviewState> {
+		const patch = ran.status === "settled" ? await this.#reviewResult(attempt, request, ran) : { status: ran.status, spentUsd: ran.spentUsd, reason: ran.reason };
+		const { store } = this.options;
+		await store.harness.commit(async (tx) => {
+			const review = (await tx.doc(store.contracts.AttemptDoc, attempt.key, attempt)).review;
+			if (review?.status !== "running") throw new Error(`Review of ${attempt.key} is not running.`);
+			Object.assign(review, patch);
+		}, store.context);
+		return (await this.#stored(attempt.key)).review!;
+	}
+
+	async #reviewResult(attempt: AttemptState, request: ReviewRequest, ran: Extract<Ran, { status: "settled" }>): Promise<Partial<ReviewState>> {
+		const changed = await changedFiles(attempt.worktree!, request.baseSha, attempt.headSha!).catch(() => null);
+		if (!changed) return { status: "failed", spentUsd: ran.spentUsd, reason: "cannot list the reviewed files" };
+		return { status: "done", spentUsd: ran.spentUsd, reason: null, ...parseReview(ran.text, changed) };
 	}
 
 	/** Push the feature tip to an allowlisted remote, then open one draft pull request for it. */

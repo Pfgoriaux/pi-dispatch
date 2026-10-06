@@ -420,8 +420,12 @@ cli.ts run
       │         ├─ a parent not verified, its branch moved, or heads diverge → blocked
       │         └─ several parents: one head must contain the others (nothing is merged)
       ├─ each task: Supervisor attempt from ref <branchPrefix>/base/<task> at that base
-      │    ├─ at most maxWorkers attempts at once; a failed attempt retries until the cap
-      │    └─ succeeded attempt → verified: head SHA, base SHA, and checks passed at that head
+      │    ├─ at most maxWorkers workers at once (attempts, reviews, adopted workers);
+      │    │  a failed attempt retries until the cap
+      │    ├─ running attempt left by a killed owner → adopt it (see Recovery)
+      │    └─ succeeded attempt → review its head once (read-only, one slot, budgeted)
+      │         ├─ validated blocker and attempts left → one fix attempt from that head → review again
+      │         └─ otherwise → verified: head SHA, base SHA, checks passed, review recorded
       └─ after all tasks settle: publish in dependency order
            ├─ root task → draft PR against baseBranch
            ├─ dependent → draft PR stacked on the parent's branch, only if the parent is PR-ready
@@ -432,15 +436,32 @@ The report gives each task a state:
 
 | State | Meaning |
 |---|---|
-| `pr-ready` | Verified, pushed, and an open draft PR has the verified head |
-| `verified` | Checks passed at the recorded head; not published (reason shown) |
+| `pr-ready` | Verified, pushed, an open draft PR has the verified head, and its review has no validated blocking findings |
+| `verified` | Checks passed at the recorded head; not published, or published with unresolved blocking findings (reason shown) |
 | `failed` | Attempts ran and none succeeded |
 | `blocked` | Not attempted or stopped by a dependency, the deadline, the budget, or a halted batch |
 | `running` / `pending` | Not settled yet |
 
-It also shows reported spend, halt reasons, and short reasons. It never shows
-prompts or worker output. Reasons are cut to one line of 240 characters.
-No automated review runs; the PR body says so.
+It also shows reported spend (attempts and reviews), halt reasons, review
+counts, and short reasons. It never shows prompts, worker output, or reviewer
+text. Reasons are cut to one line of 240 characters.
+
+Review:
+
+- After an attempt succeeds, one reviewer child runs with the bundled
+  `reviewer` agent, restricted to `read`, `grep`, `find`, and `ls`, on the
+  configured worker model. It gets the `pr_review` correctness-and-security
+  prompt and the saved diff from the task base to the head.
+- The review is recorded on the attempt before it spawns, bound to the head
+  SHA, and never repeated for that SHA. It takes a worker slot. It needs the
+  task's reservation of headroom in the allowance; without it, or after the
+  deadline, it is skipped. Unknown review spend halts the batch.
+- A `[blocker]` finding counts as validated only when it cites a file the
+  diff changes. A validated blocker starts one fix attempt from the reviewed
+  head, inside `maxAttemptsPerTask`. A blocker that survives, or a failed fix,
+  leaves the task verified at the reviewed head.
+- The draft PR body gives the review counts and the reviewer's findings
+  (up to 6000 characters).
 
 Ownership and stopping:
 
@@ -454,12 +475,31 @@ Ownership and stopping:
   cancels. SIGHUP cancels running workers.
 - `status` without a live owner opens the store, which runs recovery, and
   prints the report without scheduling anything.
-- `resume` refuses while any attempt is blocked or interrupted, any spend is
+- `resume` refuses while any attempt or review is blocked, any spend is
   unknown, or an effect cannot be observed. A failed publication pauses at that
   step. Proven-absent pushes can retry on resume. Unconfirmed PR creation never
   retries automatically; closed, merged, retargeted or non-draft PRs block
-  publication. A killed owner can leave its worker running; recovery records
-  it as blocked and nothing restarts it.
+  publication.
+
+Recovery after a killed owner:
+
+- Worker stdout goes to `events.log` in the run's session directory under
+  `sessionsRoot`, not to a pipe, so a worker keeps running when its owner
+  dies. Pi writes its own session file there through `--session-id` and
+  `--session-dir`.
+- On `resume`, an attempt or review still marked running is adopted in a
+  worker slot; it is never respawned. A worker with the recorded PID and start
+  time is awaited. At the deadline or on `stop --cancel`, its process group
+  gets SIGTERM, then SIGKILL after five seconds.
+- Once it has exited, it is judged from its files. Completion needs
+  `agent_settled` in `events.log`. Spend and the final answer come from the
+  Pi session file, whose assistant messages must match the event log. A
+  settled attempt then goes through the normal branch, ownership, and check
+  verification.
+- A worker that exited without settling fails with unknown spend. Missing or
+  inconsistent files, a surviving process group, an unreadable identity, a
+  worker recorded on another host, or no recorded worker leave the attempt
+  blocked with unknown spend.
 
 Limits:
 
@@ -468,6 +508,8 @@ Limits:
   unknown spend, which halts the batch.
 - Workers and checks run as the user. Worktrees separate changes but do not
   contain processes; a worker's descendants can outlive cancellation.
+- The review is one model's read-only pass, not the multi-model `pr_review`
+  workflow. Validation checks only that a blocker cites a changed file.
 
 ## Agents
 

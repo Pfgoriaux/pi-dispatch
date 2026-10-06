@@ -16,6 +16,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { resolveChildModel } from "./child-model.ts";
@@ -221,7 +222,7 @@ export interface PilotProcOptions {
 	thinking: string;
 	/** Passed as `--session-id`; the child's `session` header must echo it. */
 	sessionId: string;
-	/** Passed as `--session-dir`. */
+	/** Passed as `--session-dir`. The child's JSON event stream goes to `PILOT_EVENTS_FILE` inside it. */
 	sessionDir: string;
 	/** Called once with the spawned PID and its `ps` start identity. A rejection stops the child. */
 	onSpawn: (pid: number, startIdentity: string) => Promise<void> | void;
@@ -255,6 +256,13 @@ export function pilotEnv(depth: number, source: NodeJS.ProcessEnv = process.env)
 
 const SESSION_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
+/**
+ * The pilot child's stdout is this file, not a pipe: Pi exits on its next
+ * stdout write once a pipe reader is gone, so a pipe would end the worker
+ * with its owner. The file also survives as completion evidence.
+ */
+export const PILOT_EVENTS_FILE = "events.log";
+
 function pilotPreflight(options: PilotProcOptions): string | undefined {
 	if (!path.isAbsolute(options.piExecutable) || !fs.statSync(options.piExecutable, { throwIfNoEntry: false })?.isFile()) {
 		return `Pilot requires an absolute Pi executable; got ${JSON.stringify(options.piExecutable)}`;
@@ -278,6 +286,7 @@ export async function runPilotProc(agent: AgentConfig, task: string, options: Pi
 	if (options.signal?.aborted) return { ...refused("Aborted before start"), status: "aborted" };
 	const seen: PilotSeen = { launched: false, settled: false, completions: 0, spendKnown: true };
 	let spawned: PilotProcResult["spawned"] = null;
+	fs.mkdirSync(options.sessionDir, { recursive: true });
 	const result = await runOneProc(agent, task, {
 		cwd: options.cwd, signal: options.signal, requireCleanWorktree: options.requireCleanWorktree,
 		modelOverride: options.model, thinking: options.thinking, onStream: options.onStream, onWarning: options.onWarning,
@@ -285,6 +294,7 @@ export async function runPilotProc(agent: AgentConfig, task: string, options: Pi
 		command: options.piExecutable,
 		prefixArgs: options.piPrefixArgs ?? [],
 		sessionArgs: ["--session-id", options.sessionId, "--session-dir", options.sessionDir],
+		eventsFile: path.join(options.sessionDir, PILOT_EVENTS_FILE),
 		seen,
 		onSpawn: async (pid) => {
 			const { processStartIdentity } = await import("./durable/store.ts");
@@ -312,7 +322,7 @@ export async function runPilotProc(agent: AgentConfig, task: string, options: Pi
 	};
 }
 
-function pricedUsage(usage: Usage | undefined): boolean {
+export function pricedUsage(usage: Usage | undefined): boolean {
 	if (!usage) return false;
 	if (!Number.isFinite(usage.totalTokens) || usage.totalTokens < 0) return false;
 	const cost = usage.cost?.total;
@@ -325,6 +335,8 @@ interface PilotSpawn {
 	command: string;
 	prefixArgs: readonly string[];
 	sessionArgs: readonly string[];
+	/** Created exclusively; the child's stdout. */
+	eventsFile: string;
 	seen: PilotSeen;
 	/** Resolves to an error message when the child must be stopped. */
 	onSpawn: (pid: number) => Promise<string | undefined>;
@@ -505,13 +517,16 @@ async function runOneProc(
 	const invocation = pilot
 		? { command: pilot.command, args: [...pilot.prefixArgs, ...args] }
 		: getPiInvocation(args);
+	// Pilot children write events to a file and stderr nowhere, so they outlive their owner.
+	const eventsFd = pilot ? fs.openSync(pilot.eventsFile, "wx", 0o600) : undefined;
 	const proc = spawn(invocation.command, invocation.args, {
 		cwd: options.cwd,
 		shell: false,
-		stdio: ["ignore", "pipe", "pipe"],
+		stdio: eventsFd === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", eventsFd, "ignore"],
 		detached: process.platform !== "win32",
 		env: pilot ? pilotEnv(childDepth) : { ...process.env, PI_DISPATCH_DEPTH: String(childDepth) },
 	});
+	if (eventsFd !== undefined) fs.closeSync(eventsFd);
 	let termination: Promise<void> | undefined;
 	let gateError: string | undefined;
 	if (pilot && proc.pid) pilot.seen.launched = true;
@@ -522,15 +537,17 @@ async function runOneProc(
 		gateError = error;
 		termination ??= stopWorker(proc, options.onWarning);
 	});
-	proc.stdout.setEncoding("utf8");
-	proc.stdout.on("data", (data: string) => {
+	const feed = (data: string) => {
 		buffer += data;
 		const lines = buffer.split("\n");
 		buffer = lines.pop() ?? "";
 		for (const line of lines) processLine(line);
-	});
+	};
+	const tail = pilot ? tailFile(pilot.eventsFile, feed) : undefined;
+	proc.stdout?.setEncoding("utf8");
+	proc.stdout?.on("data", feed);
 	// stderr is diagnostic only — it must never become model-visible text.
-	proc.stderr.resume();
+	proc.stderr?.resume();
 
 	let exitCode: number | null = null;
 	let exitSignal: NodeJS.Signals | null = null;
@@ -538,10 +555,12 @@ async function runOneProc(
 		proc.on("close", (code, signal) => {
 			exitCode = code;
 			exitSignal = signal;
+			tail?.drain();
 			if (buffer.trim()) processLine(buffer);
 			resolve();
 		});
 		proc.on("error", () => {
+			tail?.drain();
 			exitCode = 1;
 			resolve();
 		});
@@ -618,5 +637,25 @@ async function runOneProc(
 		thinking,
 		usage: endedMessages.length ? sumUsage(endedMessages) : finalUsage,
 		ms: Date.now() - started,
+	};
+}
+
+/** Poll a growing file and pass new UTF-8 text on. `drain` reads the rest and stops; it is idempotent. */
+function tailFile(file: string, onData: (text: string) => void): { drain: () => void } {
+	const fd = fs.openSync(file, "r");
+	const decoder = new StringDecoder("utf8");
+	const chunk = Buffer.alloc(64 * 1024);
+	const read = () => {
+		for (let n = fs.readSync(fd, chunk); n > 0; n = fs.readSync(fd, chunk)) onData(decoder.write(chunk.subarray(0, n)));
+	};
+	const timer = setInterval(read, 100);
+	let open = true;
+	return {
+		drain: () => {
+			if (!open) return;
+			open = false;
+			clearInterval(timer);
+			try { read(); onData(decoder.end()); } finally { fs.closeSync(fd); }
+		},
 	};
 }

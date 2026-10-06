@@ -29,6 +29,28 @@ export type PolicyState = {
 };
 
 export type AttemptStatus = "reserved" | "running" | "succeeded" | "failed" | "interrupted" | "blocked";
+
+/**
+ * `done`: the reviewer answered. `failed`: it ran without a usable answer.
+ * `skipped`: it never spawned. `blocked`: its outcome is unknown, which halts the batch.
+ */
+export type ReviewStatus = "running" | "done" | "failed" | "skipped" | "blocked";
+/** Read-only review of one succeeded attempt, bound to its head SHA. */
+export type ReviewState = {
+	headSha: string;
+	status: ReviewStatus;
+	reservedUsd: number;
+	/** `null` means unknown spend; recovery treats it as a halt. */
+	spentUsd: number | null;
+	worker: WorkerIdentity | null;
+	/** Validated `[blocker]` findings. */
+	blocking: number;
+	/** Other reported findings. */
+	other: number;
+	/** Bounded reviewer report for the pull-request body and a fix attempt. */
+	findings: string | null;
+	reason: string | null;
+};
 export type AttemptState = {
 	key: string;
 	taskKey: string;
@@ -44,6 +66,8 @@ export type AttemptState = {
 	headSha: string | null;
 	pr: PullRequestIdentity | null;
 	reason: string | null;
+	/** Absent in stores written before reviews existed. */
+	review?: ReviewState | null;
 };
 
 export type EffectKind = "commit" | "push" | "pull-request";
@@ -150,4 +174,24 @@ async function putIndexed<T extends AttemptState | EffectState>(
 	const draft = await tx.doc(token, value.key, value) as Record<string, unknown>;
 	Object.assign(draft, structuredClone(value));
 	if (!policy[index].includes(value.key)) policy[index].push(value.key);
+}
+
+/** Worker processes the store shows running: attempts and reviews. */
+export function runningWorkers(attempts: readonly Readonly<AttemptState>[]): number {
+	return attempts.filter((a) => a.status === "running").length + attempts.filter((a) => a.review?.status === "running").length;
+}
+
+/** Spend held against the budget: reservations while pending or running, then reported spend. Unknown spend counts as infinite. */
+export function committedUsd(attempts: readonly Readonly<AttemptState>[]): number {
+	const held = (status: string, reserved: number, spent: number | null) =>
+		status === "reserved" || status === "running" ? reserved : spent ?? Infinity;
+	return attempts.reduce((sum, a) => sum + held(a.status, a.reservedUsd, a.spentUsd)
+		+ (a.review ? held(a.review.status, a.review.reservedUsd, a.review.spentUsd) : 0), 0);
+}
+
+/** Reported spend of started attempts and their reviews; `null` when any is unknown. */
+export function reportedUsd(attempts: readonly Readonly<AttemptState>[]): number | null {
+	const amounts = attempts.filter((a) => a.status !== "reserved")
+		.flatMap((a) => [a.spentUsd, ...(a.review ? [a.review.spentUsd] : [])]);
+	return amounts.some((usd) => usd === null) ? null : (amounts as number[]).reduce((sum, usd) => sum + usd, 0);
 }

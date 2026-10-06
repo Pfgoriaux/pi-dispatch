@@ -141,7 +141,7 @@ async function startAttempt(storeFile: string, worker: AttemptState['worker'], k
  } finally { await store.close(); }
 }
 
-test('SIGKILLed owner: lock is released and recovery fails closed', async () => {
+test('SIGKILLed owner: lock is released; checkable workers stay for adoption, the rest fail closed', async () => {
  const file = storePath();
  const script = path.join(root, `owner-${counter}.mts`);
  const storeUrl = pathToFileURL(path.join(repoRoot, 'src/durable/store.ts')).href;
@@ -172,24 +172,27 @@ setInterval(() => {}, 1000);
  await exited;
  const store = await openDurableStore({ path: file, ...identity });
  try {
-  assert.deepEqual(store.recovery, { interrupted: ['t1#1'], blocked: [], unresolvedEffects: ['t1#1:push'], unknownSpend: ['t1#1'], halted: true });
+  // The dead worker stays running for the scheduler to judge from its evidence; the intended effect halts.
+  assert.deepEqual(store.recovery, { orphaned: ['t1#1'], interrupted: [], blocked: [], unresolvedEffects: ['t1#1:push'], unknownSpend: [], halted: true });
   const { attempts, effects } = await store.read();
   const attempt = attempts.find((a) => a.key === 't1#1')!;
+  assert.equal(attempt.status, 'running');
   assert.equal(attempt.worker?.pid, child.pid);
   assert.equal(attempt.worktree, '/tmp/wt-t1');
   assert.equal(effects[0].status, 'unresolved');
   assert.equal(effects[0].sha, 'b'.repeat(40));
   assert.equal((await store.recover()).halted, true);
  } finally { await store.close(); }
- // A live worker, a missing identity, and a foreign host all block instead of retrying.
+ // A live worker stays for adoption; a missing identity and a foreign host block instead of retrying.
  const self = await workerIdentity(process.pid);
  await startAttempt(file, self, 't2#2');
  await startAttempt(file, null, 't3#2');
  await startAttempt(file, { ...self, host: `${self.host}.elsewhere` }, 't4#2');
  const again = await openDurableStore({ path: file, ...identity });
  try {
-  assert.deepEqual(again.recovery.blocked, ['t2#2', 't3#2', 't4#2']);
-  assert.deepEqual(again.recovery.unknownSpend, ['t1#1', 't2#2', 't3#2', 't4#2']);
+  assert.deepEqual(again.recovery.orphaned, ['t1#1', 't2#2']);
+  assert.deepEqual(again.recovery.blocked, ['t3#2', 't4#2']);
+  assert.deepEqual(again.recovery.unknownSpend, ['t3#2', 't4#2']);
   const generation = again.runtime.durable.GenerationTask.definition.name;
   assert.equal(await countTasks(again, generation), 0);
  } finally { await again.close(); }

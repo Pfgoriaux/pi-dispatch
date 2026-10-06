@@ -35,6 +35,11 @@ processes in Git worktrees. Usage and current behavior: [README.md](README.md).
   data. Age alone is not permission to remove a worktree. Write workers must pass
   the clean-worktree check before merge-back; merge agents intentionally do not.
 - PR fixes must match the reviewed head.
+- Durable pilot children (`src/durable/`) write stdout to `events.log` in their
+  session directory, never a pipe: Pi exits on a write to a pipe whose reader
+  died, which would end workers with their owner. Recovery judges an orphaned
+  worker only from that file and Pi's session file; never respawn an attempt
+  or review whose outcome is unknown, and record each spend once.
 - In-process failed-tool cutoffs are model-attempt failures, not user aborts;
   keep failover, usage accounting, and parent-cancellation precedence intact.
   Viewer logs must not echo unregistered tool names: malformed names may contain
