@@ -1,0 +1,153 @@
+import type * as DurableModule from "@earendil-works/pi-durable";
+import type { DurableRuntime } from "./compat.ts";
+
+/** Persisted shape version of the documents below. Stores with another value are rejected. */
+export const DURABLE_SCHEMA_VERSION = 1;
+
+/** A process as `ps` saw it: PID plus start time, so a reused PID never matches. */
+export type WorkerIdentity = { pid: number; startedAt: string; host: string };
+export type PullRequestIdentity = { repo: string; number: number; headSha: string };
+export type TaskReservation = { key: string; reserveUsd: number };
+
+export type PolicyState = {
+	/** False only inside the admission commit that creates the document. */
+	admitted: boolean;
+	schema: number;
+	durableVersion: string;
+	batchId: string;
+	policyHash: string;
+	maxWorkers: number;
+	maxAttemptsPerTask: number;
+	budgetUsd: number;
+	reservedUsd: number;
+	tasks: TaskReservation[];
+	/** Durable ID of the admission receipt task. */
+	admissionTaskId: number;
+	/** Keys of every attempt and effect document, in creation order. */
+	attempts: string[];
+	effects: string[];
+};
+
+export type AttemptStatus = "reserved" | "running" | "succeeded" | "failed" | "interrupted" | "blocked";
+export type AttemptState = {
+	key: string;
+	taskKey: string;
+	attempt: number;
+	status: AttemptStatus;
+	reservedUsd: number;
+	/** `null` means unknown spend; recovery treats it as a halt. */
+	spentUsd: number | null;
+	worker: WorkerIdentity | null;
+	worktree: string | null;
+	branch: string | null;
+	baseSha: string | null;
+	headSha: string | null;
+	pr: PullRequestIdentity | null;
+	reason: string | null;
+};
+
+export type EffectKind = "commit" | "merge" | "push" | "pull-request";
+/** `intended` is recorded before the effect runs; one that never became `applied` is `unresolved` after recovery. */
+export type EffectStatus = "intended" | "applied" | "unresolved";
+export type EffectState = {
+	key: string;
+	attemptKey: string;
+	kind: EffectKind;
+	status: EffectStatus;
+	target: string;
+	sha: string | null;
+	pr: PullRequestIdentity | null;
+};
+
+export type AdmissionInput = { batchId: string; policyHash: string };
+export type AdmissionCheckpoint = { phase: "admitted" };
+export type AdmissionResult = { batchId: string };
+
+/** Durable tokens built with the runtime's own Durable copy. */
+export interface DurableContracts {
+	readonly PolicyDoc: DurableModule.SessionDocToken<PolicyState>;
+	readonly AttemptDoc: DurableModule.SessionDocFamilyToken<AttemptState, AttemptState>;
+	readonly EffectDoc: DurableModule.SessionDocFamilyToken<EffectState, EffectState>;
+	readonly AdmissionTask: DurableModule.Task<AdmissionInput, AdmissionCheckpoint, AdmissionResult, object>;
+	readonly extension: DurableModule.Extension;
+}
+
+export const attemptKey = (taskKey: string, attempt: number): string => `${taskKey}#${attempt}`;
+
+const contractsByRuntime = new WeakMap<DurableRuntime, DurableContracts>();
+
+function buildContracts({ durable }: DurableRuntime): DurableContracts {
+	const PolicyDoc = durable.defineDoc<PolicyState>({
+		kind: "pi-dispatch.policy",
+		version: DURABLE_SCHEMA_VERSION,
+		scope: "session",
+		initial: () => ({
+			admitted: false, schema: DURABLE_SCHEMA_VERSION, durableVersion: "", batchId: "", policyHash: "",
+			maxWorkers: 0, maxAttemptsPerTask: 0, budgetUsd: 0, reservedUsd: 0, tasks: [], admissionTaskId: 0,
+			attempts: [], effects: [],
+		}),
+	});
+	const AttemptDoc = durable.defineDocFamily<AttemptState, AttemptState>({
+		kind: "pi-dispatch.attempt",
+		version: DURABLE_SCHEMA_VERSION,
+		family: true,
+		scope: "session",
+		initial: (seed) => structuredClone(seed),
+	});
+	const EffectDoc = durable.defineDocFamily<EffectState, EffectState>({
+		kind: "pi-dispatch.effect",
+		version: DURABLE_SCHEMA_VERSION,
+		family: true,
+		scope: "session",
+		initial: (seed) => structuredClone(seed),
+	});
+	// The admission receipt. Its only phase completes; it never calls a model.
+	const AdmissionTask = durable.defineTask<AdmissionInput, AdmissionCheckpoint, AdmissionResult>({
+		name: "pi-dispatch.admission",
+		version: DURABLE_SCHEMA_VERSION,
+		initial: () => ({ phase: "admitted" }),
+		phases: {
+			admitted: async (task, runtime, context) => {
+				await runtime.commit(
+					() => ({ status: "terminal", outcome: { status: "completed", result: { batchId: task.input.batchId } } }),
+					context,
+				);
+			},
+		},
+		abort: async (_task, runtime, context) => {
+			await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
+		},
+	});
+	const extension = durable.defineExtension({ name: "pi-dispatch.durable", tasks: [AdmissionTask] });
+	return { PolicyDoc, AttemptDoc, EffectDoc, AdmissionTask, extension };
+}
+
+export function durableContracts(runtime: DurableRuntime): DurableContracts {
+	let contracts = contractsByRuntime.get(runtime);
+	if (!contracts) contractsByRuntime.set(runtime, contracts = buildContracts(runtime));
+	return contracts;
+}
+
+/** Create or replace one attempt document and index it, inside the caller's commit. */
+export async function putAttempt(contracts: DurableContracts, tx: DurableModule.Tx, attempt: AttemptState): Promise<void> {
+	await putIndexed(tx, contracts, "attempts", contracts.AttemptDoc, attempt);
+}
+
+/** Create or replace one effect document and index it, inside the caller's commit. */
+export async function putEffect(contracts: DurableContracts, tx: DurableModule.Tx, effect: EffectState): Promise<void> {
+	await putIndexed(tx, contracts, "effects", contracts.EffectDoc, effect);
+}
+
+async function putIndexed<T extends AttemptState | EffectState>(
+	tx: DurableModule.Tx,
+	contracts: DurableContracts,
+	index: "attempts" | "effects",
+	token: DurableModule.SessionDocFamilyToken<T, T>,
+	value: T,
+): Promise<void> {
+	const policy = await tx.doc(contracts.PolicyDoc);
+	if (!policy.admitted) throw new Error(`Cannot record ${index} before batch admission.`);
+	const draft = await tx.doc(token, value.key, value) as Record<string, unknown>;
+	Object.assign(draft, structuredClone(value));
+	if (!policy[index].includes(value.key)) policy[index].push(value.key);
+}
