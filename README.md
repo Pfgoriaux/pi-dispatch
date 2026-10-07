@@ -483,6 +483,9 @@ Review:
   batch pauses like `stop`. `resume` reviews the same head again; a failed
   try's spend stays counted. Two reviews claiming the allowance together can
   pause again, one resume each. Unknown review spend halts the batch.
+- One review try may run for 20 minutes, counted from its start (also after a
+  resume adopts it); `PI_DISPATCH_DURABLE_REVIEW_LIMIT_MS` changes this for an
+  owner. A reviewer stopped at the limit has unknown spend, so the batch halts.
 - A `[blocker]` finding counts as validated only when it cites a file the
   diff changes. A validated blocker starts one fix attempt from the reviewed
   head, inside `maxAttemptsPerTask`. A blocker that survives, or a failed fix,

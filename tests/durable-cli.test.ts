@@ -44,7 +44,7 @@ function script(name: string, body: string): string {
 /**
  * Fake Pi. Writes JSON events to stdout and a Pi 1.0.4-format session file to --session-dir.
  * Worker behaviour per task id: ok, slow, outside (commits outside owned paths), hang, stubborn (hangs, ignores SIGTERM), gate (waits for release()).
- * Reviewer behaviour per `<id>:review`: clean (default), blank, blank-once, block, block-once, unpriced, gate.
+ * Reviewer behaviour per `<id>:review`: clean (default), runaway (streams thinking forever), blank, blank-once, block, block-once, unpriced, gate.
  * Logs start and end of each spawn for concurrency checks.
  */
 function fakePi(behaviour: Record<string, string>) {
@@ -71,7 +71,7 @@ const finish=(text='done',usage=${JSON.stringify(usage)})=>{const message={role:
 const commit=(f)=>{fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSync(f,id+' '+Date.now()+'\\n');cp.execFileSync('git',['add','--',f]);cp.execFileSync('git',['commit','-q','-m','worker '+id]);};
 const blocker='## [blocker] Broken '+id+'\\n- File: src/'+id+'.txt:1\\n- Problem: wrong value\\n- Fix: correct it\\n';
 const gate=(then)=>{const f=path.join(${JSON.stringify(gates)},kind+'-'+id);const t=setInterval(()=>{if(fs.existsSync(f)){clearInterval(t);then();}},50);};
-const reviewer={blank:()=>finish(''),'blank-once':()=>finish(earlier===0?'':'No findings.'),clean:()=>finish('No findings.'),block:()=>finish(blocker),'block-once':()=>finish(earlier===0?blocker:'No findings.'),unpriced:()=>finish('No findings.',{...${JSON.stringify(usage)},cost:undefined}),gate:()=>gate(()=>finish('No findings.'))};
+const reviewer={runaway:()=>setInterval(()=>out({type:'message_update',assistantMessageEvent:{type:'thinking_delta',contentIndex:0,delta:'!'}}),20),blank:()=>finish(''),'blank-once':()=>finish(earlier===0?'':'No findings.'),clean:()=>finish('No findings.'),block:()=>finish(blocker),'block-once':()=>finish(earlier===0?blocker:'No findings.'),unpriced:()=>finish('No findings.',{...${JSON.stringify(usage)},cost:undefined}),gate:()=>gate(()=>finish('No findings.'))};
 const work={ok:()=>{commit('src/'+id+'.txt');finish();},slow:()=>setTimeout(()=>{commit('src/'+id+'.txt');finish();},700),outside:()=>{commit('docs/'+id+'.md');finish();},hang:()=>setInterval(()=>{},1000),stubborn:()=>{process.on('SIGTERM',()=>{});setInterval(()=>{},1000);},gate:()=>gate(()=>{commit('src/'+id+'.txt');finish();})};
 setTimeout(()=>(review?reviewer:work)[mode](),300);
 `);
@@ -346,8 +346,8 @@ test('IPC client refuses symlinked private directory', async () => {
 });
 
 /** Run the CLI in its own process. */
-function owner(file: string, mode: 'run' | 'resume' = 'run') {
- const child = spawn(process.execPath, ['--import', 'tsx', path.join(repoRoot, 'src/durable/cli.ts'), mode, file], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+function owner(file: string, mode: 'run' | 'resume' = 'run', env: NodeJS.ProcessEnv = {}) {
+ const child = spawn(process.execPath, ['--import', 'tsx', path.join(repoRoot, 'src/durable/cli.ts'), mode, file], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } });
  let stdout = '', stderr = '';
  child.stdout.on('data', (chunk) => { stdout += chunk; });
  child.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -745,4 +745,35 @@ test('cli: a configuration changed after approval starts nothing', async () => {
  const code = await main(['run', file, `--expect-hash=${approved}`], { out: () => undefined, err: (t) => errors.push(t), json: false });
  assert.equal(code, 1); assert.match(errors.join('\n'), /changed after approval; nothing started/);
  assert.equal(fs.existsSync(cfg.store), false); assert.equal(pi.starts().length, 0);
+});
+
+test('review: a runaway reviewer is stopped at its time limit and halts with unknown spend, unpublished', async () => {
+ const w = workspace();
+ const pi = fakePi({ 'a:review': 'runaway' });
+ const gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin);
+ const owner = await openBatch(cfg, { ...agents, reviewTimeLimitMs: 3000 });
+ let report;
+ try { await owner.create(); report = await owner.execute(); } finally { await owner.close(); }
+ const a = byId(report).a;
+ assert.equal(a.state, 'blocked', formatReport(report)); assert.match(a.reason, /review of a#1 is failed: review exceeded its 3 s time limit/);
+ assert.match(report.halted.join('\n'), /review of a#1 has unknown spend/);
+ const reviewer = pi.reviews('a')[0].pid;
+ assert.equal(await processStartIdentity(reviewer), null, 'the runaway reviewer is gone');
+ assert.deepEqual([pi.reviews('a').length, gh.prs().length], [1, 0]);
+});
+
+test('recovery: an adopted runaway reviewer is stopped at the limit counted from its start', async () => {
+ const w = workspace();
+ const pi = fakePi({ 'a:review': 'runaway' });
+ const gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin);
+ const file = batchFile(w, cfg);
+ const reviewer = await crashOwner(file, cfg, pi, 'a', 'review');
+ const identity = await processStartIdentity(reviewer);
+ const resumed = owner(file, 'resume', { PI_DISPATCH_DURABLE_REVIEW_LIMIT_MS: '4000' });
+ assert.equal(await resumed.exited, 0, resumed.output().stderr);
+ assert.notEqual(await processStartIdentity(reviewer), identity);
+ assert.match(resumed.output().stdout, /blocked +a .*review exceeded its 4 s time limit/);
+ assert.deepEqual([pi.starts('a').length, pi.reviews('a').length, gh.prs().length], [1, 1, 0]);
 });

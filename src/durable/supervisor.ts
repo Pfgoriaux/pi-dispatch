@@ -81,6 +81,8 @@ export interface SupervisorOptions {
 	/** Absolute `gh` executable; required to publish or reconcile pull requests. */
 	readonly gh?: string;
 	readonly registry?: ModelRegistry;
+	/** Bound on one review try, from its start; defaults to `REVIEW_TIME_LIMIT_MS`. */
+	readonly reviewTimeLimitMs?: number;
 	readonly onWarning?: (warning: string) => void;
 }
 
@@ -91,7 +93,12 @@ export interface RunLimits {
 	readonly signal?: AbortSignal;
 	/** Rechecked immediately before admission, after asynchronous preparation. */
 	readonly canStart?: () => boolean;
+	/** Stop reason when `deadlineAt` passes; defaults to "deadline exceeded". */
+	readonly expiry?: string;
 }
+
+/** Default bound on one review try; real reviews take minutes, a runaway one would hold its slot until the deadline. */
+export const REVIEW_TIME_LIMIT_MS = 20 * 60_000;
 
 export interface PublishRequest {
 	/** Exact commit whose checks passed. Never replace it with the current tip. */
@@ -220,7 +227,7 @@ export async function awaitExit(worker: WorkerIdentity, limits: RunLimits): Prom
 		if (unknown >= UNKNOWN_READS) return { blocked: `cannot read the identity of worker ${worker.pid}` };
 		const leader = identity === worker.startedAt;
 		if (identity !== undefined && !leader && !groupAlive(worker.pid)) return { stopped };
-		const why = limits.signal?.aborted ? "cancelled" : Date.now() >= limits.deadlineAt ? "deadline exceeded" : null;
+		const why = limits.signal?.aborted ? "cancelled" : Date.now() >= limits.deadlineAt ? limits.expiry ?? "deadline exceeded" : null;
 		const waited = Date.now() - signalledAt;
 		if (why && !stopped) {
 			stopped = why;
@@ -352,7 +359,7 @@ export class Supervisor {
 		const controller = new AbortController();
 		let stopped: string | undefined;
 		const stop = (why: string) => { stopped ??= why; controller.abort(); };
-		const timer = setTimeout(() => stop("deadline exceeded"), limits.deadlineAt - Date.now());
+		const timer = setTimeout(() => stop(limits.expiry ?? "deadline exceeded"), limits.deadlineAt - Date.now());
 		const cancel = () => stop("cancelled");
 		limits.signal?.addEventListener("abort", cancel, { once: true });
 		try {
@@ -499,7 +506,7 @@ export class Supervisor {
 		const review = await this.#queue(() => this.#claimReview(attempt, limits));
 		if (review.status !== "running") return review;
 		let spawned = false;
-		const ran = await this.#bounded(limits, async (signal, stopped) => {
+		const ran = await this.#bounded(this.#reviewLimits(review, limits), async (signal, stopped) => {
 			const options = this.#spawn(reviewRun(attempt.key, review), attempt.worktree!, signal, async (worker) => {
 				spawned = true;
 				await this.#recordReviewWorker(attempt, worker);
@@ -516,6 +523,15 @@ export class Supervisor {
 		return this.#settleReview(attempt, request, ran);
 	}
 
+	/** The batch limits, ending earlier at the review's own time limit when that comes first. */
+	#reviewLimits(review: Readonly<ReviewState>, limits: RunLimits): RunLimits {
+		const limitMs = this.options.reviewTimeLimitMs ?? REVIEW_TIME_LIMIT_MS;
+		const end = (review.startedAt ?? Date.now()) + limitMs;
+		if (end >= limits.deadlineAt) return limits;
+		const label = limitMs >= 60_000 ? `${Math.round(limitMs / 60_000)} min` : `${Math.round(limitMs / 1000)} s`;
+		return { ...limits, deadlineAt: end, expiry: `review exceeded its ${label} time limit` };
+	}
+
 	async #claimReview(attempt: AttemptState, limits: RunLimits): Promise<ReviewState> {
 		const { store } = this.options;
 		const plan = planReview(await store.read(), attempt.key, limits.deadlineAt);
@@ -525,6 +541,7 @@ export class Supervisor {
 			headSha: attempt.headSha!, status: skip ? "skipped" : "running", reservedUsd: "reserveUsd" in plan ? plan.reserveUsd : 0,
 			spentUsd: 0, worker: null, blocking: 0, other: 0, findings: null, reason: skip,
 			tries: before ? (before.tries ?? 1) + 1 : 1, earlierUsd: before ? (before.earlierUsd ?? 0) + before.spentUsd! : 0,
+			startedAt: Date.now(),
 		};
 		await store.harness.commit(async (tx) => {
 			if (!skip && (limits.signal?.aborted || limits.canStart?.() === false)) throw new AttemptNotStartedError("Stopped before review.");
@@ -547,7 +564,7 @@ export class Supervisor {
 	async #adoptReview(attempt: AttemptState, review: ReviewState, request: ReviewRequest, limits: RunLimits): Promise<ReviewState> {
 		if (!review.worker) throw new SupervisorBlockedError(`Review of ${attempt.key} has no recorded worker to adopt.`);
 		const { sessionId, dir } = this.#session(reviewRun(attempt.key, review));
-		const ran = await judgeOrphan(review.worker, dir, sessionId, limits)
+		const ran = await judgeOrphan(review.worker, dir, sessionId, this.#reviewLimits(review, limits))
 			.catch((error): Ran => ({ status: "blocked", spentUsd: null, reason: message(error) }));
 		return this.#settleReview(attempt, request, ran);
 	}

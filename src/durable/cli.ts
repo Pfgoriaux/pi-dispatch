@@ -194,7 +194,16 @@ export const writerAgent = (): AgentConfig => bundledAgent("durable/writer.md");
 /** The bundled reviewer with read-only tools only: it reads the saved diff instead of running Git. */
 export const reviewerAgent = (): AgentConfig => bundledAgent("reviewer.md", ["read", "grep", "find", "ls"]);
 
-const batchAgents = () => ({ agent: writerAgent(), reviewer: reviewerAgent() });
+/** Optional operator override of the per-review time limit, in milliseconds. */
+function reviewTimeLimitMs(): number | undefined {
+	const raw = process.env.PI_DISPATCH_DURABLE_REVIEW_LIMIT_MS;
+	if (raw === undefined) return undefined;
+	const ms = Number(raw);
+	if (!Number.isSafeInteger(ms) || ms < 1000) throw new ConfigError("PI_DISPATCH_DURABLE_REVIEW_LIMIT_MS must be an integer of at least 1000.");
+	return ms;
+}
+
+const batchAgents = () => ({ agent: writerAgent(), reviewer: reviewerAgent(), reviewTimeLimitMs: reviewTimeLimitMs() });
 
 /** Owner socket for a store: a private per-user directory, keyed by the store path. */
 export function socketPath(storePath: string): string {

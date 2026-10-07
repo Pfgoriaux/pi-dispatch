@@ -305,6 +305,8 @@ export interface BatchOwnerOptions {
 	readonly agent: AgentConfig;
 	/** Read-only reviewer for verified heads. */
 	readonly reviewer: AgentConfig;
+	/** Bound on one review try; defaults to the supervisor's `REVIEW_TIME_LIMIT_MS`. */
+	readonly reviewTimeLimitMs?: number;
 	readonly runtime?: DurableRuntime;
 	readonly onWarning?: (warning: string) => void;
 }
@@ -584,7 +586,7 @@ export class BatchOwner {
 			store: this.store, featureRoot: repo.root, featureBranch, piExecutable: worker.piExecutable, piPrefixArgs: worker.piPrefixArgs,
 			worktreesRoot: repo.worktreesRoot, sessionsRoot: repo.sessionsRoot, branchPrefix: repo.branchPrefix,
 			allowlist: { remotes: [{ name: publication.remote, url: publication.url }], bases: [prBase] },
-			gh: publication.gh, onWarning: this.options.onWarning,
+			gh: publication.gh, onWarning: this.options.onWarning, reviewTimeLimitMs: this.options.reviewTimeLimitMs,
 		};
 		return new Supervisor(options);
 	}

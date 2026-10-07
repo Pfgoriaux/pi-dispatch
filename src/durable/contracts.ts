@@ -44,6 +44,8 @@ export type ReviewState = {
 	tries?: number;
 	/** Known spend of earlier failed tries of this head. Absent means 0. */
 	earlierUsd?: number;
+	/** Epoch ms when this try was claimed; its time limit counts from here. */
+	startedAt?: number;
 	reservedUsd: number;
 	/** `null` means unknown spend; recovery treats it as a halt. */
 	spentUsd: number | null;
