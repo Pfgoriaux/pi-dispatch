@@ -56,7 +56,7 @@ const args=process.argv.slice(2), sid=args[args.indexOf('--session-id')+1], dir=
 const review=/CODE REVIEW/.test(prompt), kind=review?'review':'work';
 const id=review?/INTENT[^\\n]*\\ndo (\\S+)/.exec(prompt)[1]:/task ([^ ]+)\\. You work/.exec(prompt)[1];
 const mode=${JSON.stringify(behaviour)}[review?id+':review':id]??(review?'clean':'ok');
-const read=()=>fs.existsSync(${JSON.stringify(log)})?fs.readFileSync(${JSON.stringify(log)},'utf8').trim().split('\\n').map(l=>JSON.parse(l)):[];
+const read=()=>fs.existsSync(${JSON.stringify(log)})?fs.readFileSync(${JSON.stringify(log)},'utf8').split('\\n').slice(0,-1).map(l=>JSON.parse(l)):[];
 const earlier=read().filter(e=>e.event==='start'&&e.id===id&&e.kind===kind).length;
 const log=(event)=>fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({event,id,kind,pid:process.pid,at:Date.now(),prompt,model:args[args.indexOf('--model')+1]})+'\\n');
 log('start');
@@ -77,11 +77,24 @@ const reviewer={runaway,partial,'runaway-once':()=>earlier===0?runaway():finish(
 const work={ok:()=>{commit('src/'+id+'.txt');finish();},linger:()=>{commit('src/'+id+'.txt');finish();setInterval(()=>{},1000);},slow:()=>setTimeout(()=>{commit('src/'+id+'.txt');finish();},700),outside:()=>{commit('docs/'+id+'.md');finish();},hang:()=>setInterval(()=>{},1000),stubborn:()=>{process.on('SIGTERM',()=>{});setInterval(()=>{},1000);},gate:()=>gate(()=>{commit('src/'+id+'.txt');finish();})};
 setTimeout(()=>(review?reviewer:work)[mode](),300);
 `);
- const events = () => fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
+ const events = () => fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').slice(0, -1).map((line) => JSON.parse(line)) : [];
  const starts = (id?: string, kind = 'work') => events().filter((e) => e.event === 'start' && e.kind === kind && (!id || e.id === id));
  const release = (id: string, kind = 'work') => fs.writeFileSync(path.join(gates, `${kind}-${id}`), '');
- return { bin, events, starts, reviews: (id?: string) => starts(id, 'review'), release };
+ return { bin, log, events, starts, reviews: (id?: string) => starts(id, 'review'), release };
 }
+
+test('fixture: spawn-log polling waits for complete records', () => {
+ const pi = fakePi({});
+ for (const text of ['', '{"event":']) {
+  fs.writeFileSync(pi.log, text);
+  assert.deepEqual(pi.events(), []);
+ }
+ const done = { event: 'start', id: 'a', kind: 'work' };
+ fs.writeFileSync(pi.log, JSON.stringify(done) + '\n{"event":');
+ assert.deepEqual(pi.events(), [done]);
+ fs.appendFileSync(pi.log, '"end"}\n');
+ assert.deepEqual(pi.events(), [done, { event: 'end' }]);
+});
 
 /** Fake gh backed by a JSON file; PR heads follow the bare remote like GitHub. */
 function fakeGh(bare: string) {

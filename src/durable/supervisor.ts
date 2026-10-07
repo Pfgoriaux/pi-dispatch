@@ -190,13 +190,28 @@ function signalWorker(pid: number, signal: NodeJS.Signals, leader: boolean): voi
 	try { process.kill(pid, signal); } catch { /* process gone */ }
 }
 
-function groupAlive(pid: number): boolean {
+/** Only ESRCH proves the group gone; EPERM may mean live or still-exiting members. */
+function groupState(pid: number): string | null {
 	try {
 		process.kill(-pid, 0);
-		return true;
+		return "live members";
 	} catch (error) {
-		return (error as NodeJS.ErrnoException).code !== "ESRCH";
+		const code = (error as NodeJS.ErrnoException).code;
+		return code === "ESRCH" ? null : code ?? "unknown";
 	}
+}
+
+const groupAlive = (pid: number): boolean => groupState(pid) !== null;
+
+/** A reaped leader can leave transient kernel group members; never count EPERM as gone. */
+async function remainingGroup(pid: number): Promise<string | null> {
+	const until = Date.now() + GRACE_MS;
+	let state = groupState(pid);
+	while (state !== null && Date.now() < until) {
+		await sleep(100);
+		state = groupState(pid);
+	}
+	return state;
 }
 
 const UNKNOWN_READS = 3;
@@ -266,8 +281,9 @@ type Ran =
 async function judgeRun(result: PilotProcResult, stopped?: string): Promise<Ran> {
 	const spentUsd = spendOf(result);
 	// runPilotProc waited for its own child's exit; only surviving group members remain uncertain.
-	if (result.spawned && groupAlive(result.spawned.pid)) {
-		return { status: "blocked", spentUsd: null, reason: `worker ${result.spawned.pid} or its process group is still running` };
+	const group = result.spawned ? await remainingGroup(result.spawned.pid) : null;
+	if (group !== null) {
+		return { status: "blocked", spentUsd: null, reason: `worker ${result.spawned!.pid} or its process group is still running (${group})` };
 	}
 	if (result.launched && !result.spawned) return { status: "blocked", spentUsd: null, reason: result.error ?? "worker identity was never recorded" };
 	if (result.status !== "ok") {

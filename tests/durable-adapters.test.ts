@@ -53,7 +53,7 @@ const after=(file,then)=>{const t=setInterval(()=>{if(fs.existsSync(file)){clear
 out({type:'session',version:3,id:${sessionExpr},timestamp:new Date().toISOString(),cwd:process.cwd()});
 setTimeout(()=>{${body}},300);
 `);
- const spawns = () => fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
+ const spawns = () => fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').slice(0, -1).map((line) => JSON.parse(line)) : [];
  return { bin, spawns };
 }
 
@@ -267,6 +267,26 @@ test('supervisor: surviving process-group members still block an exited child', 
   assert.match(result.reason!, /process group is still running/);
  } finally {
   if (fs.existsSync(pidFile)) process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGKILL');
+  await s.store.close();
+ }
+});
+
+test('supervisor: a transient EPERM group after child exit is awaited, not declared alive', async () => {
+ const s = await setup();
+ const kill = process.kill;
+ let reads = 0;
+ process.kill = ((pid: number, signal: any) => {
+  if (pid < 0 && signal === 0 && reads++ < 3) throw Object.assign(new Error('group still exiting'), { code: 'EPERM' });
+  return kill(pid, signal);
+ }) as typeof process.kill;
+ try {
+  const pi = fakePi(`commit('src/a.txt','a');finish();`);
+  const result = await new Supervisor(s.options({ piExecutable: pi.bin })).runAttempt(task('t1'), soon());
+  assert.equal(result.status, 'succeeded', result.reason ?? '');
+  assert.ok(reads >= 4);
+  assert.equal(result.spentUsd, 0.25);
+ } finally {
+  process.kill = kill;
   await s.store.close();
  }
 });
