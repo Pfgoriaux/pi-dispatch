@@ -1,3 +1,4 @@
+import { startupTimeoutMs } from "./startup.ts";
 /**
  * In-process worker runner (research tier).
  *
@@ -508,7 +509,11 @@ async function runOneCandidate(
 	options.signal?.addEventListener("abort", onAbort, { once: true });
 
 	const toolHealth = new ToolHealth(session.getActiveToolNames());
+	let startupFailure: string | undefined;
+	let startupTimer: ReturnType<typeof setTimeout> | undefined;
 	const unsubscribe = session.subscribe((event) => {
+		if (event.type === "message_update" || event.type === "tool_execution_start") clearTimeout(startupTimer);
+		if (event.type === "message_end" && event.message.role === "assistant") clearTimeout(startupTimer);
 		// Throttle UI updates to message/tool boundaries, never per-delta:
 		// host + N workers share one event loop.
 		if (
@@ -537,6 +542,11 @@ async function runOneCandidate(
 		options.signal?.throwIfAborted();
 		const quotaReason = exhaustedQuotaReason(`${model.provider}/${model.id}`);
 		if (quotaReason) throw new ExhaustedQuotaError(quotaReason);
+		const budget = startupTimeoutMs();
+		startupTimer = setTimeout(() => {
+			startupFailure = `worker produced no model output within ${budget / 1000}s`;
+			session.agent.abort();
+		}, budget);
 		await session.prompt(task);
 	} catch (err) {
 		// An abort mid-prompt throws: classify it as abort (with partial text and
@@ -545,6 +555,7 @@ async function runOneCandidate(
 		const abortedMidPrompt = options.signal?.aborted === true;
 		const partialUsage = sumUsage(session.agent.state.messages);
 		const partialText = session.getLastAssistantText() ?? "";
+		clearTimeout(startupTimer);
 		unsubscribe();
 		options.signal?.removeEventListener("abort", onAbort);
 		session.dispose();
@@ -552,14 +563,15 @@ async function runOneCandidate(
 		return {
 			...fail(
 				abortedMidPrompt ? "aborted" : "error",
-				toolHealth.failure && !abortedMidPrompt
-					? toolHealth.failure : String(err instanceof Error ? err.message : err),
+				(startupFailure || toolHealth.failure) && !abortedMidPrompt
+					? startupFailure ?? toolHealth.failure! : String(err instanceof Error ? err.message : err),
 			),
 			text: abortedMidPrompt ? partialText : "",
 			usage: partialUsage,
 		};
 	}
 
+	clearTimeout(startupTimer);
 	const aborted = options.signal?.aborted === true;
 	const lastMessage = session.agent.state.messages.at(-1);
 	const failed =
@@ -573,9 +585,9 @@ async function runOneCandidate(
 
 	const result: WorkerResult = {
 		...base,
-		status: aborted ? "aborted" : toolHealth.failure || failed || blank ? "error" : "ok",
+		status: aborted ? "aborted" : startupFailure || toolHealth.failure || failed || blank ? "error" : "ok",
 		text: toolHealth.failure && !aborted ? "" : finalText,
-		error: aborted ? undefined : toolHealth.failure ?? (failed
+		error: aborted ? undefined : startupFailure ?? toolHealth.failure ?? (failed
 			? lastMessage?.errorMessage
 			: blank
 				? "blank response (no text in final assistant message; thinking-only or empty)"

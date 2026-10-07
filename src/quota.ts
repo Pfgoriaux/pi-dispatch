@@ -2,12 +2,10 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { quotaFamily, PROVIDER_TOP_MODELS, type RankedCandidate } from "./roster.ts";
+import { quotaFamily, type RankedCandidate } from "./roster.ts";
 
-/** Threshold below which a provider is considered "running low" (%). */
-const LOW_QUOTA_THRESHOLD = 15;
 
-/** All tracked providers for global fallback. */
+/** Providers whose quota snapshots are read. */
 const ALL_PROVIDERS = ["codex", "synthetic", "neuralwatt", "claude"] as const;
 
 interface Limit {
@@ -113,37 +111,6 @@ export function steerByQuota(
 	return { candidates: ordered, reasons };
 }
 
-/**
- * Check if all known providers are running low on quota.
- * Returns the provider with the highest headroom for fallback, or undefined if not all are low.
- */
-export function checkGlobalLowQuota(
-	snapshots: ReadonlyMap<string, QuotaSnapshot>,
-	now = Date.now(),
-): { allLow: boolean; bestProvider?: string; headrooms: Map<string, number> } {
-	const headrooms = new Map<string, number>();
-	for (const provider of ALL_PROVIDERS) {
-		const headroom = quotaHeadroom(snapshots.get(provider), now);
-		if (headroom !== undefined) headrooms.set(provider, headroom);
-	}
-	// Need readings from at least 2 providers to make a global judgment
-	if (headrooms.size < 2) return { allLow: false, headrooms };
-
-	const allLow = [...headrooms.values()].every(h => h < LOW_QUOTA_THRESHOLD);
-	if (!allLow) return { allLow: false, headrooms };
-
-	// Find the provider with the highest remaining headroom for fallback
-	let bestProvider: string | undefined;
-	let bestHeadroom = 0;
-	for (const [provider, headroom] of headrooms) {
-		if (headroom > bestHeadroom) {
-			bestHeadroom = headroom;
-			bestProvider = provider;
-		}
-	}
-	return { allLow: true, bestProvider, headrooms };
-}
-
 /** Hard eligibility check, independent of advisory routing and explicit model pins. */
 export function exhaustedQuotaReason(spec: string): string | undefined {
 	const provider = quotaProvider(spec);
@@ -159,37 +126,10 @@ export function quotaCandidates(candidates: RankedCandidate[], onWarning?: (reas
 	const now = Date.now();
 	const snapshots = new Map<string, QuotaSnapshot>();
 
-	// Read all provider snapshots for global fallback assessment
+	// Read snapshots only to rank existing peer candidates
 	for (const provider of ALL_PROVIDERS) {
 		const snapshot = readQuotaSnapshot(provider, directory, now);
 		if (snapshot) snapshots.set(provider, snapshot);
-	}
-
-	// Check if all providers are running low
-	const globalCheck = checkGlobalLowQuota(snapshots, now);
-	if (globalCheck.allLow && globalCheck.bestProvider) {
-		const topModel = PROVIDER_TOP_MODELS[globalCheck.bestProvider];
-		if (topModel) {
-			const headroomSummary = [...globalCheck.headrooms.entries()]
-				.map(([p, h]) => `${p} ${Math.floor(h)}%`)
-				.join(", ");
-			onWarning?.(`Global low quota (${headroomSummary}): falling back to ${globalCheck.bestProvider}'s top model ${topModel}.`);
-			// Prepend the top model as the first candidate
-			const topCandidate: RankedCandidate = {
-				modelSpec: topModel,
-				thinking: "high",
-				entry: {
-					provider: topModel.slice(0, topModel.indexOf("/")),
-					model: topModel.slice(topModel.indexOf("/") + 1),
-					thinking: "high",
-					weight: 10, // High priority
-				},
-			};
-			// Add the top model if not already present
-			if (!candidates.some(c => c.modelSpec === topModel)) {
-				candidates = [topCandidate, ...candidates];
-			}
-		}
 	}
 
 	const result = steerByQuota(candidates, snapshots, now);

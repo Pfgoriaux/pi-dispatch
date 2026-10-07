@@ -268,19 +268,8 @@ export function renderDispatchResult(
 			}
 		}
 
-		// Write-tier merge outcome (dropped before: merges were never rendered).
-		if (details.merges) {
-			if (details.merges.merged.length > 0) {
-				content +=
-					theme.fg("success", `merged · ${details.merges.merged.join(", ")}`) +
-					"\n";
-			}
-			for (const f of details.merges.failed) {
-				content +=
-					theme.fg("error", `merge failed · ${f.branch}`) +
-					theme.fg("dim", ` — ${firstLine(f.error ?? "", 80)}`) +
-					"\n";
-			}
+		for (const entry of details.worktrees ?? []) {
+			content += theme.fg("dim", `not merged · ${entry.branch} · ${entry.path}`) + "\n";
 		}
 
 		if (details.truncated) {

@@ -135,7 +135,7 @@ const OPENAI_FALLBACK = "openai-codex/gpt-6.1-sol";
 
 // Anthropic ↔ OpenAI Codex peers, interchangeable at the same effort level.
 // top-tier: Opus 5.5 ↔ Astra 6 (complex features, architecture, security).
-// mid-tier: Sonnet 5.5 → Sol 6.1 (everyday coding, reviews, synthesis).
+// mid-tier: Sonnet 5.5 → Sol 6.1 (reviews, synthesis, general work).
 // Sol is also every chain's terminal fallback, so it never expands to Sonnet
 // (that would make re-expansion non-idempotent); both still share a quota family.
 const CROSS_PROVIDER_PEERS = new Map<string, { peer?: string; family: "top-tier" | "mid-tier" }>([
@@ -144,18 +144,6 @@ const CROSS_PROVIDER_PEERS = new Map<string, { peer?: string; family: "top-tier"
 	["anthropic/claude-sonnet-5-5", { peer: OPENAI_FALLBACK, family: "mid-tier" }],
 	[OPENAI_FALLBACK, { family: "mid-tier" }],
 ]);
-
-// Provider top models for global fallback when all providers are running low.
-// Used when quota headroom across all known providers drops below threshold.
-export const PROVIDER_TOP_MODELS: Record<string, string> = {
-	"anthropic": "anthropic/claude-opus-5-5",
-	// quota.ts keys Anthropic as "claude".
-	"claude": "anthropic/claude-opus-5-5",
-	"codex": "openai-codex/gpt-6-astra",
-	"openai-codex": "openai-codex/gpt-6-astra",
-	"neuralwatt": "aperture/neuralwatt/glm-5.3",
-	"synthetic": "aperture/synthetic/hf:moonshotai/Kimi-K3",
-};
 
 const routeId = (spec: string) => spec.replace(/^aperture\//, "");
 

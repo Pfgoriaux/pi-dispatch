@@ -118,7 +118,7 @@ async function inspectAttempt(attempt: Readonly<AttemptState>): Promise<AttemptI
 	const identity = attempt.worker && attempt.worker.host === os.hostname() ? await processStartIdentity(attempt.worker.pid) : undefined;
 	const worker = !attempt.worker ? "none" : identity === undefined ? "unknown" : identity === attempt.worker.startedAt ? "alive" : "dead";
 	const present = !!attempt.worktree && fs.existsSync(attempt.worktree);
-	const dirt = present ? await dirtyLines(attempt.worktree!, false).catch(() => undefined) : undefined;
+	const dirt = present ? await dirtyLines(attempt.worktree!).catch(() => undefined) : undefined;
 	const worktree = !present ? "missing" : dirt === undefined ? "unknown" : dirt.length > 0 ? "dirty" : "clean";
 	const sha = present && attempt.branch ? await branchSha(attempt.worktree!, attempt.branch) : null;
 	return { key: attempt.key, status: attempt.status, worker, branchSha: sha, worktree };

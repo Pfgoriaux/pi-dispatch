@@ -1,40 +1,40 @@
 # pi-dispatch
 
-Delegates scoped work to isolated pi sessions and returns final reports instead of
-raw worker transcripts. Research runs in-process; write-tier tasks run child pi
-processes in Git worktrees. Usage and current behavior: [README.md](README.md).
+Delegates bounded tasks to Pi sessions and returns final reports, not transcripts.
+In-process workers investigate and review; child processes write in isolated
+worktrees. Usage, model routing, installation and Herdr: [README.md](README.md).
 
-## Design constraints
+## Boundaries
 
-- Keep intermediate transcripts out of model-visible results. Structured status
-  and usage belong in `details`; `persist`/`resume` append session identifiers,
-  and `feature_plan` appends saved report paths to `content`. These recovery
-  references need coverage when changing result construction.
-- Apply `truncateText` to model-visible report and error text. The per-text cap
-  is 12 KB of UTF-8, not code units; preserve code-point boundaries. Multiple
-  reports and metadata can make the total result larger than one per-text cap.
-- Chain interpolation uses a replacer function so dollar sequences in worker
-  output remain literal. Task cwd validation resolves real paths and confines
-  the starting directory to the session subtree; it is not a filesystem sandbox.
-- In-process workers disable extension discovery, skills, and context-file loading.
-  All roles get Linkup web tools when configured, in addition to their local tool
-  allowlist. Model guidance from the packaged pi-model-prompts dependency is
-  applied after candidate resolution without replacing role or task constraints.
-  Only Linkup entrypoints load, never unrelated extensions or spawning
-  tools. Missing setup warns without blocking local work. Their tasks must carry
-  applicable constraints or explicit instructions to read the relevant files.
-  Do not assume they inherit the parent's AGENTS.md.
-- Child-process write workers explicitly load pi-model-prompts for the actual
-  child model. They have a separate loader and depth/exclusion guard;
-  do not claim all tiers are hermetic. Worktrees separate changes but do not
-  prevent shell access to other paths.
-- Worktree dispatch commits worker changes and merges branches automatically.
-  Use it only when the user has authorized those effects. Agent selection alone
-  does not imply worktree execution: single mode is always in-process.
-  Never force-delete dirty or locked worktrees; retained directories are recovery
-  data. Age alone is not permission to remove a worktree. Write workers must pass
-  the clean-worktree check before merge-back; merge agents intentionally do not.
-- PR fixes must match the reviewed head.
+- Model-visible `content` holds reports and recovery references (sessions,
+  saved plans, retained branches). `details` is UI-only; never put the only
+  copy of a recovery reference there.
+- Use `truncateText` for reports and errors: 12 KB of UTF-8 per text, preserving
+  code points, plus a truncation marker. Combined reports and metadata can exceed that per-text cap.
+- In-process workers disable context-file, skill and general extension discovery.
+  Their tasks must carry applicable constraints or point to instruction files.
+  Only configured Linkup entrypoints load. Child writers load project context
+  and global extensions normally; do not describe both tiers as hermetic.
+- Roles, cwd confinement and worktrees are not shell/filesystem sandboxes.
+  Model choice does not grant tools or authorization.
+- Writers require authorization to edit and commit. They return retained branches;
+  the coordinator reviews and integrates only with authorization. PR merges need
+  user review and authorization. Never force-delete dirty/locked worktrees or
+  delete by age. Successful handoffs require clean edits and the assigned branch/base.
+- Review fixes must start from the reviewed head. Keep head pinning.
+- Internal failed-tool cutoffs and startup timeouts are attempt failures, not user
+  aborts. Preserve parent-cancellation precedence, no writer replay after tool use,
+  usage accounting and fallback behavior.
+- Do not log raw child stderr or malformed tool names: either may contain secrets.
+  Never repair malformed tool names into executable calls.
+- Expand chain `{previous}` placeholders with a replacer function so dollar
+  sequences in reports remain literal.
+- Discover the advertised roster through the same trust/override path as execution.
+  Keep model-specific guidance subordinate to role, task and project constraints.
+- Herdr viewers and metadata belong to the caller's workspace. Visibility failures
+  remain non-fatal and reported; release owned resources in `finally`. Metadata
+  `--source` sequences updates but does not own keys; see README for workspace rules.
+
 - Durable pilot children (`src/durable/`) write stdout to `events.log` in their
   session directory, never a pipe: Pi exits on a write to a pipe whose reader
   died, which would end workers with their owner. Recovery judges an orphaned
@@ -46,35 +46,12 @@ processes in Git worktrees. Usage and current behavior: [README.md](README.md).
 - Agents may draft and request durable batches; only the user's confirmation
   in the Pi UI launches one (`src/tools/durable-batch.ts`). Never add an
   auto-approve path, and keep `agents/durable/writer.md` out of the roster.
-- In-process failed-tool cutoffs are model-attempt failures, not user aborts;
-  keep failover, usage accounting, and parent-cancellation precedence intact.
-  Viewer logs must not echo unregistered tool names: malformed names may contain
-  arguments or private paths. Never repair a tool name into an executable call.
 
-## Implementation and checks
+## Checks
 
-`src/index.ts` registers the tool and advertises the live roster before each
-main-agent turn. Keep advertised roles on the same discovery/trust path as
-execution; do not hardcode a separate list. `src/linkup.ts` adds shared Linkup tools
-from a trusted installation to both worker tiers; setup and usage are in README.md. Worker, worktree/merge, roster, and rendering
-modules own their respective behavior; the workflow tools `pr_review`,
-`feature_plan`, and `council` live in `src/tools/` and reuse the same workers; agent prompts live in `agents/`.
-Agent frontmatter `model:` names an effort tier (`cheap`/`balanced`/`precise`/`long`)
-expanded by `src/profiles.ts` (env-overridable) — see the Effort tiers section
-in [README.md](README.md).
 Pi loads `src/index.ts` directly. Run `npm ci --ignore-scripts`, then
-`npm run check` for TypeScript and deterministic regression tests. These use
-mocked commands/models and disposable Git fixtures; they do not call providers or
-operate live Herdr. CI runs the same check on Linux and macOS. The pinned SDK's native import
-requires `pi-server` as a development dependency; dispatch does not start it.
-Live E2E spawns models and write-tier E2E commits/merges, so use authorized
-disposable fixtures.
-
-Worker visibility is shared through `src/progress.ts`. Planned/running metadata
-belongs in `details.activity`, separate from terminal `WorkerResult`s. Herdr
-viewers and Spaces metadata rows default on inside Herdr, opt out with
-`herdr:false`. Both belong to the caller's workspace, never Git worktrees or
-additional execution agents. Sidebar setup and the one-master-per-workspace
-boundary are in README.md. Herdr metadata `--source` sequences updates; it does
-not provide ownership of token keys. Keep visibility failures non-fatal and
-visible; clean up owned tabs and rows in `finally`.
+`npm run check` (TypeScript and deterministic tests, also run in Linux/macOS CI).
+Tests use mocked models/commands and disposable Git fixtures, not live providers
+or Herdr. The SDK import requires the `pi-server` development dependency but
+does not start a server. Live writer checks require authorized disposable repos;
+they create commits and retained worktrees.

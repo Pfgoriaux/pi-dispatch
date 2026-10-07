@@ -94,7 +94,7 @@ export async function ensureTaskWorktree(repo: string, wtPath: string, branch: s
 		const adopt = await sameRepository(repo, wtPath).catch(() => false)
 			&& await worktreeBranch(wtPath) === branch
 			&& existing === baseSha
-			&& (await dirtyLines(wtPath, false)).length === 0;
+			&& (await dirtyLines(wtPath)).length === 0;
 		if (adopt) return;
 		throw new EffectBlockedError(`Worktree ${wtPath} exists and does not match ${branch} at ${baseSha}.`);
 	}

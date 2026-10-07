@@ -116,19 +116,21 @@ test("actual progress events drive queued, model/attempt, terminal and cleanup r
 
 test("progress continues without rows when workspace discovery times out", async (t) => {
 	const f = fixture(t);
-	t.mock.method(herdrTransport, "execFile", async () => { throw Object.assign(new Error("fixture timeout"), { code: "ETIMEDOUT" }); });
+	const transport = t.mock.method(herdrTransport, "execFile", async () => { throw Object.assign(new Error("fixture timeout"), { code: "ETIMEDOUT" }); });
 	const warnings: string[] = [];
 	const progress = new DispatchProgress("single", [{ agent: "scout", task: "private" }],
 		(update) => { warnings.push(...(update.details.warnings ?? [])); });
 	try {
 		await progress.open(f.dir);
-		assert.deepEqual(f.reports(), []);
 		assert.ok(warnings.some((warning) => /Spaces worker rows unavailable:.*command failed or timed out/.test(warning)));
 		const result = await progress.run(0, async () => ({
 			agent: "scout", task: "private", status: "ok", text: "done", attempts: 1, ms: 1,
 		}));
 		assert.equal(result.status, "ok");
 	} finally { await progress.end(); }
+	const commands = transport.mock.calls.map((call) => (call.arguments[1] as string[]).slice(0, 2).join(" "));
+	assert.ok(commands.includes("pane current"));
+	assert.ok(!commands.includes("workspace report-metadata"));
 });
 
 test("overlapping dispatches share rows; ending one preserves the other's workers", async (t) => {

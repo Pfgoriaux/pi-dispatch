@@ -26,6 +26,7 @@ import { ToolHealth } from "./tool-health.ts";
 import { withProviderFallbacks } from "./roster.ts";
 import { exhaustedQuotaReason, quotaCandidates } from "./quota.ts";
 import { dirtyLines } from "./worktree.ts";
+import { startupTimeoutMs } from "./startup.ts";
 import { stopWorker } from "./process-tree.ts";
 import {
 	THINKING_LEVELS,
@@ -38,7 +39,7 @@ const MAX_PROC_DEPTH = 2;
 export interface RunWorkerProcOptions {
 	/** Working directory for the child (the task's git worktree). */
 	cwd: string;
-	/** Write-tier tasks must commit all tracked/untracked edits before merging. */
+	/** Write-tier tasks must commit all tracked/untracked edits before handoff. */
 	requireCleanWorktree?: boolean;
 	signal?: AbortSignal;
 	/** Called at tool boundaries so the TUI can update (never per-delta). */
@@ -189,17 +190,18 @@ export async function runWorkerProc(
 			continue;
 		}
 		let toolsStarted = false;
-		result = await runOneProc(agent, task, {
+		const { startupFailure, ...attempt } = await runOneProc(agent, task, {
 			...options,
 			modelOverride: candidate.modelSpec,
 			thinking: candidate.thinking,
 			onAttempt: (selected, effort) => options.onAttempt?.(selected, effort, attempts.length + 1),
 			onBoundary: () => { toolsStarted = true; options.onBoundary?.(); },
 		});
+		result = attempt;
 		attempts.push(result);
 		if (options.signal?.aborted) result = { ...result, status: "aborted" };
 		// A fresh process cannot safely replay a writer after tools may have changed files.
-		if (result.status !== "error" || toolsStarted) break;
+		if (result.status !== "error" || toolsStarted || startupFailure) break;
 	}
 	return {
 		...result,
@@ -357,7 +359,7 @@ async function runOneProc(
 	task: string,
 	options: RunWorkerProcOptions,
 	pilot?: PilotSpawn,
-): Promise<WorkerResult> {
+): Promise<WorkerResult & { startupFailure?: boolean }> {
 	const started = Date.now();
 	const base = { agent: agent.name, task, ms: 0, attempts: 1 };
 	const fail = (
@@ -440,6 +442,8 @@ async function runOneProc(
 		} catch {
 			return;
 		}
+		if (!event || typeof event !== "object") return;
+		if (["agent_start", "message_start", "message_update", "tool_execution_start"].includes(event.type ?? "")) clearTimeout(timer);
 		switch (event.type) {
 			case "session":
 				if (pilot && pilot.seen.sessionId === undefined && typeof event.id === "string") pilot.seen.sessionId = event.id;
@@ -524,6 +528,9 @@ async function runOneProc(
 	}
 
 	let wasAborted = false;
+	let startupFailure = false;
+	let spawnCode: string | undefined;
+	let stderrTail = "";
 	const invocation = pilot
 		? { command: pilot.command, args: [...pilot.prefixArgs, ...args] }
 		: getPiInvocation(args);
@@ -556,21 +563,32 @@ async function runOneProc(
 	const tail = pilot ? tailFile(pilot.eventsFile, feed) : undefined;
 	proc.stdout?.setEncoding("utf8");
 	proc.stdout?.on("data", feed);
-	// stderr is diagnostic only — it must never become model-visible text.
-	proc.stderr?.resume();
+	// Preserve only known diagnostic codes, never raw stderr (may contain credentials).
+	proc.stderr?.on("data", (data: Buffer) => {
+		stderrTail = (stderrTail + data.toString()).slice(-4096);
+	});
 
 	let exitCode: number | null = null;
 	let exitSignal: NodeJS.Signals | null = null;
+	const startupMs = startupTimeoutMs();
+	const timer = setTimeout(() => {
+		startupFailure = true;
+		termination ??= stopWorker(proc, options.onWarning);
+	}, startupMs);
 	await new Promise<void>((resolve) => {
 		proc.on("close", (code, signal) => {
+			clearTimeout(timer);
 			exitCode = code;
 			exitSignal = signal;
 			tail?.drain();
 			if (buffer.trim()) processLine(buffer);
 			resolve();
 		});
-		proc.on("error", () => {
+		proc.on("error", (error: NodeJS.ErrnoException) => {
+			clearTimeout(timer);
 			tail?.drain();
+			startupFailure = true;
+			spawnCode = /^[A-Z][A-Z0-9_]+$/.test(error.code ?? "") ? error.code : "spawn error";
 			exitCode = 1;
 			resolve();
 		});
@@ -606,13 +624,19 @@ async function runOneProc(
 		};
 	}
 
+	if (startupFailure) {
+		return { ...fail("error", spawnCode ? `cannot start child pi: ${spawnCode}` : `child pi did not start within ${startupMs / 1000}s`), startupFailure: true };
+	}
+
 	if (exitCode !== 0) {
+		const codes = ["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND", "EACCES", "EADDRINUSE", "ENOENT"];
+		const stderrCode = codes.find(code => new RegExp(`\\b${code}\\b`).test(stderrTail));
 		const why =
 			lastError?.errorMessage ||
 			(exitSignal ? `child pi terminated by ${exitSignal}` : undefined) ||
-			(lastError?.stopReason && lastError.stopReason !== "end"
+			(lastError?.stopReason && lastError.stopReason === "error"
 				? `child pi stopped: ${lastError.stopReason}`
-				: `child pi exited with code ${exitCode}`);
+				: `child pi exited with code ${exitCode}${stderrCode ? ` (${stderrCode})` : ""}`);
 		return {
 			...base,
 			status: "error",
@@ -628,7 +652,7 @@ async function runOneProc(
 	let worktreeError: string | undefined;
 	if (options.requireCleanWorktree) {
 		try {
-			if ((await dirtyLines(options.cwd, false)).length > 0) {
+			if ((await dirtyLines(options.cwd)).length > 0) {
 				worktreeError = `Worker left uncommitted edits; worktree retained at ${options.cwd}`;
 			}
 		} catch {

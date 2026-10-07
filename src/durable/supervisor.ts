@@ -480,7 +480,7 @@ export class Supervisor {
 		}
 		if (await worktreeBranch(cwd) !== attempt.branch) return "check changed the worktree branch";
 		if (await branchSha(cwd, attempt.branch!) !== head) return "check changed the committed SHA";
-		if ((await dirtyLines(cwd, false)).length > 0) return "check mutated the worktree";
+		if ((await dirtyLines(cwd)).length > 0) return "check mutated the worktree";
 		return { head };
 	}
 
@@ -511,7 +511,7 @@ export class Supervisor {
 		const { sessionId, dir } = this.#session(attempt.key);
 		const ran = await judgeOrphan(attempt.worker!, dir, sessionId, limits);
 		if (ran.status !== "settled") return ran;
-		if ((await dirtyLines(attempt.worktree!, false)).length > 0) {
+		if ((await dirtyLines(attempt.worktree!)).length > 0) {
 			return { status: "failed", spentUsd: ran.spentUsd, reason: `Worker left uncommitted edits; worktree retained at ${attempt.worktree}` };
 		}
 		return this.#verified(task, attempt, ran.spentUsd, checkSignal(limits));
