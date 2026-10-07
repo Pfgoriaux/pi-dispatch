@@ -22,7 +22,6 @@
     "@earendil-works/pi-server": "1.0.4",
     "@earendil-works/pi-tui": "1.0.4",
     "@types/node": "^22.0.0",
-    "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   },
   "pi": {
@@ -35,6 +34,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-durable": "1.0.4",
-    "@pf/pi-model-prompts": "file:vendor/pf-pi-model-prompts-4.0.0.tgz"
+    "@pf/pi-model-prompts": "file:vendor/pf-pi-model-prompts-4.0.0.tgz",
+    "tsx": "^4.20.0"
   }
 }
