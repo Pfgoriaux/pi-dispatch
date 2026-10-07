@@ -12,7 +12,7 @@ test("fixes require the reviewed head and refuse a moved checkout", async (t) =>
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-review-head-"));
 	t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
 	const git = (...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-	git("init", "-b", "main");
+	git("init", "-b", "feat/test");
 	git("config", "user.name", "Fixture");
 	git("config", "user.email", "fixture@example.invalid");
 	git("config", "commit.gpgsign", "false");

@@ -35,12 +35,11 @@ import { findWorkerSession, runWorker, truncateText } from "./worker.ts";
 import { notifyDispatchDone } from "./herdr.ts";
 import { DispatchProgress } from "./progress.ts";
 import { runWorkerProc } from "./worker-proc.ts";
-import { mergeWorktreeBranches, type MergeOutcome } from "./merge.ts";
+import { describeWorktree, formatHandoff, type WorktreeHandoff } from "./handoff.ts";
 import {
-	assertCleanTree,
 	createWorktree,
-	ensureGitignore,
-	getRepoRoot,
+	ensureExcluded,
+	resolveWorktreeTarget,
 	pruneStale,
 	removeWorktree,
 } from "./worktree.ts";
@@ -71,6 +70,7 @@ interface DispatchParams {
 	tasks?: TaskItem[];
 	chain?: TaskItem[];
 	aggregate?: boolean;
+	target?: string;
 	herdr?: boolean;
 	/** Opt-in: persist SDK-tier worker sessions for later resumption. */
 	persist?: boolean;
@@ -90,7 +90,7 @@ const TaskItemSchema = Type.Object({
 	worktree: Type.Optional(
 		Type.Boolean({
 			description:
-				"Run in an isolated git worktree (write tier, child process)",
+				"Run in an isolated git worktree (tasks mode only; required for writer)",
 		}),
 	),
 	herdr: Type.Optional(
@@ -202,28 +202,32 @@ function sumUsages(results: WorkerResult[]) {
 
 export default function dispatchExtension(pi: ExtensionAPI): void {
 	registerHerdrWatch(pi);
-	pi.on("before_agent_start", (event, ctx) => ({
-		systemPrompt: `${event.systemPrompt}\n\n## Dispatch agents\nUse these exact names; never invent an agent name (skill role labels are not agent names). Workers do not inherit your tools. Shared Linkup web tools are added when configured; role tools and shell availability are listed below. Shell access is not a read-only sandbox; follow each role's constraints.\n${agentRosterHelp(discoverAgents(ctx).agents)}`,
-	}));
+	pi.on("before_agent_start", (event, ctx) => {
+		if (Number(process.env.PI_DISPATCH_DEPTH) > 0) return;
+		return { systemPrompt: `${event.systemPrompt}\n\n## Dispatch agents\nUse these exact names; never invent an agent name; skill role labels are not agent names. Workers do not inherit your tools; configured Linkup tools are added. Shell access is not a sandbox.\n${agentRosterHelp(discoverAgents(ctx).agents)}` };
+	});
 
 	pi.registerTool({
 		name: "dispatch",
+		exposure: "model-only",
 		label: "Dispatch",
 		description:
 			"Run agents from the Dispatch agents roster in isolated sessions; only final reports return. " +
 			"Modes: single (agent+task), parallel (tasks; an aggregator merges reports), chain (sequential; {previous} inserts the prior output). " +
-			"worktree:true (tasks/chain only) runs each task in a git worktree and merges its branch back automatically.",
+			"worktree:true (tasks only) runs writers in isolated worktrees; committed branches are returned, not merged.",
 		promptSnippet:
 			"Get an advisor's second opinion or delegate parallel or context-heavy work",
 		promptGuidelines: [
-			"dispatch: Select by required capabilities before model strength. Use investigator for code/runtime cause investigation and authorized live diagnostics, scout for locating code, advisor for judging evidence and decisions. Check the live roster's tools, including overrides; model tiers and task wording cannot grant missing tools.",
-			"dispatch: Consult a single advisor for a consequential trade-off, work stuck after investigation, or a concrete unresolved risk before declaring complex work done. No parallel work or user request is required. Skip routine tasks and repeat consultations without new evidence.",
-			"dispatch: Otherwise use for 3+ independent areas worked in parallel, output that would flood your context, or when the user asks for sub-agents or multiple perspectives. Do routine work yourself.",
-			"dispatch: Tasks must be self-contained: goal, paths, constraints, output shape. Workers see no conversation.",
-			"dispatch: Worker completion is not task completion. Evaluate returned checks against the user's scope and safety rules, then run authorized checks yourself or delegate to a capable role before concluding. If blocked, report the specific missing tool, access, or approval and what remains unverified; do not stop at a generic worker limitation.",
-			"dispatch: For file edits use tasks:[{agent:'writer', worktree:true}] from a feature branch with a committed-clean repo root, only when the user authorized commits and merges. Single mode always runs in-process, without isolation.",
+			"dispatch: Select by required capabilities before model strength. Scout locates code; investigator diagnoses code/runtime; advisor judges decisions. Check the live roster: model choice cannot grant tools.",
+			"dispatch: Use one advisor for consequential trade-offs, stuck work, or unresolved risks. Otherwise delegate 3+ independent tasks, context-heavy work, or explicit requests. Do routine work directly; repeat consultations only with new evidence.",
+			"dispatch: Supply goal, paths, constraints, and output shape. Workers do not see this conversation or automatically inherit its instructions.",
+			"dispatch: Worker completion is not task completion. Evaluate returned checks against the user's scope and safety rules. Complete authorized verification; report specific access/approval blockers and what remains unverified.",
+			"dispatch: Writers require tasks with worktree:true and authorization to commit. Set target to a clean feature checkout when needed. Review returned branches, integrate only with authorization, then run dependent tasks. PR merges require user review and authorization.",
+			"dispatch: Writer default is long (Kimi K3). Use aperture/neuralwatt/glm-5.3 for small coding tasks; precise for auth, migrations, concurrency, or shared interfaces.",
+			"dispatch: Never launch agent CLIs through bash to bypass rejected requests, depth limits, or tool restrictions; report the blocker.",
 		],
 		parameters: Type.Object({
+			target: Type.Optional(Type.String({ description: "Clean feature repo root inside the session cwd that worktree tasks branch from; defaults to session cwd" })),
 			agent: Type.Optional(
 				Type.String({ description: "Agent name (single mode)" }),
 			),
@@ -350,6 +354,11 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 		// meaningless and conflicting. Checked BEFORE validateTaskCwd so the
 		// error the caller sees is the clearer of the two.
 		const wantsWorktree = items.some((i) => i.worktree === true);
+		if (items.some(i => i.agent === "writer" && i.worktree !== true)) {
+			throw new Error("dispatch: writer requires tasks:[{agent:'writer', task, worktree:true}]; single/resume writers are not isolated");
+		}
+		if (params.target !== undefined && !wantsWorktree) throw new Error("dispatch: target requires worktree tasks");
+		if (mode === "chain" && wantsWorktree) throw new Error("dispatch: chain worktrees are not supported; use tasks, then dispatch dependent work after authorized integration");
 		if (wantsWorktree) {
 			for (const item of items) {
 				if (item.worktree === true && item.cwd) {
@@ -372,27 +381,13 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 		let repoRoot: string | undefined;
 		let runId: string | undefined;
 		const randId = () => Math.random().toString(16).slice(2, 6);
-		const mergeRecorder: MergeOutcome = { merged: [], failed: [] };
+		let target: Awaited<ReturnType<typeof resolveWorktreeTarget>> | undefined;
+		const handoffs: WorktreeHandoff[] = [];
 		if (wantsWorktree) {
-			const root = await getRepoRoot(ctx.cwd);
-			if (!root) {
-				throw new Error(
-					"dispatch: write tier requires the session cwd to be a git repository " +
-						"(git rev-parse --show-toplevel failed)",
-				);
-			}
-			if ((await realpath(ctx.cwd)) !== root) {
-				throw new Error(
-					`dispatch: write tier requires the session cwd (${ctx.cwd}) to be the git ` +
-						`repo root (${root}); start pi there or drop worktree:true from the tasks.`,
-				);
-			}
-			repoRoot = root;
-			// Clean tree precheck — fail fast before any worktree is created.
-			await assertCleanTree(repoRoot);
-			// Keep dispatch-internal files out of the repo's status.
-			ensureGitignore(repoRoot);
-			// Prune metadata for missing worktrees; never age-delete live files.
+			const directory = await validateTaskCwd(params.target, ctx) ?? ctx.cwd;
+			target = await resolveWorktreeTarget(directory);
+			repoRoot = target.root;
+			ensureExcluded(repoRoot);
 			await pruneStale(repoRoot);
 			runId = `run-${Date.now().toString(36)}-${randId()}`;
 		}
@@ -536,87 +531,15 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 					// Replacer function: `previous` may contain $&, $', $` etc., which
 					// have substitution meaning in a plain string replacement.
 					const task = item.task.replaceAll("{previous}", () => previous);
-					if (repoRoot && item.worktree === true) {
-						// Sequential semantics preserved: the step's branch merges back
-						// (and its worktree is removed) before the next step runs.
-						const worktree = await createWorktree(
-							repoRoot,
-							runId!,
-							`s${i + 1}-${randId()}`,
-						);
-						let stepMerged = false;
-						paneSession?.start(i);
-						try {
-							const result = await runWorkerProc(
-								byName.get(item.agent)!,
-								task,
-								{
-									cwd: worktree.path,
-									requireCleanWorktree: true,
-									signal,
-									model: parentModel,
-									registry: ctx.modelRegistry,
-									modelOverride: taskModel(item)?.modelSpec,
-									steerByQuota: taskModel(item)?.steerByQuota,
-									thinking: taskModel(item)?.thinking,
-									...paneSession.options(i),
-								},
-							);
-							results.push(result);
-							await paneSession?.finish(i, result);
-							previous = result.text;
-							// Only a successful step's branch is merged — merging a failed
-							// worker's branch would commit broken work. The branch is kept
-							// (audit) and reported in merges.failed; the chain itself
-							// continues so later steps still run, error visible in the result.
-							if (result.status === "ok" && !signal?.aborted) {
-								const outcome = await mergeWorktreeBranches(
-									repoRoot,
-									[worktree.branch],
-									{
-										signal,
-										model: parentModel,
-										registry: ctx.modelRegistry,
-										onBoundary: emitProgress,
-									},
-								);
-								mergeRecorder.merged.push(...outcome.merged);
-								mergeRecorder.failed.push(...outcome.failed);
-								stepMerged = outcome.merged.includes(worktree.branch);
-							} else if (result.status !== "ok" && !signal?.aborted) {
-								mergeRecorder.failed.push({
-									branch: worktree.branch,
-									error: `worker failed (${result.status}); branch kept`,
-								});
-							}
-						} finally {
-							// Aborted steps keep their branch (audit); merged ones are deleted.
-							await removeWorktree(repoRoot!, worktree.path, {
-								deleteBranch: stepMerged,
-								branch: worktree.branch,
-							});
-						}
-					} else {
-						const result = await runOne(
-							byName.get(item.agent)!,
-							task,
-							taskCwds[i],
-							i,
-							undefined,
-							taskModel(item),
-						);
-						results.push(result);
-						previous = result.text;
-					}
+					const result = await runOne(byName.get(item.agent)!, task, taskCwds[i], i, undefined, taskModel(item));
+					results.push(result);
+					previous = result.text;
 				}
 			} else {
 				// Write tier: create all worktrees up front, sequentially — git
 				// worktree creation mutates repo refs and races under concurrency.
 				const worktrees: Array<{ path: string; branch: string } | undefined> =
 					[];
-				// Per-index final results of worktree workers — used to gate merges
-				// on worker status (never merge a failed worker's branch).
-				const worktreeResults: Array<WorkerResult | undefined> = [];
 				if (wantsWorktree) {
 					try {
 						for (let i = 0; i < items.length; i++) {
@@ -625,6 +548,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 								repoRoot!,
 								runId!,
 								`t${i + 1}-${randId()}`,
+								target!.baseCommit,
 							);
 						}
 					} catch (err) {
@@ -644,90 +568,27 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 						throw err;
 					}
 				}
-				try {
-					results = await mapWithConcurrency(
-						items,
-						MAX_CONCURRENCY,
-						(item, i) => {
-							if (!worktrees[i]) {
-								return runOne(
-									byName.get(item.agent)!,
-									item.task,
-									taskCwds[i],
-									i,
-									undefined,
-									taskModel(item),
-								);
-							}
-							paneSession?.start(i);
-							return runWorkerProc(byName.get(item.agent)!, item.task, {
-								cwd: worktrees[i]!.path,
-								requireCleanWorktree: true,
-								signal,
-								model: parentModel,
-								registry: ctx.modelRegistry,
-								modelOverride: taskModel(item)?.modelSpec,
-								steerByQuota: taskModel(item)?.steerByQuota,
-								thinking: taskModel(item)?.thinking,
-								...paneSession.options(i),
-							}).then(async (result) => {
-								worktreeResults[i] = result;
-								await paneSession.finish(i, result);
-								return result;
-							});
-						},
-					);
-				} finally {
-					// After ALL tasks finish: merge ONLY the worktree branches of tasks
-					// whose worker finished "ok" — merging a failed worker's branch
-					// would commit its broken work. Failed-worker branches are reported
-					// in merges.failed (reason "worker failed") and kept for a human.
-					// On abort: no merge at all (workers were killed via the shared
-					// signal), worktrees still removed, branches kept.
-					const created: Array<{
-						path: string;
-						branch: string;
-						index: number;
-					}> = [];
-					for (let i = 0; i < worktrees.length; i++) {
-						const worktree = worktrees[i];
-						if (worktree) created.push({ ...worktree, index: i });
-					}
-					let mergedBranches = new Set<string>();
-					if (created.length > 0 && signal?.aborted !== true) {
-						const mergeable = created.filter(
-							(w) => worktreeResults[w.index]?.status === "ok",
-						);
-						for (const w of created) {
-							if (worktreeResults[w.index]?.status === "ok") continue;
-							const status = worktreeResults[w.index]?.status;
-							mergeRecorder.failed.push({
-								branch: w.branch,
-								error:
-									status === undefined
-										? "worker did not complete; branch kept"
-										: `worker failed (${status}); branch kept`,
-							});
-						}
-						if (mergeable.length > 0) {
-							const outcome = await mergeWorktreeBranches(
-								repoRoot!,
-								mergeable.map((w) => w.branch),
-								{ signal, model: parentModel, registry: ctx.modelRegistry, onBoundary: emitProgress },
-							);
-							mergeRecorder.merged.push(...outcome.merged);
-							mergeRecorder.failed.push(...outcome.failed);
-							mergedBranches = new Set(outcome.merged);
-						}
-					}
-					for (const w of created) {
-						// Merge-failure/aborted/failed-worker branches are kept for a
-						// human; merged ones are deleted along with their worktree.
-						await removeWorktree(repoRoot!, w.path, {
-							deleteBranch: mergedBranches.has(w.branch),
-							branch: w.branch,
-						});
-					}
+				results = await mapWithConcurrency(items, MAX_CONCURRENCY, (item, i) => {
+					const wt = worktrees[i];
+					if (!wt) return runOne(byName.get(item.agent)!, item.task, taskCwds[i], i, undefined, taskModel(item));
+					return paneSession.run(i, () => runWorkerProc(byName.get(item.agent)!, item.task, {
+						cwd: wt.path, requireCleanWorktree: true, signal,
+						model: parentModel, registry: ctx.modelRegistry,
+						modelOverride: taskModel(item)?.modelSpec,
+						steerByQuota: taskModel(item)?.steerByQuota,
+						thinking: taskModel(item)?.thinking,
+						...paneSession.options(i),
+					}), signal);
+				});
+				for (let i = 0; i < worktrees.length; i++) {
+					const wt = worktrees[i];
+					if (!wt) continue;
+					const handoff = await describeWorktree(repoRoot!, wt, {
+						task: i + 1, agent: items[i].agent, status: results[i].status,
+						base: target!.base, baseCommit: target!.baseCommit,
+					});
+					handoffs.push(handoff);
+					if (results[i].status === "ok" && handoff.error) results[i] = { ...results[i], status: "error", error: handoff.error };
 				}
 			}
 
@@ -811,15 +672,15 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 				}
 			}
 
+			if (handoffs.length) content += "\n\n" + formatHandoff(repoRoot!, handoffs);
+
 			const details: DispatchDetails = {
 				mode,
 				items: results,
 				aggregated,
 				truncated,
 				total: items.length,
-				...(mergeRecorder.merged.length > 0 || mergeRecorder.failed.length > 0
-					? { merges: mergeRecorder }
-					: {}),
+				...(handoffs.length ? { worktrees: handoffs } : {}),
 			};
 
 			notifyDispatchDone({

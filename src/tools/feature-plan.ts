@@ -61,14 +61,15 @@ function fallbackPlan(results: WorkerResult[], outputOf: (r: WorkerResult) => st
 export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "feature_plan",
+		exposure: "model-only",
 		label: "Feature Plan (Architect + Challenger)",
 		description:
 			"Read-only feature planning: architect draft, pre-mortem, independent challenge, then a plan of product decisions and task contracts.",
 		promptSnippet:
 			"Plan a feature (read-only)",
 		promptGuidelines: [
-			"feature_plan: Use when the user asks to plan or scope a feature. Not for small changes or bugs.",
-			"feature_plan: Show the plan and its decisions to the user. Once approved, execute with dispatch tasks:[{agent:'writer', worktree:true, model:<Executor>, task:<contract verbatim>}]; independent tasks in one call, dependent tasks in later calls. If truncated, read the complete saved report with offset/limit before dispatching. Recover existing text instead of restarting planning; replan only when requirements or evidence change.",
+			"feature_plan: Use for requested feature planning, not small changes or bugs. Show the plan and unresolved decisions before implementation.",
+			"feature_plan: Dispatch approved contracts verbatim to writer tasks with their Executor model, one repository per call. Review and obtain user authorization for integration before dependent tasks. Read saved reports fully when previews are truncated. Recover existing text instead of restarting planning; replan only when requirements or evidence change.",
 		],
 		parameters: Type.Object({
 			herdr: Type.Optional(

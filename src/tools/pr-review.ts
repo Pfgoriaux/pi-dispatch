@@ -40,14 +40,13 @@ import {
 } from "./pr-review-prompts.ts";
 import { pinFixHead, assertFixHead } from "./review-target.ts";
 import {
-	assertCleanTree,
 	createWorktree,
-	ensureGitignore,
+	ensureExcluded,
+	resolveWorktreeTarget,
 	getRepoRoot,
 	pruneStale,
-	removeWorktree,
 } from "../worktree.ts";
-import { mergeWorktreeBranches } from "../merge.ts";
+import { describeWorktree, formatHandoff, type WorktreeHandoff } from "../handoff.ts";
 import type { DispatchDetails, WorkerResult } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -219,15 +218,15 @@ function report(r: WorkerResult, name: string, cap: (text: string, maxBytes?: nu
 export function registerPrReviewTool(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "pr_review",
+		exposure: "model-only",
 		label: "PR Review",
 		description:
-			"Review a PR or diff with two code reviewers (Opus 5.5, Codex Astra), a 3-month pre-mortem, and a slop review in parallel, then one pass that verifies findings against the code. fix:true fixes validated findings in a worktree that merges back.",
+			"Review a PR or diff with two code reviewers (Opus 5.5, Codex Astra), a 3-month pre-mortem, and a slop review in parallel, then one pass that verifies findings against the code. fix:true commits validated fixes on a retained branch for coordinator review; never merges.",
 		promptSnippet:
 			"Multi-model PR review with optional fixes",
 		promptGuidelines: [
-			"pr_review: Use when the user asks for a review, or on a PR you opened that changes 100+ lines or touches auth, data, migrations, or infrastructure. Self-review smaller PRs.",
-			"pr_review: fix:true requires explicit user intent to change code and a trusted, committed-clean repo root.",
-			"pr_review: Always pass intent.",
+			"pr_review: Use for requested reviews or PRs you opened with 100+ changed lines, auth, data, migrations, or infrastructure. Self-review smaller PRs. Always pass intent.",
+			"pr_review: fix:true requires authorization to edit/commit and a trusted, clean feature repo root; it uses the default writer. For high-risk fixes, review only, then dispatch an authorized worktree writer with model:'precise'.",
 		],
 		parameters: Type.Object({
 			herdr: Type.Optional(
@@ -244,7 +243,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 			fix: Type.Optional(
 				Type.Boolean({
 					description:
-						"Fix validated findings in a worktree and merge back (default false; needs authorization to commit and merge)",
+						"Commit validated fixes on a retained worktree branch, without merging (default false; requires authorization to edit and commit)",
 				}),
 			),
 			intent: Type.Optional(
@@ -298,7 +297,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 							"Start pi there, or run pr_review with fix=false.",
 					);
 				}
-				await assertCleanTree(repoRoot);
+				await resolveWorktreeTarget(repoRoot);
 			}
 
 			const fixHead = wantFix ? await pinFixHead(pi, repoRoot, params.pr) : undefined;
@@ -432,11 +431,12 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					// ---- optional fix step (write tier worktree) ----
 					let fixReport = "";
 					let fixResult: WorkerResult | undefined;
+					const worktrees: WorktreeHandoff[] = [];
 					const fixRequested = wantFix && aggregateResult.status === "ok" && !truncated;
 					if (fixRequested && !signal?.aborted) {
 						await assertFixHead(repoRoot, fixHead!);
-						await assertCleanTree(repoRoot);
-						ensureGitignore(repoRoot);
+						ensureExcluded(repoRoot);
+						const target = await resolveWorktreeTarget(repoRoot);
 						await pruneStale(repoRoot);
 						emit("pr_review: fixing validated findings in a worktree…");
 						const runId = `run-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 6)}`;
@@ -444,66 +444,39 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 							repoRoot,
 							runId,
 							`prfix-${Math.random().toString(16).slice(2, 6)}`,
+							fixHead!,
 						);
-						let merged = false;
-						try {
-							fixResult = await progress.run(
-								STEPS.length,
-								() =>
-									runWorkerProc(
-										byName.get("writer")!,
-										fixTask({ cwd: worktree.path, label, findings }),
-										{
-											cwd: worktree.path,
-											registry: ctx.modelRegistry,
-											requireCleanWorktree: true,
-											signal,
-											model: ctx.model
-												? `${ctx.model.provider}/${ctx.model.id}`
-												: undefined,
-											...progress.options(STEPS.length),
-										},
-									),
-								signal,
-							);
-							if (fixResult.status === "ok" && !signal?.aborted) {
-								await assertFixHead(repoRoot, fixHead!);
-								await assertCleanTree(repoRoot);
-								const outcome = await mergeWorktreeBranches(
-									repoRoot,
-									[worktree.branch],
+						fixResult = await progress.run(
+							STEPS.length,
+							() =>
+								runWorkerProc(
+									byName.get("writer")!,
+									fixTask({ cwd: worktree.path, label, findings }),
 									{
-										signal,
+										cwd: worktree.path,
 										registry: ctx.modelRegistry,
+										requireCleanWorktree: true,
+										signal,
 										model: ctx.model
 											? `${ctx.model.provider}/${ctx.model.id}`
 											: undefined,
+										...progress.options(STEPS.length),
 									},
-								);
-								merged = outcome.merged.includes(worktree.branch);
-								if (!merged && outcome.failed.length > 0) {
-									fixReport = `\n\nFix MERGE FAILED: ${cap(outcome.failed[0].error)} (branch kept: ${outcome.failed[0].branch})`;
-								}
-							} else if (fixResult.status !== "ok") {
-								fixReport = `\n\nFix FAILED (${fixResult.status}): ${cap(fixResult.error ?? "")}. Branch kept for inspection: ${worktree.branch}`;
-							}
-						} finally {
-							await removeWorktree(repoRoot, worktree.path, {
-								deleteBranch: merged,
-								branch: worktree.branch,
-							});
-						}
-						if (merged) {
-							fixReport =
-								`\n\nFix applied via worktree ` +
-								"writer; branch merged back automatically." +
-								(fixResult?.text
-									? `\nWriter summary: ${cap(fixResult.text)}`
-									: "");
-						}
+								),
+							signal,
+						);
+						const handoff = await describeWorktree(repoRoot, worktree, {
+							task: 1, agent: "writer", status: fixResult.status,
+							base: target.base, baseCommit: fixHead!,
+						});
+						worktrees.push(handoff);
+						if (fixResult.status === "ok" && handoff.error) fixResult = { ...fixResult, status: "error", error: handoff.error };
+						fixReport = "\n\n" + cap(fixResult.text || fixResult.status) +
+							(fixResult.error ? "\nFix error: " + cap(fixResult.error) : "") +
+							"\n\n" + formatHandoff(repoRoot, worktrees);
 					} else if (!wantFix) {
 						fixReport =
-							"\n\n(Fix skipped: fix=false. Ask to fix the findings, or run dispatch writer when ready.)";
+							"\n\n(Fix skipped: fix=false. For authorized fixes, use dispatch tasks:[{agent:'writer', task:<findings>, worktree:true, model:<chosen model>}].)";
 					} else if (!fixRequested) {
 						fixReport = truncated
 							? "\n\n(Fix skipped: review material was truncated. Rerun a narrower review before applying fixes.)"
@@ -535,6 +508,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 						details: {
 							mode: "parallel",
 							items,
+							worktrees,
 							aggregated: aggregateResult.status === "ok",
 							truncated,
 						} satisfies DispatchDetails,

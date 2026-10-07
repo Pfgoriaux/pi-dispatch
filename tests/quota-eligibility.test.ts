@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentSession, DefaultResourceLoader, ModelRuntime, type ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { exhaustedQuotaReason, checkGlobalLowQuota } from "../src/quota.ts";
+import { exhaustedQuotaReason, quotaCandidates } from "../src/quota.ts";
 import { runWorker } from "../src/worker.ts";
 import { runWorkerProc } from "../src/worker-proc.ts";
 import type { AgentConfig } from "../src/types.ts";
@@ -89,12 +89,10 @@ test("eligibility rereads caches and only blocks fresh, known exhaustion", () =>
 	assert.match(exhaustedQuotaReason("aperture/neuralwatt/glm-5.3")!, /neuralwatt quota exhausted/);
 });
 
-test("global low-quota fallback never selects a zero-headroom provider", () => {
-	const now = Date.now();
-	const blocked = new Map([["claude", snapshot(0, now)], ["codex", snapshot(0, now)]]);
-	assert.equal(checkGlobalLowQuota(blocked, now).bestProvider, undefined);
-	blocked.set("codex", snapshot(1, now));
-	assert.equal(checkGlobalLowQuota(blocked, now).bestProvider, "codex");
+test("low quotas never inject a model outside the configured candidates", () => {
+ for (const provider of ["claude","codex","neuralwatt","synthetic"]) quota(provider, 5);
+ const candidates = [{ modelSpec: "fake/small", thinking: "off", entry: { provider: "fake", model: "small", thinking: "off", weight: 1 } }];
+ assert.deepEqual(quotaCandidates(candidates), candidates);
 });
 
 const bin = join(root, "fake-pi");

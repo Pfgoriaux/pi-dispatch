@@ -27,6 +27,6 @@ export async function pinFixHead(pi: ExtensionAPI, cwd: string, pr?: string): Pr
 export async function assertFixHead(cwd: string, expected: string): Promise<void> {
 	const actual = (await gitThrow(cwd, ["rev-parse", "HEAD"])).trim();
 	if (actual !== expected) {
-		throw new Error("pr_review: checkout HEAD differs from the reviewed head; refusing automatic fixes/merge-back.");
+		throw new Error("pr_review: checkout HEAD differs from the reviewed head; refusing fixes against a different revision.");
 	}
 }

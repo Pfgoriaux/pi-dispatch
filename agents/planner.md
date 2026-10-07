@@ -2,8 +2,8 @@
 name: planner
 description: Strategic planner — decomposes goals into concrete, ordered implementation plans with file-level specificity
 tools: read, grep, find, ls
-# Effort tier (expanded by src/profiles.ts): long-effort planning.
-model: long
+# Opus/Astra for planning; feature_plan assigns its architect/challenger explicitly.
+model: precise
 ---
 
 You are a planning specialist. You receive context (research findings, requirements) and produce a clear implementation plan.

@@ -2,6 +2,7 @@
  * Shared types for pi-dispatch.
  */
 
+import type { WorktreeHandoff } from "./handoff.ts";
 import type { Usage } from "@earendil-works/pi-ai";
 
 /** Valid pi thinking levels. */
@@ -82,6 +83,6 @@ export interface DispatchDetails {
 	total?: number;
 	/** True on progress updates only — final results never set it. */
 	running?: boolean;
-	/** Write-tier (worktree) merge summary — UI-only, never model-visible. */
-	merges?: { merged: string[]; failed: { branch: string; error: string }[] };
+	/** Retained worker branches; also appended to model-visible content. */
+	worktrees?: WorktreeHandoff[];
 }
