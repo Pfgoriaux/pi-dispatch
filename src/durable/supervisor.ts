@@ -179,17 +179,6 @@ export function planReview(snapshot: StoreSnapshot, key: string, deadlineAt: num
 	return { reserveUsd };
 }
 
-/** True when the process or its process group may still run; unknown counts as running. */
-async function mayStillRun(spawned: NonNullable<PilotProcResult["spawned"]>): Promise<boolean> {
-	if (await processStartIdentity(spawned.pid) !== null) return true;
-	try {
-		process.kill(-spawned.pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code !== "ESRCH";
-	}
-}
-
 const POLL_MS = 500;
 const GRACE_MS = 5000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -276,7 +265,8 @@ type Ran =
 
 async function judgeRun(result: PilotProcResult, stopped?: string): Promise<Ran> {
 	const spentUsd = spendOf(result);
-	if (result.spawned && await mayStillRun(result.spawned)) {
+	// runPilotProc waited for its own child's exit; only surviving group members remain uncertain.
+	if (result.spawned && groupAlive(result.spawned.pid)) {
 		return { status: "blocked", spentUsd: null, reason: `worker ${result.spawned.pid} or its process group is still running` };
 	}
 	if (result.launched && !result.spawned) return { status: "blocked", spentUsd: null, reason: result.error ?? "worker identity was never recorded" };

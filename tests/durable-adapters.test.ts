@@ -238,6 +238,39 @@ test('supervisor: a slow ps on a loaded host still records a live worker', async
  }
 });
 
+test('supervisor: an empty ps result after child exit does not invent a live worker', async () => {
+ const shim = fs.mkdtempSync(path.join(W, 'exited-ps-'));
+ // A PID can disappear while ps reads it: empty stdout with exit 0 is indeterminate, not proof of life.
+ fs.writeFileSync(path.join(shim, 'ps'), '#!/bin/sh\nfor last; do :; done\nif ! kill -0 "$last" 2>/dev/null; then exit 0; fi\nexec /bin/ps "$@"\n', { mode: 0o700 });
+ const savedPath = process.env.PATH;
+ process.env.PATH = `${shim}${path.delimiter}${savedPath}`;
+ const s = await setup();
+ try {
+  const pi = fakePi(`commit('src/a.txt','a'); finish();`);
+  const result = await new Supervisor(s.options({ piExecutable: pi.bin })).runAttempt(task('t1'), soon());
+  assert.equal(result.status, 'succeeded', result.reason ?? '');
+  assert.equal(result.spentUsd, 0.25);
+ } finally {
+  process.env.PATH = savedPath;
+  await s.store.close();
+ }
+});
+
+test('supervisor: surviving process-group members still block an exited child', async () => {
+ const s = await setup();
+ const pidFile = path.join(s.ws, 'descendant.pid');
+ try {
+  const pi = fakePi(`const child=cp.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});child.unref();fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));commit('src/a.txt','a');finish();`);
+  const result = await new Supervisor(s.options({ piExecutable: pi.bin })).runAttempt(task('t1'), soon());
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.spentUsd, null);
+  assert.match(result.reason!, /process group is still running/);
+ } finally {
+  if (fs.existsSync(pidFile)) process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGKILL');
+  await s.store.close();
+ }
+});
+
 test('supervisor: no-op output is not verified; stopped admission starts nothing', async () => {
  const s = await setup();
  try {
