@@ -47,6 +47,19 @@ function sessionFile(dir: string, sessionId: string): string | string[] {
 	return files.length === 1 ? path.join(dir, files[0]) : files;
 }
 
+/** Priced completions are a lower bound even without settlement. Never add the two copies together. */
+export function reportedEvidenceUsd(dir: string, sessionId: string): number {
+	if (!fs.existsSync(dir)) return 0;
+	const session = sessionFile(dir, sessionId);
+	const files = [path.join(dir, PILOT_EVENTS_FILE), ...(typeof session === "string" ? [session] : [])];
+	return Math.max(0, ...files.map((file) => {
+		const entries = jsonLines(file);
+		if (entries?.[0]?.type !== "session" || entries[0].id !== sessionId) return 0;
+		const messages = entries.filter((e) => (e.type === "message_end" || e.type === "message") && e.message?.role === "assistant");
+		return messages.reduce((sum, e) => sum + (pricedUsage(e.message?.usage) ? e.message!.usage!.cost.total : 0), 0);
+	}));
+}
+
 const textOf = (message: Message) => typeof message.content === "string"
 	? message.content
 	: (message.content ?? []).filter((p) => p.type === "text").map((p) => p.text ?? "").join("");

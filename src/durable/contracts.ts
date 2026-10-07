@@ -42,6 +42,14 @@ export type ReviewState = {
 	status: ReviewStatus;
 	/** 1 for the first review of this head; each retry adds one. Absent means 1. */
 	tries?: number;
+	/** Failed tries of this head; budget/deadline skips do not count. */
+	failures?: number;
+	/** Exact model selected for this try. */
+	model?: string;
+	/** Recorded before signalling the child, so a crash during cancellation is recoverable. */
+	stopReason?: string;
+	/** This try was charged its reservation rather than complete provider usage. */
+	reservationCharged?: boolean;
 	/** Known spend of earlier failed tries of this head. Absent means 0. */
 	earlierUsd?: number;
 	/** Epoch ms when this try was claimed; its time limit counts from here. */
@@ -203,6 +211,10 @@ export function reportedUsd(attempts: readonly Readonly<AttemptState>[]): number
 	return amounts.some((usd) => usd === null) ? null : (amounts as number[]).reduce((sum, usd) => sum + usd, 0);
 }
 
-/** A failed or skipped review with known spend: resume may run it again for the same head. */
+/** Old records did not count failures separately from skipped claims. */
+export const reviewFailures = (review: Readonly<ReviewState> | null | undefined): number =>
+	review?.failures ?? (review?.status === "failed" ? 1 : 0);
+
+/** Skips do not exhaust retries; two failed tries block this head, not the batch. */
 export const reviewRetryable = (review: Readonly<ReviewState> | null | undefined): boolean =>
-	(review?.status === "failed" || review?.status === "skipped") && review.spentUsd !== null;
+	(review?.status === "failed" || review?.status === "skipped") && review.spentUsd !== null && reviewFailures(review) < 2;

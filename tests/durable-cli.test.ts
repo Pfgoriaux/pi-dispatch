@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { ConfigError, main, parseConfig, request, reviewerAgent, socketPath, writerAgent } from '../src/durable/cli.ts';
 import { formatReport, openBatch, policyHash, type BatchOwner, type PilotConfig } from '../src/durable/scheduler.ts';
 import { processStartIdentity } from '../src/durable/store.ts';
-import { parseReview, pilotSessionId } from '../src/durable/supervisor.ts';
+import { parseReview, pilotSessionId, Supervisor } from '../src/durable/supervisor.ts';
 import { discoverAgents } from '../src/agents.ts';
 import { batchesDir, registerDurableBatchTool } from '../src/tools/durable-batch.ts';
 
@@ -58,7 +58,7 @@ const id=review?/INTENT[^\\n]*\\ndo (\\S+)/.exec(prompt)[1]:/task ([^ ]+)\\. You
 const mode=${JSON.stringify(behaviour)}[review?id+':review':id]??(review?'clean':'ok');
 const read=()=>fs.existsSync(${JSON.stringify(log)})?fs.readFileSync(${JSON.stringify(log)},'utf8').trim().split('\\n').map(l=>JSON.parse(l)):[];
 const earlier=read().filter(e=>e.event==='start'&&e.id===id&&e.kind===kind).length;
-const log=(event)=>fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({event,id,kind,pid:process.pid,at:Date.now(),prompt})+'\\n');
+const log=(event)=>fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({event,id,kind,pid:process.pid,at:Date.now(),prompt,model:args[args.indexOf('--model')+1]})+'\\n');
 log('start');
 const now=()=>new Date().toISOString();
 const file=path.join(dir,now().replace(/[:.]/g,'-')+'_'+sid+'.jsonl');
@@ -68,11 +68,13 @@ out({type:'session',version:3,id:sid,timestamp:now(),cwd:process.cwd()});
 entry({type:'session',version:3,id:sid,timestamp:now(),cwd:process.cwd()});
 entry({type:'message',id:'u1',parentId:null,timestamp:now(),message:{role:'user',content:[{type:'text',text:'task'}]}});
 const finish=(text='done',usage=${JSON.stringify(usage)})=>{const message={role:'assistant',content:[{type:'text',text}],stopReason:'stop',model:'fake',usage};out({type:'message_end',message});entry({type:'message',id:'a1',parentId:'u1',timestamp:now(),message});log('end');out({type:'agent_end',messages:[]});out({type:'agent_settled'});};
+const partial=()=>{const message={role:'assistant',content:[{type:'text',text:'still reviewing'}],stopReason:'stop',usage:{...${JSON.stringify(usage)},cost:{total:3}}};out({type:'message_end',message});entry({type:'message',id:'a1',parentId:'u1',timestamp:now(),message});log('partial');setInterval(()=>{},1000);};
 const commit=(f)=>{fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSync(f,id+' '+Date.now()+'\\n');cp.execFileSync('git',['add','--',f]);cp.execFileSync('git',['commit','-q','-m','worker '+id]);};
 const blocker='## [blocker] Broken '+id+'\\n- File: src/'+id+'.txt:1\\n- Problem: wrong value\\n- Fix: correct it\\n';
 const gate=(then)=>{const f=path.join(${JSON.stringify(gates)},kind+'-'+id);const t=setInterval(()=>{if(fs.existsSync(f)){clearInterval(t);then();}},50);};
-const reviewer={runaway:()=>setInterval(()=>out({type:'message_update',assistantMessageEvent:{type:'thinking_delta',contentIndex:0,delta:'!'}}),20),blank:()=>finish(''),'blank-once':()=>finish(earlier===0?'':'No findings.'),clean:()=>finish('No findings.'),block:()=>finish(blocker),'block-once':()=>finish(earlier===0?blocker:'No findings.'),unpriced:()=>finish('No findings.',{...${JSON.stringify(usage)},cost:undefined}),gate:()=>gate(()=>finish('No findings.'))};
-const work={ok:()=>{commit('src/'+id+'.txt');finish();},slow:()=>setTimeout(()=>{commit('src/'+id+'.txt');finish();},700),outside:()=>{commit('docs/'+id+'.md');finish();},hang:()=>setInterval(()=>{},1000),stubborn:()=>{process.on('SIGTERM',()=>{});setInterval(()=>{},1000);},gate:()=>gate(()=>{commit('src/'+id+'.txt');finish();})};
+const runaway=()=>setInterval(()=>out({type:'message_update',assistantMessageEvent:{type:'thinking_delta',contentIndex:0,delta:'!'}}),20);
+const reviewer={runaway,partial,'runaway-once':()=>earlier===0?runaway():finish('No findings.'),stubborn:()=>{process.on('SIGTERM',()=>log('stopped'));setInterval(()=>{},1000);},blank:()=>finish(''),'blank-once':()=>finish(earlier===0?'':'No findings.'),clean:()=>finish('No findings.'),block:()=>finish(blocker),'block-once':()=>finish(earlier===0?blocker:'No findings.'),unpriced:()=>finish('No findings.',{...${JSON.stringify(usage)},cost:undefined}),gate:()=>gate(()=>finish('No findings.'))};
+const work={ok:()=>{commit('src/'+id+'.txt');finish();},linger:()=>{commit('src/'+id+'.txt');finish();setInterval(()=>{},1000);},slow:()=>setTimeout(()=>{commit('src/'+id+'.txt');finish();},700),outside:()=>{commit('docs/'+id+'.md');finish();},hang:()=>setInterval(()=>{},1000),stubborn:()=>{process.on('SIGTERM',()=>{});setInterval(()=>{},1000);},gate:()=>gate(()=>{commit('src/'+id+'.txt');finish();})};
 setTimeout(()=>(review?reviewer:work)[mode](),300);
 `);
  const events = () => fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
@@ -129,6 +131,7 @@ function config(w: ReturnType<typeof workspace>, tasks: Spec[], pi: string, gh: 
   store: path.join(w.ws, 'store.sqlite'),
   repo: { root: w.repo, baseBranch: 'feat/pilot', worktreesRoot: path.join(w.ws, '.worktrees'), sessionsRoot: path.join(w.ws, 'sessions'), branchPrefix: 'pilot/b1' },
   worker: { piExecutable: pi, model: 'fake/model', thinking: 'off' },
+  reviewer: { model: 'fake/reviewer', fallbacks: ['fake/fallback'] },
   publication: { remote: 'origin', url: extra.url ?? w.bare, repo: 'owner/proj', gh },
  };
 }
@@ -177,6 +180,13 @@ test('config: missing inputs, caps, deadline, and spend fail closed', () => {
  broken((c) => { c.limits.maxAttemptsPerTask = 3; }, /from 1 to 2/);
  broken((c) => { delete c.publication; }, /publication must be an object/);
  broken((c) => { c.worker.model = 'fast'; }, /exact provider\/id/);
+ broken((c) => { delete c.reviewer; }, /reviewer must be an object/);
+ broken((c) => { c.reviewer.model = c.worker.model; }, /must differ from worker.model/);
+ broken((c) => { c.reviewer.model = 'balanced'; }, /exact provider\/id/);
+ broken((c) => { c.reviewer.fallbacks = []; }, /at least 1/);
+ broken((c) => { c.reviewer.fallbacks = ['balanced']; }, /exact provider\/id/);
+ broken((c) => { c.reviewer.fallbacks = [c.worker.model]; }, /must differ from worker.model/);
+ broken((c) => { c.reviewer.fallbacks = [c.reviewer.model]; }, /must not repeat/);
  broken((c) => { c.worker.piExecutable = 'pi'; }, /absolute path/);
  // The policy hash covers every input, so a resume with changed inputs is refused by the store.
  assert.notEqual(policyHash(valid), policyHash({ ...valid, limits: { ...valid.limits, maxWorkers: 2 } }));
@@ -218,6 +228,8 @@ test('scheduler: stacked dependencies, worker cap, PR-ready report, no merges', 
  // Four attempts and four clean reviews at $0.25 each.
  assert.equal(report.spentUsd, 2); assert.deepEqual(report.halted, []);
  assert.equal(pi.reviews().length, 4);
+ assert.ok(pi.reviews().every((r) => r.model === cfg.reviewer.model));
+ assert.ok(pi.starts().every((r) => r.model === cfg.worker.model));
  assert.ok(report.tasks.every((t) => t.review?.status === 'done' && t.review.blocking === 0));
  // b started from a's verified head, and its draft PR is stacked on a's branch.
  assert.equal(tasks.b.baseSha, tasks.a.headSha); assert.equal(tasks.b.parent, 'a');
@@ -469,6 +481,8 @@ test('review: a budget-skipped review pauses the batch; resume reviews the same 
  assert.equal(byId(resumed.report).a.headSha, a1.headSha, 'the same head is reviewed');
  assert.deepEqual([pi.starts('a').length, pi.starts('b').length, pi.reviews('a').length, pi.reviews('b').length, gh.prs().length], [1, 1, 1, 1, 2]);
  assert.equal(resumed.report.spentUsd, 1);
+ assert.ok(pi.reviews().every((r) => r.model === cfg.reviewer.model), 'budget skips never advance the model or failure count');
+ assert.ok(resumed.attempts.every((a) => a.review?.failures === 0));
 });
 
 test('review: a blocker counts only when it cites a changed file', () => {
@@ -551,7 +565,7 @@ test('recovery: a worker that finished while its owner was dead is judged from i
  assert.equal(await resumed.exited, 0, resumed.output().stderr);
  assert.match(resumed.output().stdout, /pr-ready +a [\s\S]*pr-ready +b/);
  assert.deepEqual([pi.starts('a').length, pi.starts('b').length, gh.prs().length], [1, 1, 2]);
- assert.match(resumed.output().stdout, /Spend reported by workers: \$1\.00/);
+ assert.match(resumed.output().stdout, /Accounted spend: \$1\.00/);
 });
 
 test('recovery: missing or inconsistent session evidence keeps the attempt blocked', async () => {
@@ -673,6 +687,7 @@ test('durable_batch: an approved launch starts exactly one owner; status and sto
  }
  assert.match(await call({ action: 'launch', id }), /already has a live owner/);
  assert.equal(asked.length, 1, 'a live owner is never asked about twice');
+ assert.ok(asked[0].includes('Reviewer: fake/reviewer; fallbacks: fake/fallback'));
  await waitFor(() => pi.starts('a').length === 1, 30_000);
  assert.match(await call({ action: 'status', id }), /running +a/);
  assert.match(await call({ action: 'stop', id }), /Draining/);
@@ -720,6 +735,8 @@ test('review: a failed or unstartable review pauses the batch unpublished; resum
  assert.equal(byId(resumed.report).a.state, 'pr-ready', formatReport(resumed.report));
  assert.deepEqual([pi.starts('a').length, pi.reviews('a').length, gh.prs().length], [1, 2, 1]);
  assert.equal(resumed.report.spentUsd, 0.75, 'the failed review\'s spend is kept');
+ assert.deepEqual(pi.reviews('a').map((r) => r.model), ['fake/reviewer', 'fake/fallback']);
+ assert.equal(resumed.attempts[0].review?.model, 'fake/fallback');
 
  // A review that cannot start (an earlier spawn's session directory exists) spends nothing and is retried in a new session.
  const w2 = workspace();
@@ -747,20 +764,26 @@ test('cli: a configuration changed after approval starts nothing', async () => {
  assert.equal(fs.existsSync(cfg.store), false); assert.equal(pi.starts().length, 0);
 });
 
-test('review: a runaway reviewer is stopped at its time limit and halts with unknown spend, unpublished', async () => {
+test('review: a runaway reviewer charges its reservation, pauses unpublished, and retries on the fallback', async () => {
  const w = workspace();
- const pi = fakePi({ 'a:review': 'runaway' });
+ const pi = fakePi({ 'a:review': 'runaway-once' });
  const gh = fakeGh(w.bare);
  const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin);
  const owner = await openBatch(cfg, { ...agents, reviewTimeLimitMs: 3000 });
  let report;
  try { await owner.create(); report = await owner.execute(); } finally { await owner.close(); }
  const a = byId(report).a;
- assert.equal(a.state, 'blocked', formatReport(report)); assert.match(a.reason, /review of a#1 is failed: review exceeded its 3 s time limit/);
- assert.match(report.halted.join('\n'), /review of a#1 has unknown spend/);
+ assert.equal(a.state, 'verified', formatReport(report)); assert.equal(a.reason, 'review pending: reviewer timed out');
+ assert.deepEqual(report.halted, []); assert.equal(report.spentUsd, 1.25);
  const reviewer = pi.reviews('a')[0].pid;
  assert.equal(await processStartIdentity(reviewer), null, 'the runaway reviewer is gone');
  assert.deepEqual([pi.reviews('a').length, gh.prs().length], [1, 0]);
+ const resumed = await runBatch(cfg, 'resume');
+ assert.equal(byId(resumed.report).a.state, 'pr-ready', formatReport(resumed.report));
+ assert.equal(resumed.report.spentUsd, 1.5, 'one reservation plus two priced completions, without double charging');
+ assert.equal(resumed.attempts[0].review?.earlierUsd, 1);
+ assert.deepEqual(pi.reviews('a').map((r) => r.model), ['fake/reviewer', 'fake/fallback']);
+ assert.deepEqual([pi.starts('a').length, gh.prs().length], [1, 1]);
 });
 
 test('recovery: an adopted runaway reviewer is stopped at the limit counted from its start', async () => {
@@ -774,6 +797,139 @@ test('recovery: an adopted runaway reviewer is stopped at the limit counted from
  const resumed = owner(file, 'resume', { PI_DISPATCH_DURABLE_REVIEW_LIMIT_MS: '4000' });
  assert.equal(await resumed.exited, 0, resumed.output().stderr);
  assert.notEqual(await processStartIdentity(reviewer), identity);
- assert.match(resumed.output().stdout, /blocked +a .*review exceeded its 4 s time limit/);
+ assert.match(resumed.output().stdout, /verified +a .*review pending: reviewer timed out/);
+ assert.match(resumed.output().stdout, /Accounted spend: \$1\.25/);
+ assert.doesNotMatch(resumed.output().stdout, /Halted:/);
  assert.deepEqual([pi.starts('a').length, pi.reviews('a').length, gh.prs().length], [1, 1, 0]);
+});
+
+test('review: owner cancellation charges once; two failures block only that task and its dependents', async () => {
+ const w = workspace();
+ const pi = fakePi({ 'a:review': 'gate' });
+ const gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a' }, { id: 'b', dependencies: ['a'] }, { id: 'c' }], pi.bin, gh.bin, { maxWorkers: 1 });
+ const first = await runBatch(cfg, 'run', async (owner) => {
+  await waitFor(() => pi.reviews('a').length === 1);
+  await owner.stop(true);
+ });
+ assert.equal(byId(first.report).a.reason, 'review pending: reviewer cancelled by owner');
+ assert.equal(first.attempts.find((a) => a.taskKey === 'a')?.review?.reservationCharged, true);
+ assert.deepEqual(first.report.halted, []);
+ const second = await runBatch(cfg, 'resume', async (owner) => {
+  await waitFor(() => pi.reviews('a').length === 2);
+  // Cancel only this review through the batch's normal owner operation.
+  await owner.stop(true);
+ });
+ assert.equal(byId(second.report).a.state, 'blocked');
+ assert.match(byId(second.report).a.reason, /review failed twice/);
+ assert.deepEqual(second.report.halted, []);
+ const third = await runBatch(cfg, 'resume');
+ assert.deepEqual(third.report.tasks.map((t) => [t.id, t.state]), [['a', 'blocked'], ['b', 'blocked'], ['c', 'pr-ready']]);
+ assert.deepEqual([pi.starts('a').length, pi.reviews('a').length, pi.starts('b').length, gh.prs().length], [1, 2, 0, 1]);
+ assert.equal(third.report.spentUsd, 2.75);
+ assert.equal(third.attempts.find((a) => a.taskKey === 'a')?.review?.failures, 2);
+});
+
+test('review: two priced failures continue other tasks without a third review or another pause', async () => {
+ const w = workspace();
+ const pi = fakePi({ 'a:review': 'blank' });
+ const gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a' }, { id: 'b', dependencies: ['a'] }, { id: 'c' }], pi.bin, gh.bin);
+ const first = await runBatch(cfg);
+ assert.equal(first.report.phase, 'running');
+ const second = await runBatch(cfg, 'resume');
+ assert.equal(second.report.phase, 'finished', formatReport(second.report));
+ assert.deepEqual(second.report.halted, []);
+ assert.equal(byId(second.report).a.state, 'blocked');
+ assert.match(byId(second.report).a.reason, /review failed twice/);
+ assert.equal(byId(second.report).c.state, 'pr-ready');
+ const again = await runBatch(cfg, 'resume');
+ assert.equal(again.report.spentUsd, 1.25);
+ assert.deepEqual([pi.starts('a').length, pi.reviews('a').length, pi.starts('b').length, gh.prs().length], [1, 2, 0, 1]);
+});
+
+test('recovery: a crash during reviewer cancellation retains the stop charge and never respawns the unknown try', async () => {
+ const w = workspace();
+ const pi = fakePi({ 'a:review': 'stubborn' });
+ const gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin);
+ const file = batchFile(w, cfg);
+ const run = owner(file);
+ await waitFor(() => pi.reviews('a').length === 1);
+ const pid = pi.reviews('a')[0].pid;
+ leftovers.push(pid);
+ await liveReport(run, cfg, (r) => r.tasks[0].worker === pid);
+ // The fake installs its SIGTERM handler after startup.
+ await new Promise((r) => setTimeout(r, 500));
+ await request(socketPath(cfg.store), { op: 'stop', cancel: true });
+ await waitFor(() => pi.events().some((e) => e.event === 'stopped'));
+ run.child.kill('SIGKILL');
+ await run.exited;
+ const resumed = owner(file, 'resume');
+ assert.equal(await resumed.exited, 0, resumed.output().stderr);
+ assert.match(resumed.output().stdout, /review pending: reviewer cancelled by owner/);
+ assert.match(resumed.output().stdout, /Accounted spend: \$1\.25/);
+ assert.doesNotMatch(resumed.output().stdout, /Halted:/);
+ assert.equal(await processStartIdentity(pid), null);
+ assert.deepEqual([pi.starts('a').length, pi.reviews('a').length, gh.prs().length], [1, 1, 0]);
+});
+
+test('review: live and adopted cancellations retain reported costs above the reservation', async () => {
+ for (const crash of [false, true]) {
+  const w = workspace();
+  const pi = fakePi({ 'a:review': 'partial' });
+  const gh = fakeGh(w.bare);
+  const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin);
+  const file = batchFile(w, cfg);
+  const result = crash ? await cancelAdoptedReview(file, cfg, pi) : await runBatch(cfg, 'run', async (owner) => {
+    await waitFor(() => pi.events().some((e) => e.event === 'partial'));
+    await owner.stop(true);
+   });
+  assert.equal(result.report.spentUsd, 3.25, formatReport(result.report));
+  assert.deepEqual(result.report.halted, []);
+  assert.equal(result.attempts[0].review?.spentUsd, 3);
+  assert.deepEqual([pi.reviews('a').length, gh.prs().length], [1, 0]);
+ }
+});
+
+/** Direct adoption lets cancellation be active from the first identity poll, without a scheduler-start race. */
+function supervisorFor(cfg: PilotConfig, owner: BatchOwner, branch: string) {
+ return new Supervisor({
+  store: owner.store, featureRoot: cfg.repo.root, featureBranch: branch, piExecutable: cfg.worker.piExecutable,
+  worktreesRoot: cfg.repo.worktreesRoot, sessionsRoot: cfg.repo.sessionsRoot, branchPrefix: cfg.repo.branchPrefix,
+  allowlist: { remotes: [{ name: cfg.publication.remote, url: cfg.publication.url }], bases: [cfg.repo.baseBranch] },
+ });
+}
+
+async function cancelAdoptedReview(file: string, cfg: PilotConfig, pi: ReturnType<typeof fakePi>) {
+ await crashOwner(file, cfg, pi, 'a', 'review');
+ await waitFor(() => pi.events().some((e) => e.event === 'partial'));
+ const reopened = await openBatch(cfg, agents);
+ try {
+  const attempt = (await reopened.store.read()).attempts[0];
+  await supervisorFor(cfg, reopened, attempt.branch!).review(attempt.key, {
+   agent: agents.reviewer, model: cfg.reviewer.model, thinking: 'off', intent: 'do a', baseSha: attempt.baseSha!,
+  }, { deadlineAt: Date.parse(cfg.limits.deadline), signal: AbortSignal.abort() });
+  return { report: await reopened.report(), attempts: (await reopened.store.read()).attempts };
+ } finally { await reopened.close(); }
+}
+
+test('recovery: cancelling an adopted writer does not discard complete spend evidence', async () => {
+ const w = workspace();
+ const pi = fakePi({ a: 'linger' });
+ const cfg = config(w, [{ id: 'a' }], pi.bin, fakeGh(w.bare).bin);
+ const file = batchFile(w, cfg);
+ await crashOwner(file, cfg, pi, 'a');
+ await waitFor(() => pi.events().some((e) => e.event === 'end' && e.kind === 'work'));
+ const reopened = await openBatch(cfg, agents);
+ try {
+  const attempt = (await reopened.store.read()).attempts[0];
+  const supervisor = supervisorFor(cfg, reopened, attempt.branch!);
+  const result = await supervisor.adopt({
+   key: 'a', prompt: '', agent, model: cfg.worker.model, thinking: 'off', ownedPaths: ['src/'], checks: ok,
+  }, attempt.key, { deadlineAt: Date.parse(cfg.limits.deadline), signal: AbortSignal.abort() });
+  assert.equal(result.spentUsd, 0.25);
+  assert.deepEqual((await reopened.report()).halted, []);
+ } finally { await reopened.close(); }
+ assert.equal(pi.starts('a').length, 1);
 });

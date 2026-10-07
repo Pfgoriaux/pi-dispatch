@@ -26,7 +26,7 @@ import type * as DurableModule from "@earendil-works/pi-durable";
 import type { AgentConfig, ThinkingLevel } from "../types.ts";
 import { gitRun } from "../worktree.ts";
 import { loadDurableRuntime, type DurableRuntime } from "./compat.ts";
-import { reportedUsd, reviewRetryable, type AttemptState, type ReviewState } from "./contracts.ts";
+import { reportedUsd, reviewFailures, reviewRetryable, type AttemptState, type ReviewState } from "./contracts.ts";
 import { branchSha, isAncestor } from "./git.ts";
 import { blockers, reconcileEffects } from "./reconcile.ts";
 import { openDurableStore, type DurableStore, type StoreSnapshot } from "./store.ts";
@@ -69,6 +69,7 @@ export interface PilotConfig {
 		readonly model: string;
 		readonly thinking: ThinkingLevel;
 	};
+	readonly reviewer: { readonly model: string; readonly fallbacks: readonly string[] };
 	readonly publication: { readonly remote: string; readonly url: string; readonly repo: string; readonly gh: string };
 }
 
@@ -629,9 +630,11 @@ export class BatchOwner {
 
 	/** Run, or adopt, the review of `good`'s head. A new review holds the claim lock like an attempt. */
 	async #review(good: Readonly<AttemptState>, base: Base): Promise<ReviewState> {
-		const { worker } = this.config;
+		const { worker, reviewer } = this.config;
+		const models = [reviewer.model, ...reviewer.fallbacks];
+		const model = good.review?.status === "running" ? good.review.model ?? reviewer.model : models[reviewFailures(good.review)];
 		const request: ReviewRequest = {
-			agent: this.options.reviewer, model: worker.model, thinking: worker.thinking, intent: this.#spec(good.taskKey).prompt, baseSha: base.sha,
+			agent: this.options.reviewer, model, thinking: worker.thinking, intent: this.#spec(good.taskKey).prompt, baseSha: base.sha,
 		};
 		const review = () => this.#supervisor(good.branch!, base.prBase).review(good.key, request, this.#limits());
 		if (good.review?.status === "running") return review();
@@ -837,7 +840,7 @@ export function formatReport(report: BatchReport): string {
 	const lines = [
 		`Batch ${report.batchId}: ${report.phase}; deadline ${report.deadline}`,
 		`Tasks: ${counts.map(([state, n]) => `${n} ${state}`).join(", ") || "none"}`,
-		`Spend reported by workers: ${usd(report.spentUsd)} of ${usd(report.allowanceUsd)} allowance (reservations are not a provider spending cap)`,
+		`Accounted spend: ${usd(report.spentUsd)} of ${usd(report.allowanceUsd)} allowance (stopped reviews charge reservations; not a provider spending cap)`,
 	];
 	if (report.halted.length > 0) lines.push("Halted:", ...report.halted.map((reason) => `  - ${reason}`));
 	for (const task of report.tasks) {

@@ -381,7 +381,7 @@ Agents can prepare a batch with the `durable_batch` tool; the user approves the 
   it as `~/.pi/agent/pi-dispatch/batches/<id>.json` (private directory and
   file). It refuses to change a batch that has a store.
 - `launch` shows a Pi confirm dialog with the policy hash, repository,
-  worker executable and model, allowance, deadline, publication target and
+  worker executable and model, reviewer models, allowance, deadline, publication target and
   `gh`, store and roots, and each task's owned paths, checks, and prompt (first
   200 characters). Only an approval starts one detached owner (`run`, or
   `resume` when the store exists), logging to `<id>.log` next to the draft;
@@ -407,7 +407,9 @@ Every field is required, except `worker.piPrefixArgs`:
   "store": "/abs/path/night-1.sqlite",
   "repo": { "root": "/abs/repo", "baseBranch": "feat/x", "worktreesRoot": "/abs/.worktrees",
             "sessionsRoot": "/abs/sessions", "branchPrefix": "pilot/night-1" },
-  "worker": { "piExecutable": "/abs/bin/pi", "model": "provider/id", "thinking": "high" },
+  "worker": { "piExecutable": "/abs/bin/pi", "model": "aperture/neuralwatt/kimi-k3", "thinking": "high" },
+  "reviewer": { "model": "openai-codex/gpt-6-astra",
+                "fallbacks": ["aperture/neuralwatt/glm-5.3"] },
   "publication": { "remote": "origin", "url": "git@github.com:owner/repo.git",
                    "repo": "owner/repo", "gh": "/abs/bin/gh" }
 }
@@ -419,6 +421,11 @@ Every field is required, except `worker.piPrefixArgs`:
   zone; `run` rejects one in the past or more than 24 days ahead.
 - The store's policy hash covers every configuration field. `resume`, `status`,
   and `stop` need the same values; any change is refused.
+- `reviewer.model` and its non-empty `fallbacks` list require exact `provider/id`
+  values. They must be distinct from each other and from `worker.model`.
+  Retries use the next reviewer model; skipped budget/deadline claims do not
+  advance it. Two failed tries exhaust the review, so only the first fallback
+  can run for a head.
 - `ownedFiles` entries are repository-relative files or directories ending in
   `/`. Each task needs at least one check (argv, no shell). Checks run with the
   CLI's environment, so start it without production credentials.
@@ -444,6 +451,7 @@ cli.ts run
       │    └─ succeeded attempt → review its head (read-only, one slot, budgeted)
       │         ├─ review cannot finish (budget, deadline, reviewer error) → pause the batch;
       │         │  resume reviews the same head again
+      │         ├─ two failed review tries for that head → task blocked; other tasks continue
       │         ├─ validated blocker and attempts left → one fix attempt from that head → review again
       │         └─ otherwise → verified: head SHA, base SHA, checks passed, review completed
       └─ after all tasks settle: publish in dependency order
@@ -462,7 +470,7 @@ The report gives each task a state:
 | `blocked` | Not attempted or stopped by a dependency, the deadline, the budget, or a halted batch |
 | `running` / `pending` | Not settled yet |
 
-It also shows reported spend (attempts and reviews), halt reasons, review
+It also shows accounted spend (reported usage plus stopped-review charges), halt reasons, review
 counts, the recorded worker PID of running tasks, and short reasons. It never shows prompts, worker output, or reviewer
 text. Reasons are cut to one line of 240 characters.
 
@@ -470,7 +478,7 @@ Review:
 
 - After an attempt succeeds, one reviewer child runs with the bundled
   `reviewer` agent, restricted to `read`, `grep`, `find`, and `ls` (plus
-  Linkup web tools when configured), on the configured worker model. It gets the `pr_review` correctness-and-security
+  Linkup web tools when configured), on `reviewer.model`. It gets the `pr_review` correctness-and-security
   prompt and the saved diff from the task base to the head.
 - Every task needs a completed review of its head before it settles, before
   dependents start from it, and before publication. The review is recorded on
@@ -480,12 +488,19 @@ Review:
 - A review that does not fit the allowance, comes after the deadline, cannot
   start, or ends without an answer is recorded as skipped or failed. The task
   stays `verified` with `review pending: <why>`, nothing is published, and the
-  batch pauses like `stop`. `resume` reviews the same head again; a failed
-  try's spend stays counted. Two reviews claiming the allowance together can
-  pause again, one resume each. Unknown review spend halts the batch.
+  batch pauses like `stop`. `resume` reviews the same head with the next model
+  after a failure; a failed try's spend stays counted. Budget/deadline skips
+  do not count as failures. After two failures, the task is blocked with
+  `review failed twice`, never published, and other tasks continue.
+  Unknown spend and ambiguous worker outcomes still halt the batch.
 - One review try may run for 20 minutes, counted from its start (also after a
   resume adopts it); `PI_DISPATCH_DURABLE_REVIEW_LIMIT_MS` changes this for an
-  owner. A reviewer stopped at the limit has unknown spend, so the batch halts.
+  owner. A review stopped by the owner or time limit charges its full reservation
+  (or reported spend if higher), pauses with `review pending: reviewer timed out`
+  or `review pending: reviewer cancelled by owner`, and can retry on resume.
+  This is conservative bookkeeping, not a measured provider bill or a spending
+  cap. The stop intent is recorded before signalling the child; recovery
+  confirms its process group exited before charging it once.
 - A `[blocker]` finding counts as validated only when it cites a file the
   diff changes. A validated blocker starts one fix attempt from the reviewed
   head, inside `maxAttemptsPerTask`. A blocker that survives, or a failed fix,
@@ -500,8 +515,9 @@ Ownership and stopping:
   directory must be private to the user.
 - `stop` drains: no new attempts or publications start, running attempts
   finish, then the owner prints the report and exits. Unfinished tasks continue
-  on `resume`. `stop --cancel` also stops running workers; their spend becomes
-  unknown, which halts the batch. The first SIGINT/SIGTERM drains; a second
+  on `resume`. `stop --cancel` also stops running workers. Stopped writers
+  with unknown spend halt the batch; stopped reviews use the charge above.
+  The first SIGINT/SIGTERM drains; a second
   cancels. SIGHUP cancels running workers.
 - `status` without a live owner opens the store, which runs recovery, and
   prints the report without scheduling anything.
@@ -530,7 +546,8 @@ Recovery after a killed owner:
   Pi session file, whose assistant messages must match the event log. A
   settled attempt then goes through the normal branch, ownership, and check
   verification.
-- A worker that exited without settling fails with unknown spend. Missing or
+- A worker that exited without settling fails with unknown spend unless it
+  is a review with a recorded owner stop. Missing or
   inconsistent files, a process group that survives SIGKILL, an identity that
   stays unreadable, a worker recorded on another host, or no recorded worker
   leave the attempt blocked with unknown spend.

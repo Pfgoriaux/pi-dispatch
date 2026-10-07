@@ -126,6 +126,19 @@ function readBatch(r: Reader, value: unknown): PilotConfig["batch"] {
 	return { id, tasks };
 }
 
+const exactModel = (value: string) => /^[^/\s]+\/\S+$/.test(value);
+
+function readReviewer(r: Reader, value: unknown, workerModel: unknown): PilotConfig["reviewer"] {
+	const raw = r.object(value, "reviewer");
+	const model = r.string(raw, "model", "reviewer", exactModel, "an exact provider/id");
+	const fallbacks = r.strings(raw, "fallbacks", "reviewer", 1);
+	const models = [model, ...fallbacks];
+	if (!fallbacks.every(exactModel)) r.problems.push("reviewer.fallbacks must contain exact provider/id values");
+	if (models.includes(workerModel as string)) r.problems.push("reviewer models must differ from worker.model");
+	if (new Set(models).size !== models.length) r.problems.push("reviewer models must not repeat");
+	return { model, fallbacks };
+}
+
 /** Validate a batch configuration. Every field is required; caps, spend, deadline, and publication fail closed. */
 export function parseConfig(value: unknown): PilotConfig {
 	const r = new Reader();
@@ -150,9 +163,10 @@ export function parseConfig(value: unknown): PilotConfig {
 		worker: {
 			piExecutable: r.absolute(worker, "piExecutable", "worker"),
 			...(prefixArgs ? { piPrefixArgs: prefixArgs } : {}),
-			model: r.string(worker, "model", "worker", (v) => /^[^/\s]+\/\S+$/.test(v), "an exact provider/id"),
+			model: r.string(worker, "model", "worker", exactModel, "an exact provider/id"),
 			thinking: r.string(worker, "thinking", "worker", (v) => THINKING_LEVELS.has(v), "a thinking level") as ThinkingLevel,
 		},
+		reviewer: readReviewer(r, raw.reviewer, worker.model),
 		publication: {
 			remote: r.string(publication, "remote", "publication"),
 			url: r.string(publication, "url", "publication"),

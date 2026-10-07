@@ -40,6 +40,9 @@ processes in Git worktrees. Usage and current behavior: [README.md](README.md).
   died, which would end workers with their owner. Recovery judges an orphaned
   worker only from that file and Pi's session file; never respawn an attempt
   or review whose outcome is unknown, and record each spend once.
+  A recorded reviewer stop can charge its reservation after confirmed exit;
+  this exception never applies to writers. Reviewer failures and skipped
+  claims have separate counts; only failures advance the reviewer model.
 - Agents may draft and request durable batches; only the user's confirmation
   in the Pi UI launches one (`src/tools/durable-batch.ts`). Never add an
   auto-approve path, and keep `agents/durable/writer.md` out of the roster.

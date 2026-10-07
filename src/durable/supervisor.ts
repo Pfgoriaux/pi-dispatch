@@ -10,8 +10,8 @@
  *   a child running. If this process dies, the child keeps running (its
  *   stdout is a file). `adopt` waits for it, never respawns it, and judges it
  *   from its session evidence (evidence.ts).
- * - `review` runs one read-only reviewer child per succeeded head, recorded on
- *   the attempt before it spawns, so a review is never repeated for a SHA.
+ * - `review` records each read-only try before spawning. A completed review
+ *   is never repeated; at most two failed tries are allowed for a head.
  * - Pushes and pull requests go through `runEffect` (reconcile.ts).
  *   Target branches are never merged or removed.
  */
@@ -28,10 +28,10 @@ import { correctnessSecurityTask } from "../tools/pr-review-prompts.ts";
 import { runPilotProc, type PilotProcResult } from "../worker-proc.ts";
 import { dirtyLines, gitThrow } from "../worktree.ts";
 import {
-	attemptKey, committedUsd, putAttempt, reviewRetryable, runningWorkers,
+	attemptKey, committedUsd, putAttempt, reviewFailures, reviewRetryable, runningWorkers,
 	type AttemptState, type ReviewState, type WorkerIdentity,
 } from "./contracts.ts";
-import { readEvidence } from "./evidence.ts";
+import { readEvidence, reportedEvidenceUsd } from "./evidence.ts";
 import {
 	applyPullRequest, applyPush, assertPublishTargets, branchSha, changedFiles, ensureTaskWorktree,
 	isAncestor, observePullRequest, observePush, outsideOwnership, PROTECTED_BRANCHES,
@@ -95,6 +95,8 @@ export interface RunLimits {
 	readonly canStart?: () => boolean;
 	/** Stop reason when `deadlineAt` passes; defaults to "deadline exceeded". */
 	readonly expiry?: string;
+	/** Persist review cancellation before signalling its child. */
+	readonly onStop?: (reason: string) => Promise<void>;
 }
 
 /** Default bound on one review try; real reviews take minutes, a runaway one would hold its slot until the deadline. */
@@ -230,6 +232,7 @@ export async function awaitExit(worker: WorkerIdentity, limits: RunLimits): Prom
 		const why = limits.signal?.aborted ? "cancelled" : Date.now() >= limits.deadlineAt ? limits.expiry ?? "deadline exceeded" : null;
 		const waited = Date.now() - signalledAt;
 		if (why && !stopped) {
+			await limits.onStop?.(why);
 			stopped = why;
 			signalledAt = Date.now();
 			signalWorker(worker.pid, "SIGTERM", leader);
@@ -269,7 +272,7 @@ const reviewRun = (key: string, review: Readonly<ReviewState>) =>
 /** A finished child: settled with its answer, or a terminal outcome. */
 type Ran =
 	| { status: "settled"; spentUsd: number | null; text: string }
-	| { status: "blocked" | "failed"; spentUsd: number | null; reason: string };
+	| { status: "blocked" | "failed"; spentUsd: number | null; reason: string; stopped?: boolean; reportedUsd?: number };
 
 async function judgeRun(result: PilotProcResult, stopped?: string): Promise<Ran> {
 	const spentUsd = spendOf(result);
@@ -277,14 +280,24 @@ async function judgeRun(result: PilotProcResult, stopped?: string): Promise<Ran>
 		return { status: "blocked", spentUsd: null, reason: `worker ${result.spawned.pid} or its process group is still running` };
 	}
 	if (result.launched && !result.spawned) return { status: "blocked", spentUsd: null, reason: result.error ?? "worker identity was never recorded" };
-	if (result.status !== "ok") return { status: "failed", spentUsd, reason: stopped ?? result.error ?? result.status };
+	if (result.status !== "ok") {
+		const reported = result.usage?.cost.total ?? 0;
+		return {
+			status: "failed", spentUsd, reason: stopped ?? result.error ?? result.status, stopped: !!stopped,
+			reportedUsd: Number.isFinite(reported) && reported > 0 ? reported : 0,
+		};
+	}
 	return { status: "settled", spentUsd, text: result.text };
 }
 
 /** Judge a previous owner's child once it exits, from its session evidence only. */
-async function judgeOrphan(worker: WorkerIdentity, dir: string, sessionId: string, limits: RunLimits): Promise<Ran> {
+async function judgeOrphan(worker: WorkerIdentity, dir: string, sessionId: string, limits: RunLimits, review?: Readonly<ReviewState>): Promise<Ran> {
 	const exit = await awaitExit(worker, limits);
 	if ("blocked" in exit) return { status: "blocked", spentUsd: null, reason: exit.blocked };
+	const stopped = exit.stopped ?? review?.stopReason;
+	if (review && stopped) {
+		return { status: "failed", spentUsd: null, reason: stopped, stopped: true, reportedUsd: reportedEvidenceUsd(dir, sessionId) };
+	}
 	const evidence = readEvidence(dir, sessionId);
 	if (evidence.state === "ambiguous") return { status: "blocked", spentUsd: null, reason: evidence.reason };
 	if (evidence.state === "unsettled") return { status: "failed", spentUsd: null, reason: exit.stopped ?? "worker exited before it settled" };
@@ -358,15 +371,23 @@ export class Supervisor {
 	async #bounded<T>(limits: RunLimits, fn: (signal: AbortSignal, stopped: () => string | undefined) => Promise<T>): Promise<T> {
 		const controller = new AbortController();
 		let stopped: string | undefined;
-		const stop = (why: string) => { stopped ??= why; controller.abort(); };
+		let stopping: Promise<void> | undefined;
+		const stop = (why: string) => {
+			if (stopping) return;
+			stopped = why;
+			stopping = Promise.resolve().then(() => limits.onStop?.(why)).finally(() => controller.abort());
+			stopping.catch(() => undefined);
+		};
 		const timer = setTimeout(() => stop(limits.expiry ?? "deadline exceeded"), limits.deadlineAt - Date.now());
 		const cancel = () => stop("cancelled");
 		limits.signal?.addEventListener("abort", cancel, { once: true });
+		if (limits.signal?.aborted) cancel();
 		try {
 			return await fn(controller.signal, () => stopped);
 		} finally {
 			clearTimeout(timer);
 			limits.signal?.removeEventListener("abort", cancel);
+			await stopping;
 		}
 	}
 
@@ -503,10 +524,10 @@ export class Supervisor {
 		if (recorded && recorded.headSha !== attempt.headSha) throw new SupervisorBlockedError(`${key} has a review of another head.`);
 		if (recorded?.status === "running") return this.#adoptReview(attempt, recorded, request, limits);
 		if (recorded && !reviewRetryable(recorded)) return recorded;
-		const review = await this.#queue(() => this.#claimReview(attempt, limits));
+		const review = await this.#queue(() => this.#claimReview(attempt, request.model, limits));
 		if (review.status !== "running") return review;
 		let spawned = false;
-		const ran = await this.#bounded(this.#reviewLimits(review, limits), async (signal, stopped) => {
+		const ran = await this.#bounded(this.#reviewLimits(attempt, review, limits), async (signal, stopped) => {
 			const options = this.#spawn(reviewRun(attempt.key, review), attempt.worktree!, signal, async (worker) => {
 				spawned = true;
 				await this.#recordReviewWorker(attempt, worker);
@@ -524,15 +545,23 @@ export class Supervisor {
 	}
 
 	/** The batch limits, ending earlier at the review's own time limit when that comes first. */
-	#reviewLimits(review: Readonly<ReviewState>, limits: RunLimits): RunLimits {
+	#reviewLimits(attempt: AttemptState, review: Readonly<ReviewState>, limits: RunLimits): RunLimits {
 		const limitMs = this.options.reviewTimeLimitMs ?? REVIEW_TIME_LIMIT_MS;
 		const end = (review.startedAt ?? Date.now()) + limitMs;
-		if (end >= limits.deadlineAt) return limits;
-		const label = limitMs >= 60_000 ? `${Math.round(limitMs / 60_000)} min` : `${Math.round(limitMs / 1000)} s`;
-		return { ...limits, deadlineAt: end, expiry: `review exceeded its ${label} time limit` };
+		return {
+			...limits, deadlineAt: review.stopReason ? Date.now() : Math.min(end, limits.deadlineAt), expiry: review.stopReason ?? "reviewer timed out",
+			onStop: async (reason) => {
+				const { store } = this.options;
+				await store.harness.commit(async (tx) => {
+					const current = (await tx.doc(store.contracts.AttemptDoc, attempt.key, attempt)).review;
+					if (current?.status !== "running") throw new Error(`Review of ${attempt.key} is not running.`);
+					current.stopReason ??= reason;
+				}, store.context);
+			},
+		};
 	}
 
-	async #claimReview(attempt: AttemptState, limits: RunLimits): Promise<ReviewState> {
+	async #claimReview(attempt: AttemptState, model: string, limits: RunLimits): Promise<ReviewState> {
 		const { store } = this.options;
 		const plan = planReview(await store.read(), attempt.key, limits.deadlineAt);
 		const skip = "skip" in plan ? plan.skip : null;
@@ -541,7 +570,7 @@ export class Supervisor {
 			headSha: attempt.headSha!, status: skip ? "skipped" : "running", reservedUsd: "reserveUsd" in plan ? plan.reserveUsd : 0,
 			spentUsd: 0, worker: null, blocking: 0, other: 0, findings: null, reason: skip,
 			tries: before ? (before.tries ?? 1) + 1 : 1, earlierUsd: before ? (before.earlierUsd ?? 0) + before.spentUsd! : 0,
-			startedAt: Date.now(),
+			startedAt: Date.now(), model, failures: reviewFailures(before),
 		};
 		await store.harness.commit(async (tx) => {
 			if (!skip && (limits.signal?.aborted || limits.canStart?.() === false)) throw new AttemptNotStartedError("Stopped before review.");
@@ -564,7 +593,7 @@ export class Supervisor {
 	async #adoptReview(attempt: AttemptState, review: ReviewState, request: ReviewRequest, limits: RunLimits): Promise<ReviewState> {
 		if (!review.worker) throw new SupervisorBlockedError(`Review of ${attempt.key} has no recorded worker to adopt.`);
 		const { sessionId, dir } = this.#session(reviewRun(attempt.key, review));
-		const ran = await judgeOrphan(review.worker, dir, sessionId, this.#reviewLimits(review, limits))
+		const ran = await judgeOrphan(review.worker, dir, sessionId, this.#reviewLimits(attempt, review, limits), review)
 			.catch((error): Ran => ({ status: "blocked", spentUsd: null, reason: message(error) }));
 		return this.#settleReview(attempt, request, ran);
 	}
@@ -576,6 +605,15 @@ export class Supervisor {
 			const review = (await tx.doc(store.contracts.AttemptDoc, attempt.key, attempt)).review;
 			if (review?.status !== "running") throw new Error(`Review of ${attempt.key} is not running.`);
 			Object.assign(review, patch);
+			if (ran.status === "failed" && ran.stopped) {
+				review.spentUsd = Math.max(review.reservedUsd, ran.spentUsd ?? 0, ran.reportedUsd ?? 0);
+				review.reservationCharged = true;
+				review.reason = ran.reason === "cancelled" ? "reviewer cancelled by owner" : "reviewer timed out";
+			}
+			if (patch.status === "failed") {
+				review.failures = (review.failures ?? 0) + 1;
+				if (review.failures >= 2) review.reason = `review failed twice: ${review.reason}`;
+			}
 		}, store.context);
 		return (await this.#stored(attempt.key)).review!;
 	}
