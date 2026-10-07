@@ -5,13 +5,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { DispatchSpaces, SPACE_REFRESH_MS, SPACE_ROW_COUNT, SPACE_TTL_MS, type SpaceWorker } from "../src/spaces.ts";
 import { DispatchProgress } from "../src/progress.ts";
+import { herdrTransport } from "../src/herdr.ts";
 
 const scout: SpaceWorker = { index: 0, agent: "scout", status: "queued", attempts: 0 };
 
 function fixture(t: TestContext) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-spaces-test-"));
-	const log = path.join(dir, "calls.jsonl");
-	const variables = ["PATH", "HERDR_ENV", "HERDR_SOCKET_PATH", "HERDR_TEST_WORKSPACE", "HERDR_TEST_FAIL_REPORT"];
+	const records: string[][] = [];
+	const calls = () => records;
+	const variables = ["HERDR_ENV", "HERDR_SOCKET_PATH", "HERDR_TEST_WORKSPACE", "HERDR_TEST_FAIL_REPORT"];
 	const before = new Map(variables.map((name) => [name, process.env[name]]));
 	const owned: DispatchSpaces[] = [];
 	const warnings: string[] = [];
@@ -32,27 +34,24 @@ function fixture(t: TestContext) {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
-	// A shell fake starts in milliseconds; a Node fake can exceed herdrCommand's 5 s timeout on a loaded machine.
-	// Each call appends one record in a single write (panes and rows call concurrently):
-	// arguments joined by US (\x1f), terminated by RS (\x1e).
-	fs.writeFileSync(path.join(dir, "herdr"), `#!/bin/sh
-rec=$(printf '%s\\037' "$@"; printf '\\036')
-printf '%s' "$rec" >> '${log}'
-if [ "$1" = pane ] && [ "$2" = current ]; then
- printf '{"result":{"pane":{"workspace_id":"%s","pane_id":"caller:p0"}}}\\n' "$HERDR_TEST_WORKSPACE"
-elif [ "$1" = workspace ] && [ "$2" = report-metadata ] && [ "$HERDR_TEST_FAIL_REPORT" = 1 ]; then
- printf '%s\\n' '{"error":{"message":"test transport failure"}}' >&2
- exit 1
-elif [ "$1" = tab ] && [ "$2" = create ]; then
- printf '%s\\n' '{"result":{"tab":{"tab_id":"viewer:t1"},"root_pane":{"pane_id":"viewer:p1"}}}'
-fi
-`, { mode: 0o700 });
-	process.env.PATH = `${dir}${path.delimiter}${process.env.PATH}`;
+	// Exercise real progress/row coalescing and CLI encoding without racing the OS
+	// scheduler against the transport's five-second timeout. panes.test.ts covers spawning the CLI.
+	t.mock.method(herdrTransport, "execFile", async (command: string, args: string[], options: { timeout: number }) => {
+		assert.equal(command, "herdr");
+		assert.equal(options.timeout, 5000, "the production transport bound stays unchanged");
+		records.push([...args]);
+		if (args[0] === "workspace" && process.env.HERDR_TEST_FAIL_REPORT === "1") {
+			throw Object.assign(new Error("fixture transport failure"), { stderr: '{"error":{"message":"test transport failure"}}' });
+		}
+		let result = {};
+		if (args[0] === "pane" && args[1] === "current") result = { pane: { workspace_id: process.env.HERDR_TEST_WORKSPACE, pane_id: "caller:p0" } };
+		if (args[0] === "tab" && args[1] === "create") result = { tab: { tab_id: "viewer:t1" }, root_pane: { pane_id: "viewer:p1" } };
+		return { stdout: JSON.stringify({ result }), stderr: "" };
+	});
 	process.env.HERDR_ENV = "1";
 	process.env.HERDR_SOCKET_PATH = path.join(dir, "fake.sock");
 	process.env.HERDR_TEST_WORKSPACE = "caller-workspace";
 	delete process.env.HERDR_TEST_FAIL_REPORT;
-	const calls = () => fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\x1e").filter(Boolean).map((record) => record.split("\x1f").slice(0, -1)) : [];
 	return {
 		dir, warnings, calls,
 		reports: () => calls().filter((args) => args[0] === "workspace" && args[1] === "report-metadata"),
@@ -97,7 +96,7 @@ test("actual progress events drive queued, model/attempt, terminal and cleanup r
 	const progress = new DispatchProgress("parallel", [
 		{ agent: "scout", task: "PRIVATE TASK" },
 		{ agent: "hidden", task: "HIDDEN TASK", herdr: false },
-	]);
+	], (update) => { f.warnings.push(...(update.details.warnings ?? [])); });
 	try {
 		await progress.open(f.dir);
 		assert.deepEqual(tokens(f.reports()[0]), ["dispatch_1=○ scout-1"]);
@@ -113,6 +112,23 @@ test("actual progress events drive queued, model/attempt, terminal and cleanup r
 	assert.ok(!JSON.stringify(f.reports()).includes("PRIVATE"));
 	assert.ok(!JSON.stringify(f.reports()).includes("hidden"));
 	assert.deepEqual(f.warnings, []);
+});
+
+test("progress continues without rows when workspace discovery times out", async (t) => {
+	const f = fixture(t);
+	t.mock.method(herdrTransport, "execFile", async () => { throw Object.assign(new Error("fixture timeout"), { code: "ETIMEDOUT" }); });
+	const warnings: string[] = [];
+	const progress = new DispatchProgress("single", [{ agent: "scout", task: "private" }],
+		(update) => { warnings.push(...(update.details.warnings ?? [])); });
+	try {
+		await progress.open(f.dir);
+		assert.deepEqual(f.reports(), []);
+		assert.ok(warnings.some((warning) => /Spaces worker rows unavailable:.*command failed or timed out/.test(warning)));
+		const result = await progress.run(0, async () => ({
+			agent: "scout", task: "private", status: "ok", text: "done", attempts: 1, ms: 1,
+		}));
+		assert.equal(result.status, "ok");
+	} finally { await progress.end(); }
 });
 
 test("overlapping dispatches share rows; ending one preserves the other's workers", async (t) => {

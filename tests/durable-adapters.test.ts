@@ -90,7 +90,9 @@ async function setup(admitted = { maxWorkers: 2, maxAttemptsPerTask: 2, budgetUs
 }
 
 const task = (key: string, extra: object = {}) => ({ key, prompt: 'fixture', agent, model: 'fake/model', thinking: 'off', ownedPaths: ['src/'], ...extra });
-const soon = (ms = 20_000) => ({ deadlineAt: Date.now() + ms });
+// Ordinary adapter tests need a hang guard, not a timing assertion around Git/process startup.
+// Deadline/cancellation tests below pass their own short limits explicitly.
+const soon = (ms = 120_000) => ({ deadlineAt: Date.now() + ms });
 const alive = async (pid: number, startedAt: string) => await processStartIdentity(pid) === startedAt;
 
 test('pilot child: explicit executable, documented session flags, stripped coordinator env, one spawn', async () => {

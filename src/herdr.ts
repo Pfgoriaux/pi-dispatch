@@ -10,7 +10,8 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
+/** Process boundary shared by the visibility adapters. */
+export const herdrTransport = { execFile: promisify(execFile) };
 
 export interface WatchedAgent {
 	pane_id: string;
@@ -31,7 +32,7 @@ interface HerdrResponse {
 /** Bounded CLI transport; callers own non-fatal handling and cleanup. */
 export async function herdrCommand(args: string[]): Promise<HerdrResponse> {
 	try {
-		const { stdout } = await execFileAsync("herdr", args, {
+		const { stdout } = await herdrTransport.execFile("herdr", args, {
 			timeout: 5000,
 			maxBuffer: 256 * 1024,
 		});
