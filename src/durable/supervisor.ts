@@ -28,7 +28,7 @@ import { correctnessSecurityTask } from "../tools/pr-review-prompts.ts";
 import { runPilotProc, type PilotProcResult } from "../worker-proc.ts";
 import { dirtyLines, gitThrow } from "../worktree.ts";
 import {
-	attemptKey, committedUsd, putAttempt, runningWorkers,
+	attemptKey, committedUsd, putAttempt, reviewRetryable, runningWorkers,
 	type AttemptState, type ReviewState, type WorkerIdentity,
 } from "./contracts.ts";
 import { readEvidence } from "./evidence.ts";
@@ -255,6 +255,10 @@ export function parseReview(text: string, changed: readonly string[]): Pick<Revi
 	return { blocking, other: sections.length - blocking, findings: sections.length > 0 ? Array.from(text.trim()).slice(0, 6000).join("") : null };
 }
 
+/** Session run name of a review try: `<key>/review`, then `<key>/review-<n>` for retries. */
+const reviewRun = (key: string, review: Readonly<ReviewState>) =>
+	(review.tries ?? 1) === 1 ? `${key}/review` : `${key}/review-${review.tries}`;
+
 /** A finished child: settled with its answer, or a terminal outcome. */
 type Ran =
 	| { status: "settled"; spentUsd: number | null; text: string }
@@ -480,9 +484,10 @@ export class Supervisor {
 	}
 
 	/**
-	 * Review the head of succeeded attempt `key` once: return a recorded review,
-	 * adopt a running one, or record intent and run a read-only reviewer on the
-	 * diff from `request.baseSha` to the head.
+	 * Review the head of succeeded attempt `key`: return a completed or blocked
+	 * review, adopt a running one, or record intent and run a read-only reviewer
+	 * on the diff from `request.baseSha` to the head. A failed or skipped review
+	 * with known spend is tried again; a completed one never is.
 	 */
 	async review(key: string, request: ReviewRequest, limits: RunLimits): Promise<ReviewState> {
 		const attempt = await this.#stored(key);
@@ -490,12 +495,12 @@ export class Supervisor {
 		const recorded = attempt.review;
 		if (recorded && recorded.headSha !== attempt.headSha) throw new SupervisorBlockedError(`${key} has a review of another head.`);
 		if (recorded?.status === "running") return this.#adoptReview(attempt, recorded, request, limits);
-		if (recorded) return recorded;
+		if (recorded && !reviewRetryable(recorded)) return recorded;
 		const review = await this.#queue(() => this.#claimReview(attempt, limits));
 		if (review.status !== "running") return review;
 		let spawned = false;
 		const ran = await this.#bounded(limits, async (signal, stopped) => {
-			const options = this.#spawn(`${attempt.key}/review`, attempt.worktree!, signal, async (worker) => {
+			const options = this.#spawn(reviewRun(attempt.key, review), attempt.worktree!, signal, async (worker) => {
 				spawned = true;
 				await this.#recordReviewWorker(attempt, worker);
 			});
@@ -515,14 +520,16 @@ export class Supervisor {
 		const { store } = this.options;
 		const plan = planReview(await store.read(), attempt.key, limits.deadlineAt);
 		const skip = "skip" in plan ? plan.skip : null;
+		const before = attempt.review;
 		const review: ReviewState = {
 			headSha: attempt.headSha!, status: skip ? "skipped" : "running", reservedUsd: "reserveUsd" in plan ? plan.reserveUsd : 0,
 			spentUsd: 0, worker: null, blocking: 0, other: 0, findings: null, reason: skip,
+			tries: before ? (before.tries ?? 1) + 1 : 1, earlierUsd: before ? (before.earlierUsd ?? 0) + before.spentUsd! : 0,
 		};
 		await store.harness.commit(async (tx) => {
 			if (!skip && (limits.signal?.aborted || limits.canStart?.() === false)) throw new AttemptNotStartedError("Stopped before review.");
 			const draft = await tx.doc(store.contracts.AttemptDoc, attempt.key, attempt);
-			if (draft.review) throw new SupervisorBlockedError(`${attempt.key} already has a review.`);
+			if (draft.review && !reviewRetryable(draft.review)) throw new SupervisorBlockedError(`${attempt.key} already has a review.`);
 			draft.review = review;
 		}, store.context);
 		return review;
@@ -539,7 +546,7 @@ export class Supervisor {
 
 	async #adoptReview(attempt: AttemptState, review: ReviewState, request: ReviewRequest, limits: RunLimits): Promise<ReviewState> {
 		if (!review.worker) throw new SupervisorBlockedError(`Review of ${attempt.key} has no recorded worker to adopt.`);
-		const { sessionId, dir } = this.#session(`${attempt.key}/review`);
+		const { sessionId, dir } = this.#session(reviewRun(attempt.key, review));
 		const ran = await judgeOrphan(review.worker, dir, sessionId, limits)
 			.catch((error): Ran => ({ status: "blocked", spentUsd: null, reason: message(error) }));
 		return this.#settleReview(attempt, request, ran);

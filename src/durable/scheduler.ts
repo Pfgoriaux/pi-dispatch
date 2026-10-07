@@ -26,7 +26,7 @@ import type * as DurableModule from "@earendil-works/pi-durable";
 import type { AgentConfig, ThinkingLevel } from "../types.ts";
 import { gitRun } from "../worktree.ts";
 import { loadDurableRuntime, type DurableRuntime } from "./compat.ts";
-import { reportedUsd, type AttemptState, type ReviewState } from "./contracts.ts";
+import { reportedUsd, reviewRetryable, type AttemptState, type ReviewState } from "./contracts.ts";
 import { branchSha, isAncestor } from "./git.ts";
 import { blockers, reconcileEffects } from "./reconcile.ts";
 import { openDurableStore, type DurableStore, type StoreSnapshot } from "./store.ts";
@@ -486,10 +486,11 @@ export class BatchOwner {
 		return undefined;
 	}
 
-	/** A verified head must still match its store record and its branch tip. */
+	/** A verified head must still match its store record, have a completed review, and match its branch tip. */
 	async #recheck(verified: Verified): Promise<string | undefined> {
 		const attempt = (await this.store.read()).attempts.find((a) => a.key === verified.attemptKey);
 		if (attempt?.status !== "succeeded" || attempt.headSha !== verified.headSha) return `${verified.attemptKey} is no longer a succeeded attempt at ${verified.headSha}`;
+		if (attempt.review?.status !== "done" || attempt.review.headSha !== verified.headSha) return `${verified.attemptKey} has no completed review at ${verified.headSha}`;
 		const tip = await branchSha(this.config.repo.root, verified.branch);
 		return tip === verified.headSha ? undefined : `${verified.branch} moved from ${verified.headSha} to ${tip}`;
 	}
@@ -535,23 +536,33 @@ export class BatchOwner {
 		return this.#next(await this.#supervisor(attempt.branch!, checkpoint.base.prBase).adopt(task, attempt.key, this.#limits()), checkpoint);
 	}
 
-	/** After a success: review its head once, then at most one fix attempt for validated blocking findings. */
+	/**
+	 * After a success: its head needs a completed review before the task can
+	 * settle. A review that cannot finish (budget, deadline, reviewer failure)
+	 * pauses the batch; resume tries it again for the same head. Then at most
+	 * one fix attempt for validated blocking findings.
+	 */
 	async #reviewStep(good: Readonly<AttemptState>, last: Readonly<AttemptState>, checkpoint: RunCheckpoint, snapshot: StoreSnapshot): Promise<Next<WorkCheckpoint, Verified> | Parked> {
 		if (last.status === "blocked" || last.status === "interrupted") return failure("blocked", `${last.key} is ${last.status}: ${last.reason ?? "no reason recorded"}`);
 		const review = good.review;
-		if (!review && this.#draining) return PARK;
-		if (!review || review.status === "running") {
-			const done = await this.#review(good, checkpoint.base);
-			if (done.status === "blocked") return failure("blocked", `review of ${good.key} is blocked: ${done.reason}`);
-			return again(checkpoint);
-		}
-		if (review.status === "blocked") return failure("blocked", `review of ${good.key} is blocked: ${review.reason}`);
+		const pending = !review || review.status === "running" || reviewRetryable(review);
+		if (pending && review?.status !== "running" && this.#draining) return PARK;
+		if (pending) return this.#reviewed(await this.#review(good, checkpoint.base), good, checkpoint);
+		if (review.status !== "done") return failure("blocked", `review of ${good.key} is ${review.status}: ${review.reason}`);
 		const fix = last.key === good.key && needsFix(good) && good.attempt < this.config.limits.maxAttemptsPerTask && !this.#expired();
 		if (!fix) return this.#verified(good, checkpoint.base, snapshot);
 		if (this.#draining) return PARK;
 		const halted = blockers(snapshot);
 		if (halted.length > 0) return failure("blocked", `batch halted: ${halted.join("; ")}`);
 		return this.#next(await this.#startFix(good, checkpoint.base), checkpoint);
+	}
+
+	/** Continue after a completed review; pause the batch on one that can be retried; halt otherwise. */
+	#reviewed(review: Readonly<ReviewState>, good: Readonly<AttemptState>, checkpoint: RunCheckpoint): Next<WorkCheckpoint, Verified> | Parked {
+		if (review.status === "done") return again(checkpoint);
+		if (!reviewRetryable(review)) return failure("blocked", `review of ${good.key} is ${review.status}: ${review.reason}`);
+		void this.stop();
+		return PARK;
 	}
 
 	/** A fix attempt starts from the reviewed head instead of the task base. */
@@ -621,8 +632,8 @@ export class BatchOwner {
 			agent: this.options.reviewer, model: worker.model, thinking: worker.thinking, intent: this.#spec(good.taskKey).prompt, baseSha: base.sha,
 		};
 		const review = () => this.#supervisor(good.branch!, base.prBase).review(good.key, request, this.#limits());
-		if (good.review) return review();
-		const reviews = async () => (await this.store.read()).attempts.filter((a) => a.review).length;
+		if (good.review?.status === "running") return review();
+		const reviews = async () => (await this.store.read()).attempts.reduce((n, a) => n + (a.review?.tries ?? (a.review ? 1 : 0)), 0);
 		return this.#claimed(reviews, review);
 	}
 
@@ -760,8 +771,13 @@ function reviewSection(review: ReviewState | null | undefined, headSha: string):
 /** Why a published task is not PR-ready: unresolved blockers or a review without a usable answer. */
 function reviewProblem(review: ReviewState | null | undefined): string | null {
 	const blocking = review?.blocking ?? 0;
-	if (blocking > 0) return `${blocking} unresolved blocking review finding${blocking === 1 ? "" : "s"}`;
-	return review?.status === "failed" ? `no usable review: ${review.reason ?? "reviewer failed"}` : null;
+	return blocking > 0 ? `${blocking} unresolved blocking review finding${blocking === 1 ? "" : "s"}` : null;
+}
+
+/** A verified head whose review must run again on resume. */
+function reviewPending(attempts: readonly Readonly<AttemptState>[]): Readonly<AttemptState> | undefined {
+	const good = attempts.filter((a) => a.status === "succeeded").at(-1);
+	return good && reviewRetryable(good.review) ? good : undefined;
 }
 
 function runningPid(attempt: Readonly<AttemptState> | undefined): number | null {
@@ -785,6 +801,13 @@ function taskReport(id: string, snapshot: StoreSnapshot, child: AnyRecord, publi
 	};
 	const outcome = child?.state.status === "terminal" ? child.state.outcome as DurableModule.TaskOutcome<Verified> : undefined;
 	const running = last?.status === "running" || last?.review?.status === "running";
+	const waiting = running || outcome ? undefined : reviewPending(used);
+	if (waiting) {
+		return {
+			...base, state: "verified", branch: waiting.branch, headSha: waiting.headSha, review: reviewSummary(waiting.review),
+			reason: clip(`review pending: ${waiting.review!.reason ?? waiting.review!.status}`),
+		};
+	}
 	if (!outcome) return { ...base, state: running ? "running" : "pending" };
 	if (outcome.status !== "completed") {
 		const detail = outcome.status === "failed" ? (outcome.error.detail as Failure | undefined) : undefined;

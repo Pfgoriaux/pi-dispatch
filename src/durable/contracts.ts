@@ -32,13 +32,18 @@ export type AttemptStatus = "reserved" | "running" | "succeeded" | "failed" | "i
 
 /**
  * `done`: the reviewer answered. `failed`: it ran without a usable answer.
- * `skipped`: it never spawned. `blocked`: its outcome is unknown, which halts the batch.
+ * `skipped`: it never spawned (budget or deadline). Failed and skipped reviews
+ * with known spend are retried on resume. `blocked`: its outcome is unknown, which halts the batch.
  */
 export type ReviewStatus = "running" | "done" | "failed" | "skipped" | "blocked";
 /** Read-only review of one succeeded attempt, bound to its head SHA. */
 export type ReviewState = {
 	headSha: string;
 	status: ReviewStatus;
+	/** 1 for the first review of this head; each retry adds one. Absent means 1. */
+	tries?: number;
+	/** Known spend of earlier failed tries of this head. Absent means 0. */
+	earlierUsd?: number;
 	reservedUsd: number;
 	/** `null` means unknown spend; recovery treats it as a halt. */
 	spentUsd: number | null;
@@ -186,12 +191,16 @@ export function committedUsd(attempts: readonly Readonly<AttemptState>[]): numbe
 	const held = (status: string, reserved: number, spent: number | null) =>
 		status === "reserved" || status === "running" ? reserved : spent ?? Infinity;
 	return attempts.reduce((sum, a) => sum + held(a.status, a.reservedUsd, a.spentUsd)
-		+ (a.review ? held(a.review.status, a.review.reservedUsd, a.review.spentUsd) : 0), 0);
+		+ (a.review ? held(a.review.status, a.review.reservedUsd, a.review.spentUsd) + (a.review.earlierUsd ?? 0) : 0), 0);
 }
 
 /** Reported spend of started attempts and their reviews; `null` when any is unknown. */
 export function reportedUsd(attempts: readonly Readonly<AttemptState>[]): number | null {
 	const amounts = attempts.filter((a) => a.status !== "reserved")
-		.flatMap((a) => [a.spentUsd, ...(a.review ? [a.review.spentUsd] : [])]);
+		.flatMap((a) => [a.spentUsd, ...(a.review ? [a.review.spentUsd, a.review.earlierUsd ?? 0] : [])]);
 	return amounts.some((usd) => usd === null) ? null : (amounts as number[]).reduce((sum, usd) => sum + usd, 0);
 }
+
+/** A failed or skipped review with known spend: resume may run it again for the same head. */
+export const reviewRetryable = (review: Readonly<ReviewState> | null | undefined): boolean =>
+	(review?.status === "failed" || review?.status === "skipped") && review.spentUsd !== null;

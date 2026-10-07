@@ -44,7 +44,7 @@ function script(name: string, body: string): string {
 /**
  * Fake Pi. Writes JSON events to stdout and a Pi 1.0.4-format session file to --session-dir.
  * Worker behaviour per task id: ok, slow, outside (commits outside owned paths), hang, stubborn (hangs, ignores SIGTERM), gate (waits for release()).
- * Reviewer behaviour per `<id>:review`: clean (default), blank, block, block-once, unpriced, gate.
+ * Reviewer behaviour per `<id>:review`: clean (default), blank, blank-once, block, block-once, unpriced, gate.
  * Logs start and end of each spawn for concurrency checks.
  */
 function fakePi(behaviour: Record<string, string>) {
@@ -71,7 +71,7 @@ const finish=(text='done',usage=${JSON.stringify(usage)})=>{const message={role:
 const commit=(f)=>{fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSync(f,id+' '+Date.now()+'\\n');cp.execFileSync('git',['add','--',f]);cp.execFileSync('git',['commit','-q','-m','worker '+id]);};
 const blocker='## [blocker] Broken '+id+'\\n- File: src/'+id+'.txt:1\\n- Problem: wrong value\\n- Fix: correct it\\n';
 const gate=(then)=>{const f=path.join(${JSON.stringify(gates)},kind+'-'+id);const t=setInterval(()=>{if(fs.existsSync(f)){clearInterval(t);then();}},50);};
-const reviewer={blank:()=>finish(''),clean:()=>finish('No findings.'),block:()=>finish(blocker),'block-once':()=>finish(earlier===0?blocker:'No findings.'),unpriced:()=>finish('No findings.',{...${JSON.stringify(usage)},cost:undefined}),gate:()=>gate(()=>finish('No findings.'))};
+const reviewer={blank:()=>finish(''),'blank-once':()=>finish(earlier===0?'':'No findings.'),clean:()=>finish('No findings.'),block:()=>finish(blocker),'block-once':()=>finish(earlier===0?blocker:'No findings.'),unpriced:()=>finish('No findings.',{...${JSON.stringify(usage)},cost:undefined}),gate:()=>gate(()=>finish('No findings.'))};
 const work={ok:()=>{commit('src/'+id+'.txt');finish();},slow:()=>setTimeout(()=>{commit('src/'+id+'.txt');finish();},700),outside:()=>{commit('docs/'+id+'.md');finish();},hang:()=>setInterval(()=>{},1000),stubborn:()=>{process.on('SIGTERM',()=>{});setInterval(()=>{},1000);},gate:()=>gate(()=>{commit('src/'+id+'.txt');finish();})};
 setTimeout(()=>(review?reviewer:work)[mode](),300);
 `);
@@ -147,7 +147,8 @@ async function runBatch(cfg: PilotConfig, mode: 'run' | 'resume' = 'run', during
  } finally { await owner.close(); }
 }
 const byId = (report: { tasks: readonly { id: string }[] }) => Object.fromEntries(report.tasks.map((t) => [t.id, t])) as Record<string, any>;
-const waitFor = async (check: () => boolean, ms = 15_000) => {
+/** Waits for an event the test guarantees; the bound only catches hangs. */
+const waitFor = async (check: () => boolean, ms = 60_000) => {
  const until = Date.now() + ms;
  while (!check()) { if (Date.now() > until) throw new Error('timed out'); await new Promise((r) => setTimeout(r, 25)); }
 };
@@ -327,7 +328,7 @@ test('publication: transient failed push stays resumable without repeating worke
  fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o700 });
  const cfg = config(w, [{ id: 'a' }, { id: 'b' }], pi.bin, gh.bin);
  const first = await runBatch(cfg);
- assert.equal(first.report.phase, 'running');
+ assert.equal(first.report.phase, 'running', formatReport(first.report));
  assert.match(byId(first.report).a.reason, /publication blocked/);
  fs.rmSync(hook);
  const resumed = await runBatch(cfg, 'resume');
@@ -432,9 +433,42 @@ test('review: unknown review spend halts publication; a tight budget skips the r
 
  const w2 = workspace();
  const tight = config(w2, [{ id: 'a' }], pi.bin, fakeGh(w2.bare).bin);
- const { report: skipped } = await runBatch({ ...tight, spend: { allowanceUsd: 1, reservations: { a: 1 } } });
- assert.deepEqual(byId(skipped).a.review, { status: 'skipped', blocking: 0, other: 0 });
- assert.equal(byId(skipped).a.state, 'pr-ready');
+ const capped = { ...tight, spend: { allowanceUsd: 1, reservations: { a: 1 } } };
+ // The review never fits the allowance: the task is never published, on the first run or on resume.
+ for (const mode of ['run', 'resume'] as const) {
+  const { report: skipped } = await runBatch(capped, mode);
+  assert.equal(skipped.phase, 'running', formatReport(skipped));
+  assert.deepEqual(byId(skipped).a.review, { status: 'skipped', blocking: 0, other: 0 });
+  assert.equal(byId(skipped).a.state, 'verified'); assert.match(byId(skipped).a.reason, /^review pending: review would exceed the budget/);
+ }
+ assert.deepEqual([pi.starts('a').length, pi.reviews('a').length], [2, 1], 'one worker per batch; only the first batch\'s unpriced review spawned');
+});
+
+test('review: a budget-skipped review pauses the batch; resume reviews the same head and publishes once', async () => {
+ const w = workspace();
+ const pi = fakePi({ b: 'gate' });
+ const gh = fakeGh(w.bare);
+ // a's review needs 1 more on top of a's spend and b's reservation (2.25 > 2) until b finishes.
+ const cfg = { ...config(w, [{ id: 'a' }, { id: 'b' }], pi.bin, gh.bin), spend: { allowanceUsd: 2, reservations: { a: 1, b: 1 } } };
+ const first = await runBatch(cfg, 'run', async (owner) => {
+  const skipped = async () => (await owner.store.read()).attempts.find((x) => x.key === 'a#1')?.review?.status === 'skipped';
+  while (!await skipped()) await new Promise((r) => setTimeout(r, 25));
+  pi.release('b');
+ });
+ assert.equal(first.report.phase, 'running', formatReport(first.report));
+ const a1 = byId(first.report).a;
+ assert.equal(a1.state, 'verified'); assert.match(a1.reason, /^review pending: review would exceed the budget/);
+ assert.deepEqual([gh.prs().length, pi.reviews().length], [0, 0], 'nothing is published or reviewed before resume');
+ // On resume both reviews claim together; one may not fit beside the other's reservation and pause again.
+ let resumed = await runBatch(cfg, 'resume');
+ for (let extra = 0; resumed.report.phase !== 'finished' && extra < 2; extra++) {
+  assert.ok(gh.prs().length === 0 && resumed.report.tasks.every((t) => t.state !== 'pr-ready'), 'nothing publishes while a review is pending');
+  resumed = await runBatch(cfg, 'resume');
+ }
+ assert.deepEqual(resumed.report.tasks.map((t) => t.state), ['pr-ready', 'pr-ready'], formatReport(resumed.report));
+ assert.equal(byId(resumed.report).a.headSha, a1.headSha, 'the same head is reviewed');
+ assert.deepEqual([pi.starts('a').length, pi.starts('b').length, pi.reviews('a').length, pi.reviews('b').length, gh.prs().length], [1, 1, 1, 1, 2]);
+ assert.equal(resumed.report.spentUsd, 1);
 });
 
 test('review: a blocker counts only when it cites a changed file', () => {
@@ -672,20 +706,32 @@ test('recovery: a reserved slot keeps an adopted worker from starving other task
  assert.deepEqual([pi.starts('a').length, pi.starts('p').length, pi.starts('c').length, pi.reviews('p').length], [1, 1, 1, 1]);
 });
 
-test('review: a review without a usable answer or that cannot start keeps the task short of pr-ready without halting', async () => {
+test('review: a failed or unstartable review pauses the batch unpublished; resume retries it for the same head', async () => {
+ // Reviewer answers blank once, then reviews normally.
  const w = workspace();
- const pi = fakePi({ 'a:review': 'blank' });
+ const pi = fakePi({ 'a:review': 'blank-once' });
  const gh = fakeGh(w.bare);
- const cfg = config(w, [{ id: 'a' }, { id: 'b' }], pi.bin, gh.bin);
- // Evidence of an earlier review spawn of b#1 makes its review refuse to start.
- fs.mkdirSync(path.join(cfg.repo.sessionsRoot, pilotSessionId(cfg.batch.id, 'b#1/review')), { recursive: true });
- const { report } = await runBatch(cfg);
- const { a, b } = byId(report);
- assert.deepEqual(report.halted, []);
- assert.equal(a.state, 'verified'); assert.match(a.reason, /no usable review: blank response/); assert.equal(a.review.status, 'failed');
- assert.equal(b.state, 'verified'); assert.match(b.reason, /no usable review: review did not start/);
- assert.equal(gh.prs().length, 2);
- assert.equal(report.spentUsd, 0.75, 'two attempts and a\'s failed review; b\'s review never spawned');
+ const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin);
+ const first = await runBatch(cfg);
+ assert.equal(first.report.phase, 'running'); assert.deepEqual(first.report.halted, []);
+ assert.equal(byId(first.report).a.state, 'verified'); assert.match(byId(first.report).a.reason, /^review pending: blank response/);
+ assert.equal(gh.prs().length, 0);
+ const resumed = await runBatch(cfg, 'resume');
+ assert.equal(byId(resumed.report).a.state, 'pr-ready', formatReport(resumed.report));
+ assert.deepEqual([pi.starts('a').length, pi.reviews('a').length, gh.prs().length], [1, 2, 1]);
+ assert.equal(resumed.report.spentUsd, 0.75, 'the failed review\'s spend is kept');
+
+ // A review that cannot start (an earlier spawn's session directory exists) spends nothing and is retried in a new session.
+ const w2 = workspace();
+ const gh2 = fakeGh(w2.bare);
+ const cfg2 = config(w2, [{ id: 'b' }], pi.bin, gh2.bin);
+ fs.mkdirSync(path.join(cfg2.repo.sessionsRoot, pilotSessionId(cfg2.batch.id, 'b#1/review')), { recursive: true });
+ const stuck = await runBatch(cfg2);
+ assert.match(byId(stuck.report).b.reason, /^review pending: review did not start/); assert.equal(gh2.prs().length, 0);
+ const retried = await runBatch(cfg2, 'resume');
+ assert.equal(byId(retried.report).b.state, 'pr-ready', formatReport(retried.report));
+ assert.deepEqual([pi.reviews('b').length, gh2.prs().length], [1, 1]);
+ assert.equal(retried.report.spentUsd, 0.5);
 });
 
 test('cli: a configuration changed after approval starts nothing', async () => {

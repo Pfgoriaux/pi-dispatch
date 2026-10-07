@@ -441,9 +441,11 @@ cli.ts run
       │    ├─ at most maxWorkers workers at once (attempts, reviews, adopted workers);
       │    │  a failed attempt retries until the cap
       │    ├─ running attempt left by a killed owner → adopt it (see Recovery)
-      │    └─ succeeded attempt → review its head once (read-only, one slot, budgeted)
+      │    └─ succeeded attempt → review its head (read-only, one slot, budgeted)
+      │         ├─ review cannot finish (budget, deadline, reviewer error) → pause the batch;
+      │         │  resume reviews the same head again
       │         ├─ validated blocker and attempts left → one fix attempt from that head → review again
-      │         └─ otherwise → verified: head SHA, base SHA, checks passed, review recorded
+      │         └─ otherwise → verified: head SHA, base SHA, checks passed, review completed
       └─ after all tasks settle: publish in dependency order
            ├─ root task → draft PR against baseBranch
            ├─ dependent → draft PR stacked on the parent's branch, only if the parent is PR-ready
@@ -454,8 +456,8 @@ The report gives each task a state:
 
 | State | Meaning |
 |---|---|
-| `pr-ready` | Verified, pushed, an open draft PR has the verified head, and its review found no validated blocker or was skipped |
-| `verified` | Checks passed at the recorded head; not published, or published with unresolved blockers or a review without a usable answer (reason shown) |
+| `pr-ready` | Verified, reviewed, pushed, an open draft PR has the verified head, and its review found no validated blocker |
+| `verified` | Checks passed at the recorded head; review pending (`review pending: <why>`), not published, or published with unresolved blockers (reason shown) |
 | `failed` | Attempts ran and none succeeded |
 | `blocked` | Not attempted or stopped by a dependency, the deadline, the budget, or a halted batch |
 | `running` / `pending` | Not settled yet |
@@ -470,12 +472,17 @@ Review:
   `reviewer` agent, restricted to `read`, `grep`, `find`, and `ls` (plus
   Linkup web tools when configured), on the configured worker model. It gets the `pr_review` correctness-and-security
   prompt and the saved diff from the task base to the head.
-- The review is recorded on the attempt before it spawns, bound to the head
-  SHA, and never repeated for that SHA. It takes a worker slot. A review
-  that cannot start or ends without an answer is recorded as failed and does
-  not halt the batch. It needs the
-  task's reservation of headroom in the allowance; without it, or after the
-  deadline, it is skipped. Unknown review spend halts the batch.
+- Every task needs a completed review of its head before it settles, before
+  dependents start from it, and before publication. The review is recorded on
+  the attempt before it spawns and bound to the head SHA; a completed review
+  is never repeated. It takes a worker slot and needs the task's reservation
+  of headroom in the allowance (reservations of running work count).
+- A review that does not fit the allowance, comes after the deadline, cannot
+  start, or ends without an answer is recorded as skipped or failed. The task
+  stays `verified` with `review pending: <why>`, nothing is published, and the
+  batch pauses like `stop`. `resume` reviews the same head again; a failed
+  try's spend stays counted. Two reviews claiming the allowance together can
+  pause again, one resume each. Unknown review spend halts the batch.
 - A `[blocker]` finding counts as validated only when it cites a file the
   diff changes. A validated blocker starts one fix attempt from the reviewed
   head, inside `maxAttemptsPerTask`. A blocker that survives, or a failed fix,
