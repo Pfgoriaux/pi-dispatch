@@ -35,6 +35,18 @@ worktrees. Usage, model routing, installation and Herdr: [README.md](README.md).
   remain non-fatal and reported; release owned resources in `finally`. Metadata
   `--source` sequences updates but does not own keys; see README for workspace rules.
 
+- Durable pilot children (`src/durable/`) write stdout to `events.log` in their
+  session directory, never a pipe: Pi exits on a write to a pipe whose reader
+  died, which would end workers with their owner. Recovery judges an orphaned
+  worker only from that file and Pi's session file; never respawn an attempt
+  or review whose outcome is unknown, and record each spend once.
+  A recorded reviewer stop can charge its reservation after confirmed exit;
+  this exception never applies to writers. Reviewer failures and skipped
+  claims have separate counts; only failures advance the reviewer model.
+- Agents may draft and request durable batches; only the user's confirmation
+  in the Pi UI launches one (`src/tools/durable-batch.ts`). Never add an
+  auto-approve path, and keep `agents/durable/writer.md` out of the roster.
+
 ## Checks
 
 Pi loads `src/index.ts` directly. Run `npm ci --ignore-scripts`, then

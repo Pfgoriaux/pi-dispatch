@@ -16,6 +16,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { resolveChildModel } from "./child-model.ts";
@@ -211,10 +212,153 @@ export async function runWorkerProc(
 	};
 }
 
+/** Durable-pilot child. Unlike `runWorkerProc`, it never falls back, re-routes, or guesses the executable. */
+export interface PilotProcOptions {
+	cwd: string;
+	/** Absolute Pi executable; `PI_DISPATCH_PI_BIN`, argv, and PATH are never consulted. */
+	piExecutable: string;
+	/** Arguments before Pi's own, e.g. the CLI script when `piExecutable` is Node. */
+	piPrefixArgs?: readonly string[];
+	/** Exact `provider/id`; tried once. */
+	model: string;
+	thinking: string;
+	/** Passed as `--session-id`; the child's `session` header must echo it. */
+	sessionId: string;
+	/** Passed as `--session-dir`. The child's JSON event stream goes to `PILOT_EVENTS_FILE` inside it. */
+	sessionDir: string;
+	/** Called once with the spawned PID and its `ps` start identity. A rejection stops the child. */
+	onSpawn: (pid: number, startIdentity: string) => Promise<void> | void;
+	signal?: AbortSignal;
+	requireCleanWorktree?: boolean;
+	registry?: ModelRegistry;
+	onStream?: (line: string) => void;
+	onWarning?: (warning: string) => void;
+}
+
+/** `spawned.startIdentity` of a child that exited before `ps` could read it; nothing was recorded. */
+export const EXITED_BEFORE_IDENTITY = "exited before its identity was read";
+const IDENTITY_READS = 3;
+
+export interface PilotProcResult extends WorkerResult {
+	/** Recorded identity, or null when the child never got one. */
+	spawned: { pid: number; startIdentity: string } | null;
+	/** True once a child process was started. */
+	launched: boolean;
+	/** True when the child reported `agent_settled`; usage is complete only then. */
+	settled: boolean;
+	/** Every assistant completion supplied usable priced usage. */
+	spendKnown: boolean;
+}
+
+/** Parent-session and coordinator-store variables a pilot child must not inherit. */
+const PILOT_ENV_DENY = new Set(["PI_DISPATCH_PI_BIN", "PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL", "PI_CODING_AGENT_SESSION_DIR"]);
+export const PILOT_ENV_DENY_PREFIX = "PI_DISPATCH_DURABLE_";
+
+export function pilotEnv(depth: number, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+	const env = Object.fromEntries(Object.entries(source)
+		.filter(([key]) => !PILOT_ENV_DENY.has(key) && !key.startsWith(PILOT_ENV_DENY_PREFIX)));
+	return { ...env, PI_DISPATCH_DEPTH: String(depth) };
+}
+
+const SESSION_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+
+/**
+ * The pilot child's stdout is this file, not a pipe: Pi exits on its next
+ * stdout write once a pipe reader is gone, so a pipe would end the worker
+ * with its owner. The file also survives as completion evidence.
+ */
+export const PILOT_EVENTS_FILE = "events.log";
+
+function pilotPreflight(options: PilotProcOptions): string | undefined {
+	if (!path.isAbsolute(options.piExecutable) || !fs.statSync(options.piExecutable, { throwIfNoEntry: false })?.isFile()) {
+		return `Pilot requires an absolute Pi executable; got ${JSON.stringify(options.piExecutable)}`;
+	}
+	if (!SESSION_ID.test(options.sessionId)) return `Invalid pilot session ID ${JSON.stringify(options.sessionId)}`;
+	if (!path.isAbsolute(options.sessionDir)) return "Pilot session directory must be absolute";
+	if (!THINKING_LEVELS.has(options.thinking)) return `Invalid thinking level ${JSON.stringify(options.thinking)}`;
+	const resolved = options.registry ? resolveChildModel(options.registry, options.model) : undefined;
+	const exact = options.registry ? resolved && `${resolved.provider}/${resolved.id}` : options.model;
+	if (exact !== options.model || !options.model.includes("/")) return `Pilot model ${JSON.stringify(options.model)} is not an exact provider/id`;
+	return undefined;
+}
+
+/** Run exactly one pilot child: one spawn, no fallback, no quota routing. */
+export async function runPilotProc(agent: AgentConfig, task: string, options: PilotProcOptions): Promise<PilotProcResult> {
+	const refused = (error: string): PilotProcResult => ({
+		agent: agent.name, task, status: "error", text: "", error, ms: 0, attempts: 0, spawned: null, launched: false, settled: false, spendKnown: false,
+	});
+	const invalid = pilotPreflight(options);
+	if (invalid) return refused(invalid);
+	if (options.signal?.aborted) return { ...refused("Aborted before start"), status: "aborted" };
+	const seen: PilotSeen = { launched: false, settled: false, completions: 0, spendKnown: true };
+	let spawned: PilotProcResult["spawned"] = null;
+	fs.mkdirSync(options.sessionDir, { recursive: true });
+	const result = await runOneProc(agent, task, {
+		cwd: options.cwd, signal: options.signal, requireCleanWorktree: options.requireCleanWorktree,
+		modelOverride: options.model, thinking: options.thinking, onStream: options.onStream, onWarning: options.onWarning,
+	}, {
+		command: options.piExecutable,
+		prefixArgs: options.piPrefixArgs ?? [],
+		sessionArgs: ["--session-id", options.sessionId, "--session-dir", options.sessionDir],
+		eventsFile: path.join(options.sessionDir, PILOT_EVENTS_FILE),
+		seen,
+		onSpawn: async (pid, exited) => {
+			const { processStartIdentity } = await import("./durable/store.ts");
+			let startIdentity = await processStartIdentity(pid);
+			for (let read = 1; !startIdentity && !exited() && read < IDENTITY_READS; read++) startIdentity = await processStartIdentity(pid);
+			// Node saw our own child exit, so a missing identity means a fast exit, not an unknown worker.
+			if (!startIdentity && exited()) {
+				spawned = { pid, startIdentity: EXITED_BEFORE_IDENTITY };
+				return undefined;
+			}
+			if (!startIdentity) return `Cannot establish start identity of worker process ${pid}`;
+			spawned = { pid, startIdentity };
+			try {
+				await options.onSpawn(pid, startIdentity);
+				return undefined;
+			} catch (error) {
+				return `Worker identity was not recorded: ${error instanceof Error ? error.message : String(error)}`;
+			}
+		},
+	});
+	const mismatch = result.status === "ok" && seen.sessionId !== options.sessionId;
+	return {
+		...result,
+		status: mismatch ? "error" : result.status,
+		error: mismatch ? `Child session ${JSON.stringify(seen.sessionId ?? null)} does not match ${options.sessionId}` : result.error,
+		sessionId: seen.sessionId,
+		spawned,
+		launched: seen.launched,
+		settled: seen.settled,
+		spendKnown: seen.completions > 0 && seen.spendKnown,
+	};
+}
+
+export function pricedUsage(usage: Usage | undefined): boolean {
+	if (!usage) return false;
+	if (!Number.isFinite(usage.totalTokens) || usage.totalTokens < 0) return false;
+	const cost = usage.cost?.total;
+	if (!Number.isFinite(cost) || cost < 0) return false;
+	return usage.totalTokens === 0 || cost > 0;
+}
+
+interface PilotSeen { sessionId?: string; launched: boolean; settled: boolean; completions: number; spendKnown: boolean }
+interface PilotSpawn {
+	command: string;
+	prefixArgs: readonly string[];
+	sessionArgs: readonly string[];
+	/** Created exclusively; the child's stdout. */
+	eventsFile: string;
+	seen: PilotSeen;
+	/** Resolves to an error message when the child must be stopped. `exited` reports whether Node saw the child exit. */
+	onSpawn: (pid: number, exited: () => boolean) => Promise<string | undefined>;
+}
+
 async function runOneProc(
 	agent: AgentConfig,
 	task: string,
 	options: RunWorkerProcOptions,
+	pilot?: PilotSpawn,
 ): Promise<WorkerResult & { startupFailure?: boolean }> {
 	const started = Date.now();
 	const base = { agent: agent.name, task, ms: 0, attempts: 1 };
@@ -246,7 +390,8 @@ async function runOneProc(
 	if (web.warning) options.onWarning?.(web.warning);
 	// Let the child's actual selected model choose its adaptation, including CLI defaults.
 	const promptExtension = createRequire(import.meta.url).resolve("@pf/pi-model-prompts/extension");
-	const args: string[] = ["-p", "--no-session", "--mode", "json", "--extension", promptExtension];
+	const session = pilot?.sessionArgs ?? ["--no-session"];
+	const args: string[] = ["-p", ...session, "--mode", "json", "--extension", promptExtension];
 	for (const entry of web.extensionPaths) args.push("--extension", entry);
 	if (web.tools.length > 0) {
 		args.push("--tools", web.tools.join(","));
@@ -254,7 +399,7 @@ async function runOneProc(
 		args.push("--no-tools");
 	}
 	// Recursion backstop: the child must never be able to dispatch.
-	args.push("--exclude-tools", "dispatch,pr_review,feature_plan,council");
+	args.push("--exclude-tools", "dispatch,pr_review,feature_plan,council,durable_batch");
 	// Same "inherit" semantics as resolveWorkerModel (model.ts): a literal
 	// "inherit" (or empty) spec means "use the parent's model". The raw
 	// string must never reach the child CLI as --model (pi exits 1 with
@@ -300,12 +445,22 @@ async function runOneProc(
 		if (!event || typeof event !== "object") return;
 		if (["agent_start", "message_start", "message_update", "tool_execution_start"].includes(event.type ?? "")) clearTimeout(timer);
 		switch (event.type) {
+			case "session":
+				if (pilot && pilot.seen.sessionId === undefined && typeof event.id === "string") pilot.seen.sessionId = event.id;
+				break;
+			case "agent_settled":
+				if (pilot) pilot.seen.settled = true;
+				break;
 			case "message_start":
 			case "message_end": {
 				const message = event.message as ChildMessage | undefined;
 				if (message && event.type === "message_end") {
 					endedMessages.push(message);
 					if (message.role === "assistant") {
+						if (pilot) {
+							pilot.seen.completions++;
+							if (!pricedUsage(message.usage)) pilot.seen.spendKnown = false;
+						}
 						if (message.model) lastModel = message.model;
 						if (message.stopReason || message.errorMessage) {
 							lastError = {
@@ -376,29 +531,45 @@ async function runOneProc(
 	let startupFailure = false;
 	let spawnCode: string | undefined;
 	let stderrTail = "";
-	const invocation = getPiInvocation(args);
+	const invocation = pilot
+		? { command: pilot.command, args: [...pilot.prefixArgs, ...args] }
+		: getPiInvocation(args);
+	// Pilot children write events to a file and stderr nowhere, so they outlive their owner.
+	const eventsFd = pilot ? fs.openSync(pilot.eventsFile, "wx", 0o600) : undefined;
 	const proc = spawn(invocation.command, invocation.args, {
 		cwd: options.cwd,
 		shell: false,
-		stdio: ["ignore", "pipe", "pipe"],
+		stdio: eventsFd === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", eventsFd, "ignore"],
 		detached: process.platform !== "win32",
-		env: { ...process.env, PI_DISPATCH_DEPTH: String(childDepth) },
+		env: pilot ? pilotEnv(childDepth) : { ...process.env, PI_DISPATCH_DEPTH: String(childDepth) },
 	});
-	proc.stdout.setEncoding("utf8");
-	proc.stdout.on("data", (data: string) => {
+	if (eventsFd !== undefined) fs.closeSync(eventsFd);
+	let termination: Promise<void> | undefined;
+	let gateError: string | undefined;
+	if (pilot && proc.pid) pilot.seen.launched = true;
+	const gate = pilot && (proc.pid
+		? pilot.onSpawn(proc.pid, () => proc.exitCode !== null || proc.signalCode !== null)
+		: Promise.resolve("Pilot child did not start")).then((error) => {
+		if (!error) return;
+		gateError = error;
+		termination ??= stopWorker(proc, options.onWarning);
+	});
+	const feed = (data: string) => {
 		buffer += data;
 		const lines = buffer.split("\n");
 		buffer = lines.pop() ?? "";
 		for (const line of lines) processLine(line);
-	});
+	};
+	const tail = pilot ? tailFile(pilot.eventsFile, feed) : undefined;
+	proc.stdout?.setEncoding("utf8");
+	proc.stdout?.on("data", feed);
 	// Preserve only known diagnostic codes, never raw stderr (may contain credentials).
-	proc.stderr.on("data", (data: Buffer) => {
+	proc.stderr?.on("data", (data: Buffer) => {
 		stderrTail = (stderrTail + data.toString()).slice(-4096);
 	});
 
 	let exitCode: number | null = null;
 	let exitSignal: NodeJS.Signals | null = null;
-	let termination: Promise<void> | undefined;
 	const startupMs = startupTimeoutMs();
 	const timer = setTimeout(() => {
 		startupFailure = true;
@@ -409,11 +580,13 @@ async function runOneProc(
 			clearTimeout(timer);
 			exitCode = code;
 			exitSignal = signal;
+			tail?.drain();
 			if (buffer.trim()) processLine(buffer);
 			resolve();
 		});
 		proc.on("error", (error: NodeJS.ErrnoException) => {
 			clearTimeout(timer);
+			tail?.drain();
 			startupFailure = true;
 			spawnCode = /^[A-Z][A-Z0-9_]+$/.test(error.code ?? "") ? error.code : "spawn error";
 			exitCode = 1;
@@ -432,7 +605,10 @@ async function runOneProc(
 		}
 	});
 
+	await gate;
 	await termination;
+
+	if (gateError) return { ...fail("error", gateError), model, usage: sumUsage(endedMessages) };
 
 	if (wasAborted || options.signal?.aborted || lastError?.stopReason === "aborted") {
 		// Partial = whatever assistant text was streamed before the kill call.
@@ -495,5 +671,25 @@ async function runOneProc(
 		thinking,
 		usage: endedMessages.length ? sumUsage(endedMessages) : finalUsage,
 		ms: Date.now() - started,
+	};
+}
+
+/** Poll a growing file and pass new UTF-8 text on. `drain` reads the rest and stops; it is idempotent. */
+function tailFile(file: string, onData: (text: string) => void): { drain: () => void } {
+	const fd = fs.openSync(file, "r");
+	const decoder = new StringDecoder("utf8");
+	const chunk = Buffer.alloc(64 * 1024);
+	const read = () => {
+		for (let n = fs.readSync(fd, chunk); n > 0; n = fs.readSync(fd, chunk)) onData(decoder.write(chunk.subarray(0, n)));
+	};
+	const timer = setInterval(read, 100);
+	let open = true;
+	return {
+		drain: () => {
+			if (!open) return;
+			open = false;
+			clearInterval(timer);
+			try { read(); onData(decoder.end()); } finally { fs.closeSync(fd); }
+		},
 	};
 }

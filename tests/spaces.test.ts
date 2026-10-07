@@ -5,13 +5,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { DispatchSpaces, SPACE_REFRESH_MS, SPACE_ROW_COUNT, SPACE_TTL_MS, type SpaceWorker } from "../src/spaces.ts";
 import { DispatchProgress } from "../src/progress.ts";
+import { herdrTransport } from "../src/herdr.ts";
 
 const scout: SpaceWorker = { index: 0, agent: "scout", status: "queued", attempts: 0 };
 
 function fixture(t: TestContext) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-spaces-test-"));
-	const log = path.join(dir, "calls.jsonl");
-	const variables = ["PATH", "HERDR_ENV", "HERDR_SOCKET_PATH", "HERDR_TEST_WORKSPACE", "HERDR_TEST_FAIL_REPORT"];
+	const records: string[][] = [];
+	const calls = () => records;
+	const variables = ["HERDR_ENV", "HERDR_SOCKET_PATH", "HERDR_TEST_WORKSPACE", "HERDR_TEST_FAIL_REPORT"];
 	const before = new Map(variables.map((name) => [name, process.env[name]]));
 	const owned: DispatchSpaces[] = [];
 	const warnings: string[] = [];
@@ -32,22 +34,24 @@ function fixture(t: TestContext) {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
-	fs.writeFileSync(path.join(dir, "herdr"), `#!/usr/bin/env node
-const fs = require('node:fs');
-const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args)+'\\n');
-if (args[0]==='pane' && args[1]==='current') console.log(JSON.stringify({result:{pane:{workspace_id:process.env.HERDR_TEST_WORKSPACE,pane_id:'caller:p0'}}}));
-else if (args[0]==='workspace' && args[1]==='report-metadata' && process.env.HERDR_TEST_FAIL_REPORT==='1') {
- console.error(JSON.stringify({error:{message:'test transport failure'}})); process.exitCode=1;
-}
-else if (args[0]==='tab' && args[1]==='create') console.log(JSON.stringify({result:{tab:{tab_id:'viewer:t1'},root_pane:{pane_id:'viewer:p1'}}}));
-`, { mode: 0o700 });
-	process.env.PATH = `${dir}${path.delimiter}${process.env.PATH}`;
+	// Exercise real progress/row coalescing and CLI encoding without racing the OS
+	// scheduler against the transport's five-second timeout. panes.test.ts covers spawning the CLI.
+	t.mock.method(herdrTransport, "execFile", async (command: string, args: string[], options: { timeout: number }) => {
+		assert.equal(command, "herdr");
+		assert.equal(options.timeout, 5000, "the production transport bound stays unchanged");
+		records.push([...args]);
+		if (args[0] === "workspace" && process.env.HERDR_TEST_FAIL_REPORT === "1") {
+			throw Object.assign(new Error("fixture transport failure"), { stderr: '{"error":{"message":"test transport failure"}}' });
+		}
+		let result = {};
+		if (args[0] === "pane" && args[1] === "current") result = { pane: { workspace_id: process.env.HERDR_TEST_WORKSPACE, pane_id: "caller:p0" } };
+		if (args[0] === "tab" && args[1] === "create") result = { tab: { tab_id: "viewer:t1" }, root_pane: { pane_id: "viewer:p1" } };
+		return { stdout: JSON.stringify({ result }), stderr: "" };
+	});
 	process.env.HERDR_ENV = "1";
 	process.env.HERDR_SOCKET_PATH = path.join(dir, "fake.sock");
 	process.env.HERDR_TEST_WORKSPACE = "caller-workspace";
 	delete process.env.HERDR_TEST_FAIL_REPORT;
-	const calls = () => fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]) : [];
 	return {
 		dir, warnings, calls,
 		reports: () => calls().filter((args) => args[0] === "workspace" && args[1] === "report-metadata"),
@@ -63,8 +67,12 @@ function tokens(args: string[]) {
 	return args.filter((_, index) => args[index - 1] === "--token");
 }
 
+/**
+ * Rows coalesce to the newest snapshot, so an awaited state always arrives; the
+ * bound only catches a hang and must exceed herdrCommand's 5 s per-call timeout.
+ */
 async function waitFor(check: () => boolean) {
-	const deadline = Date.now() + 3000;
+	const deadline = Date.now() + 30_000;
 	while (!check()) {
 		if (Date.now() > deadline) throw new Error("Timed out waiting for fake Herdr");
 		await new Promise((resolve) => setTimeout(resolve, 10));
@@ -88,7 +96,7 @@ test("actual progress events drive queued, model/attempt, terminal and cleanup r
 	const progress = new DispatchProgress("parallel", [
 		{ agent: "scout", task: "PRIVATE TASK" },
 		{ agent: "hidden", task: "HIDDEN TASK", herdr: false },
-	]);
+	], (update) => { f.warnings.push(...(update.details.warnings ?? [])); });
 	try {
 		await progress.open(f.dir);
 		assert.deepEqual(tokens(f.reports()[0]), ["dispatch_1=○ scout-1"]);
@@ -104,6 +112,25 @@ test("actual progress events drive queued, model/attempt, terminal and cleanup r
 	assert.ok(!JSON.stringify(f.reports()).includes("PRIVATE"));
 	assert.ok(!JSON.stringify(f.reports()).includes("hidden"));
 	assert.deepEqual(f.warnings, []);
+});
+
+test("progress continues without rows when workspace discovery times out", async (t) => {
+	const f = fixture(t);
+	const transport = t.mock.method(herdrTransport, "execFile", async () => { throw Object.assign(new Error("fixture timeout"), { code: "ETIMEDOUT" }); });
+	const warnings: string[] = [];
+	const progress = new DispatchProgress("single", [{ agent: "scout", task: "private" }],
+		(update) => { warnings.push(...(update.details.warnings ?? [])); });
+	try {
+		await progress.open(f.dir);
+		assert.ok(warnings.some((warning) => /Spaces worker rows unavailable:.*command failed or timed out/.test(warning)));
+		const result = await progress.run(0, async () => ({
+			agent: "scout", task: "private", status: "ok", text: "done", attempts: 1, ms: 1,
+		}));
+		assert.equal(result.status, "ok");
+	} finally { await progress.end(); }
+	const commands = transport.mock.calls.map((call) => (call.arguments[1] as string[]).slice(0, 2).join(" "));
+	assert.ok(commands.includes("pane current"));
+	assert.ok(!commands.includes("workspace report-metadata"));
 });
 
 test("overlapping dispatches share rows; ending one preserves the other's workers", async (t) => {

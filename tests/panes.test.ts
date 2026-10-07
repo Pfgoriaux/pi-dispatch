@@ -20,20 +20,22 @@ test(`viewer tabs clean up ${status} and unfinished workers without Git`, async 
 		else process.env.HERDR_SOCKET_PATH = oldSocket;
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
+	// A shell fake starts in milliseconds; a Node fake can exceed herdrCommand's 5 s timeout on a loaded machine.
+	// Each call appends one record in a single write (panes and rows call concurrently):
+	// arguments joined by US (\x1f), terminated by RS (\x1e).
 	fs.writeFileSync(
 		path.join(dir, "herdr"),
-		`#!/usr/bin/env node
-const fs = require('node:fs');
-const args = process.argv.slice(2);
-const log = ${JSON.stringify(log)};
-const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\\n').map(JSON.parse) : [];
-fs.appendFileSync(log, JSON.stringify(args)+'\\n');
-if (args[0]==='pane' && args[1]==='current') console.log(JSON.stringify({result:{pane:{workspace_id:'w-test',pane_id:'w-test:p0'}}}));
-else if (args[0]==='tab' && args[1]==='create') {
- const i = calls.filter(c=>c[0]==='tab'&&c[1]==='create').length+1;
- console.log(JSON.stringify({result:{tab:{tab_id:'w-test:t'+i},root_pane:{pane_id:'w-test:p'+i}}}));
-}
-// pane run, report-agent and tab close succeed with no JSON output.
+		`#!/bin/sh
+rec=$(printf '%s\\037' "$@"; printf '\\036')
+printf '%s' "$rec" >> '${log}'
+if [ "$1" = pane ] && [ "$2" = current ]; then
+ printf '%s\\n' '{"result":{"pane":{"workspace_id":"w-test","pane_id":"w-test:p0"}}}'
+elif [ "$1" = tab ] && [ "$2" = create ]; then
+ echo x >> '${log}.tabs'
+ i=$(wc -l < '${log}.tabs' | tr -d ' ')
+ printf '{"result":{"tab":{"tab_id":"w-test:t%s"},"root_pane":{"pane_id":"w-test:p%s"}}}\\n' "$i" "$i"
+fi
+# pane run, report-agent and tab close succeed with no JSON output.
 `,
 		{ mode: 0o700 },
 	);
@@ -67,9 +69,9 @@ else if (args[0]==='tab' && args[1]==='create') {
 	assert.deepEqual(warnings, []);
 	const calls = fs
 		.readFileSync(log, "utf8")
-		.trim()
-		.split("\n")
-		.map((line) => JSON.parse(line) as string[]);
+		.split("\x1e")
+		.filter(Boolean)
+		.map((record) => record.split("\x1f").slice(0, -1));
 	assert.equal(
 		calls.filter((c) => c[0] === "tab" && c[1] === "create").length,
 		2,

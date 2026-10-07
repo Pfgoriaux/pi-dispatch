@@ -4,6 +4,9 @@
   "description": "Hybrid multi-agent dispatch extension for the pi coding agent — parallel sub-agents with a strict context firewall",
   "type": "module",
   "private": true,
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
     "test": "tsx --test tests/*.test.ts",
     "check": "tsc --noEmit && npm test"
@@ -31,6 +34,7 @@
     "url": "git+https://github.com/Pfgoriaux/pi-dispatch.git"
   },
   "dependencies": {
+    "@earendil-works/pi-durable": "1.0.4",
     "@pf/pi-model-prompts": "file:vendor/pf-pi-model-prompts-4.0.0.tgz"
   }
 }
