@@ -443,13 +443,29 @@ test('review: a blocker counts only when it cites a changed file', () => {
  assert.deepEqual(parseReview('No findings.', ['src/a.ts']), { blocking: 0, other: 0, findings: null });
 });
 
-/** Start an owner, wait for the first `kind` spawn of `id`, then SIGKILL the owner. Returns the worker PID. */
+/** Resolves once `run` answers status with a report `ready` accepts; fails at once, with its stderr, if it exits. */
+async function liveReport(run: ReturnType<typeof owner>, cfg: PilotConfig, ready: (report: any) => boolean = () => true) {
+ let exited = false;
+ run.exited.then(() => { exited = true; });
+ for (;;) {
+  if (exited) throw new Error(`owner exited before it was ready: ${run.output().stderr}`);
+  const live = await request(socketPath(cfg.store), { op: 'status' }).catch(() => undefined);
+  if (live?.ok && ready(live.report)) return live.report as any;
+  await new Promise((r) => setTimeout(r, 25));
+ }
+}
+
+/**
+ * Start an owner, wait until its store records the worker of the first `kind`
+ * spawn of `id`, then SIGKILL the owner. Killing before that commit would leave
+ * an unrecorded worker, which recovery rightly blocks. Returns the worker PID.
+ */
 async function crashOwner(file: string, cfg: PilotConfig, pi: ReturnType<typeof fakePi>, id: string, kind = 'work') {
  const run = owner(file);
- await waitFor(() => pi.starts(id, kind).length === 1, 30_000);
+ await waitFor(() => pi.starts(id, kind).length === 1, 60_000);
  const worker = pi.starts(id, kind)[0].pid as number;
  leftovers.push(worker);
- await waitFor(() => fs.existsSync(socketPath(cfg.store)));
+ await liveReport(run, cfg, (report) => report.tasks.some((t: any) => t.id === id && t.worker === worker));
  run.child.kill('SIGKILL');
  await run.exited;
  fs.rmSync(socketPath(cfg.store), { force: true }); // left by the killed owner
@@ -479,9 +495,8 @@ test('recovery: SIGKILL while the worker runs; resume waits for it and publishes
  const worker = await crashOwner(file, cfg, pi, 'a');
  assert.ok(await processStartIdentity(worker), 'the worker outlives its owner');
  const resumed = owner(file, 'resume');
- await waitFor(() => fs.existsSync(socketPath(cfg.store)), 30_000);
- const live = await request(socketPath(cfg.store), { op: 'status' });
- assert.equal((live?.report as any).tasks[0].state, 'running');
+ const live = await liveReport(resumed, cfg);
+ assert.deepEqual([live.tasks[0].state, live.tasks[0].worker], ['running', worker]);
  pi.release('a');
  assert.equal(await resumed.exited, 0, resumed.output().stderr);
  assert.match(resumed.output().stdout, /pr-ready +a \(1 attempt, \$0\.50\)/);
@@ -551,7 +566,7 @@ test('recovery: a review interrupted by an owner crash is adopted, not repeated'
  const reviewer = await crashOwner(file, cfg, pi, 'a', 'review');
  assert.ok(await processStartIdentity(reviewer), 'the reviewer outlives its owner');
  const resumed = owner(file, 'resume');
- await waitFor(() => fs.existsSync(socketPath(cfg.store)), 30_000);
+ assert.equal((await liveReport(resumed, cfg)).tasks[0].worker, reviewer);
  pi.release('a', 'review');
  assert.equal(await resumed.exited, 0, resumed.output().stderr);
  assert.match(resumed.output().stdout, /pr-ready +a .*review clean/);
@@ -646,11 +661,13 @@ test('recovery: a reserved slot keeps an adopted worker from starving other task
  await crashOwner(file, cfg, pi, 'a');
  assert.equal(pi.reviews('p').length, 0);
  const resumed = owner(file, 'resume');
- await waitFor(() => fs.existsSync(socketPath(cfg.store)), 30_000);
+ await liveReport(resumed, cfg);
+ // Give an unreserved scheduler time to hand the only slot to p's review; the assertion below does not depend on it.
  await new Promise((r) => setTimeout(r, 1500));
- assert.equal(pi.reviews('p').length, 0, "p's review waits for the adopted worker's slot");
  pi.release('a');
  assert.equal(await resumed.exited, 0, resumed.output().stderr);
+ const aEnded = pi.events().find((e) => e.event === 'end' && e.id === 'a' && e.kind === 'work').at;
+ assert.ok(pi.reviews('p')[0].at > aEnded, "p's review starts only after the adopted worker freed its slot");
  assert.match(resumed.output().stdout, /Tasks: 3 pr-ready/);
  assert.deepEqual([pi.starts('a').length, pi.starts('p').length, pi.starts('c').length, pi.reviews('p').length], [1, 1, 1, 1]);
 });

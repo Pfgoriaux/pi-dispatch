@@ -84,6 +84,8 @@ export interface TaskReport {
 	readonly baseSha: string | null;
 	readonly parent: string | null;
 	readonly pr: { readonly number: number; readonly headSha: string } | null;
+	/** PID of the worker the store records for the running attempt or review, once its identity is committed. */
+	readonly worker: number | null;
 	/** Review of the verified head; counts only, never the reviewer's text. */
 	readonly review: { readonly status: ReviewState["status"]; readonly blocking: number; readonly other: number } | null;
 	readonly reason: string | null;
@@ -762,6 +764,11 @@ function reviewProblem(review: ReviewState | null | undefined): string | null {
 	return review?.status === "failed" ? `no usable review: ${review.reason ?? "reviewer failed"}` : null;
 }
 
+function runningPid(attempt: Readonly<AttemptState> | undefined): number | null {
+	if (attempt?.status === "running") return attempt.worker?.pid ?? null;
+	return attempt?.review?.status === "running" ? attempt.review.worker?.pid ?? null : null;
+}
+
 const reviewSummary = (review: ReviewState | null | undefined): TaskReport["review"] =>
 	review ? { status: review.status, blocking: review.blocking, other: review.other } : null;
 
@@ -774,7 +781,7 @@ function taskReport(id: string, snapshot: StoreSnapshot, child: AnyRecord, publi
 	const { used, spentUsd, last } = attemptSummary(snapshot.attempts.filter((a) => a.taskKey === id));
 	const base = {
 		id, attempts: used.length, spentUsd, branch: last?.branch ?? null, headSha: null, baseSha: last?.baseSha ?? null,
-		parent: null, pr: null, review: null, reason: clip(last?.reason),
+		parent: null, pr: null, review: null, reason: clip(last?.reason), worker: runningPid(last),
 	};
 	const outcome = child?.state.status === "terminal" ? child.state.outcome as DurableModule.TaskOutcome<Verified> : undefined;
 	const running = last?.status === "running" || last?.review?.status === "running";
@@ -813,8 +820,9 @@ export function formatReport(report: BatchReport): string {
 		const parent = task.parent ? ` on ${task.parent}` : "";
 		const pr = task.pr ? ` PR #${task.pr.number}` : "";
 		const review = task.review ? ` review ${reviewLabel(task.review)}` : "";
+		const worker = task.worker ? ` worker pid ${task.worker}` : "";
 		const reason = task.reason ? ` — ${task.reason}` : "";
-		lines.push(`  ${task.state.padEnd(8)} ${task.id} (${task.attempts} attempt${task.attempts === 1 ? "" : "s"}, ${usd(task.spentUsd)})${pr}${sha}${parent}${review}${reason}`);
+		lines.push(`  ${task.state.padEnd(8)} ${task.id} (${task.attempts} attempt${task.attempts === 1 ? "" : "s"}, ${usd(task.spentUsd)})${pr}${sha}${parent}${worker}${review}${reason}`);
 	}
 	return lines.join("\n");
 }

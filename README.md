@@ -461,7 +461,7 @@ The report gives each task a state:
 | `running` / `pending` | Not settled yet |
 
 It also shows reported spend (attempts and reviews), halt reasons, review
-counts, and short reasons. It never shows prompts, worker output, or reviewer
+counts, the recorded worker PID of running tasks, and short reasons. It never shows prompts, worker output, or reviewer
 text. Reasons are cut to one line of 240 characters.
 
 Review:
@@ -503,6 +503,9 @@ Ownership and stopping:
 
 Recovery after a killed owner:
 
+- The owner records each worker's PID and `ps` start time right after
+  spawning it. A worker that exits before `ps` reads it is judged from its
+  result without an identity; the owner saw it exit.
 - Worker stdout goes to `events.log` in the run's session directory under
   `sessionsRoot`, not to a pipe, so a worker keeps running when its owner
   dies. Pi writes its own session file there through `--session-id` and

@@ -49,6 +49,7 @@ fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({pid:process.pid,args,s
 const out=(o)=>process.stdout.write(JSON.stringify(o)+'\\n');
 const finish=(text='done')=>{out({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],stopReason:'stop',model:'fake',usage:${JSON.stringify(usage)}}});out({type:'agent_end',messages:[]});out({type:'agent_settled'});};
 const commit=(file,text)=>{fs.mkdirSync(require('path').dirname(file),{recursive:true});fs.writeFileSync(file,text);cp.execFileSync('git',['add','--',file]);cp.execFileSync('git',['commit','-q','-m','worker '+file]);};
+const after=(file,then)=>{const t=setInterval(()=>{if(fs.existsSync(file)){clearInterval(t);then();}},20);};
 out({type:'session',version:3,id:${sessionExpr},timestamp:new Date().toISOString(),cwd:process.cwd()});
 setTimeout(()=>{${body}},300);
 `);
@@ -109,9 +110,11 @@ test('pilot child: explicit executable, documented session flags, stripped coord
 
  process.env.PI_DISPATCH_DURABLE_STORE = '/coordinator/store.sqlite';
  process.env.PI_SESSION_ID = 'parent-session';
- const ok = fakePi('finish();');
+ // The worker waits for its identity to be recorded, however slow `ps` is.
+ const recorded = path.join(dir, 'recorded');
+ const ok = fakePi(`after(${JSON.stringify(recorded)}, () => finish());`);
  const spawned: [number, string][] = [];
- const result = await runPilotProc(agent, '--looks-like-a-flag', { ...base, piExecutable: ok.bin, onSpawn: (pid, start) => { spawned.push([pid, start]); } });
+ const result = await runPilotProc(agent, '--looks-like-a-flag', { ...base, piExecutable: ok.bin, onSpawn: (pid, start) => { spawned.push([pid, start]); fs.writeFileSync(recorded, ''); } });
  delete process.env.PI_DISPATCH_DURABLE_STORE; delete process.env.PI_SESSION_ID;
  assert.equal(result.status, 'ok'); assert.equal(result.settled, true); assert.equal(result.sessionId, 'pd-test-1');
  assert.equal(result.usage?.cost.total, 0.25);
@@ -168,9 +171,14 @@ test('evidence: completion needs agent_settled and a session file that agrees wi
 test('supervisor: success records identity and spend, stays in owned paths, retains work without merging', async () => {
  const s = await setup();
  try {
-  const pi = fakePi(`commit('src/a.txt','a\\n'); finish();`);
+  // The worker finishes only after the store shows its identity, however slow `ps` is.
+  const recorded = path.join(s.ws, 'recorded');
+  const pi = fakePi(`after(${JSON.stringify(recorded)}, () => { commit('src/a.txt','a\\n'); finish(); });`);
   const supervisor = new Supervisor(s.options({ piExecutable: pi.bin }));
-  const done = await supervisor.runAttempt(task('t1', { checks: [[process.execPath, '-e', 'process.exit(0)']] }), soon());
+  const running = supervisor.runAttempt(task('t1', { checks: [[process.execPath, '-e', 'process.exit(0)']] }), soon());
+  while (!(await s.store.read()).attempts.find((a) => a.key === 't1#1')?.worker) await new Promise((r) => setTimeout(r, 20));
+  fs.writeFileSync(recorded, '');
+  const done = await running;
   assert.equal(done.status, 'succeeded'); assert.equal(done.spentUsd, 0.25);
   assert.equal(done.worker?.pid, pi.spawns()[0].pid); assert.equal(done.worker?.host, os.hostname());
   assert.equal(done.worktree, path.join(s.ws, '.worktrees', 'proj', 'pilot-b1-t1-a1'));
@@ -183,6 +191,25 @@ test('supervisor: success records identity and spend, stays in owned paths, reta
   assert.ok(fs.existsSync(done.worktree!), 'verified worktree retained');
   assert.equal(pi.spawns().length, 1);
  } finally { await s.store.close(); }
+});
+
+test('supervisor: a worker that exits before a slow ps reads it is judged, not blocked', async () => {
+ const shim = fs.mkdtempSync(path.join(W, 'slow-ps-'));
+ fs.writeFileSync(path.join(shim, 'ps'), '#!/bin/sh\nsleep 1.2\nexec /bin/ps "$@"\n', { mode: 0o700 });
+ const savedPath = process.env.PATH;
+ process.env.PATH = `${shim}${path.delimiter}${savedPath}`;
+ const s = await setup();
+ try {
+  // The fake worker commits and settles at ~300 ms, well before ps answers.
+  const pi = fakePi(`commit('src/a.txt','a\\n'); finish(); process.exit(0);`);
+  const done = await new Supervisor(s.options({ piExecutable: pi.bin })).runAttempt(task('t1'), soon());
+  assert.equal(done.status, 'succeeded', done.reason ?? '');
+  assert.equal(done.spentUsd, 0.25);
+  assert.equal(done.worker, null, 'no identity was recorded for the already-exited worker');
+ } finally {
+  process.env.PATH = savedPath;
+  await s.store.close();
+ }
 });
 
 test('supervisor: no-op output is not verified; stopped admission starts nothing', async () => {

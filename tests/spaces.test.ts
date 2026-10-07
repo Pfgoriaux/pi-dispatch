@@ -32,22 +32,26 @@ function fixture(t: TestContext) {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
-	fs.writeFileSync(path.join(dir, "herdr"), `#!/usr/bin/env node
-const fs = require('node:fs');
-const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args)+'\\n');
-if (args[0]==='pane' && args[1]==='current') console.log(JSON.stringify({result:{pane:{workspace_id:process.env.HERDR_TEST_WORKSPACE,pane_id:'caller:p0'}}}));
-else if (args[0]==='workspace' && args[1]==='report-metadata' && process.env.HERDR_TEST_FAIL_REPORT==='1') {
- console.error(JSON.stringify({error:{message:'test transport failure'}})); process.exitCode=1;
-}
-else if (args[0]==='tab' && args[1]==='create') console.log(JSON.stringify({result:{tab:{tab_id:'viewer:t1'},root_pane:{pane_id:'viewer:p1'}}}));
+	// A shell fake starts in milliseconds; a Node fake can exceed herdrCommand's 5 s timeout on a loaded machine.
+	// Each call is logged as arguments joined by US (\x1f) and terminated by RS (\x1e).
+	fs.writeFileSync(path.join(dir, "herdr"), `#!/bin/sh
+printf '%s\\037' "$@" >> '${log}'
+printf '\\036' >> '${log}'
+if [ "$1" = pane ] && [ "$2" = current ]; then
+ printf '{"result":{"pane":{"workspace_id":"%s","pane_id":"caller:p0"}}}\\n' "$HERDR_TEST_WORKSPACE"
+elif [ "$1" = workspace ] && [ "$2" = report-metadata ] && [ "$HERDR_TEST_FAIL_REPORT" = 1 ]; then
+ printf '%s\\n' '{"error":{"message":"test transport failure"}}' >&2
+ exit 1
+elif [ "$1" = tab ] && [ "$2" = create ]; then
+ printf '%s\\n' '{"result":{"tab":{"tab_id":"viewer:t1"},"root_pane":{"pane_id":"viewer:p1"}}}'
+fi
 `, { mode: 0o700 });
 	process.env.PATH = `${dir}${path.delimiter}${process.env.PATH}`;
 	process.env.HERDR_ENV = "1";
 	process.env.HERDR_SOCKET_PATH = path.join(dir, "fake.sock");
 	process.env.HERDR_TEST_WORKSPACE = "caller-workspace";
 	delete process.env.HERDR_TEST_FAIL_REPORT;
-	const calls = () => fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]) : [];
+	const calls = () => fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\x1e").filter(Boolean).map((record) => record.split("\x1f").slice(0, -1)) : [];
 	return {
 		dir, warnings, calls,
 		reports: () => calls().filter((args) => args[0] === "workspace" && args[1] === "report-metadata"),

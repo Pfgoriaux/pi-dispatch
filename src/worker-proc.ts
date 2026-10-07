@@ -233,6 +233,9 @@ export interface PilotProcOptions {
 	onWarning?: (warning: string) => void;
 }
 
+/** `spawned.startIdentity` of a child that exited before `ps` could read it; nothing was recorded. */
+export const EXITED_BEFORE_IDENTITY = "exited before its identity was read";
+
 export interface PilotProcResult extends WorkerResult {
 	/** Recorded identity, or null when the child never got one. */
 	spawned: { pid: number; startIdentity: string } | null;
@@ -296,9 +299,14 @@ export async function runPilotProc(agent: AgentConfig, task: string, options: Pi
 		sessionArgs: ["--session-id", options.sessionId, "--session-dir", options.sessionDir],
 		eventsFile: path.join(options.sessionDir, PILOT_EVENTS_FILE),
 		seen,
-		onSpawn: async (pid) => {
+		onSpawn: async (pid, exited) => {
 			const { processStartIdentity } = await import("./durable/store.ts");
 			const startIdentity = await processStartIdentity(pid);
+			// `ps` loses a PID only after Node reaped our child, so an observed exit means a fast exit, not an unknown worker.
+			if (startIdentity === null && exited()) {
+				spawned = { pid, startIdentity: EXITED_BEFORE_IDENTITY };
+				return undefined;
+			}
 			if (!startIdentity) return `Cannot establish start identity of worker process ${pid}`;
 			spawned = { pid, startIdentity };
 			try {
@@ -338,8 +346,8 @@ interface PilotSpawn {
 	/** Created exclusively; the child's stdout. */
 	eventsFile: string;
 	seen: PilotSeen;
-	/** Resolves to an error message when the child must be stopped. */
-	onSpawn: (pid: number) => Promise<string | undefined>;
+	/** Resolves to an error message when the child must be stopped. `exited` reports whether Node saw the child exit. */
+	onSpawn: (pid: number, exited: () => boolean) => Promise<string | undefined>;
 }
 
 async function runOneProc(
@@ -531,7 +539,7 @@ async function runOneProc(
 	let gateError: string | undefined;
 	if (pilot && proc.pid) pilot.seen.launched = true;
 	const gate = pilot && (proc.pid
-		? pilot.onSpawn(proc.pid)
+		? pilot.onSpawn(proc.pid, () => proc.exitCode !== null || proc.signalCode !== null)
 		: Promise.resolve("Pilot child did not start")).then((error) => {
 		if (!error) return;
 		gateError = error;
