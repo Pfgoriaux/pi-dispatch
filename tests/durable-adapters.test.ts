@@ -176,7 +176,9 @@ test('supervisor: success records identity and spend, stays in owned paths, reta
   const pi = fakePi(`after(${JSON.stringify(recorded)}, () => { commit('src/a.txt','a\\n'); finish(); });`);
   const supervisor = new Supervisor(s.options({ piExecutable: pi.bin }));
   const running = supervisor.runAttempt(task('t1', { checks: [[process.execPath, '-e', 'process.exit(0)']] }), soon());
-  while (!(await s.store.read()).attempts.find((a) => a.key === 't1#1')?.worker) await new Promise((r) => setTimeout(r, 20));
+  let settled = false;
+  running.then(() => { settled = true; }, () => { settled = true; });
+  while (!settled && !(await s.store.read()).attempts.find((a) => a.key === 't1#1')?.worker) await new Promise((r) => setTimeout(r, 20));
   fs.writeFileSync(recorded, '');
   const done = await running;
   assert.equal(done.status, 'succeeded'); assert.equal(done.spentUsd, 0.25);
@@ -195,17 +197,41 @@ test('supervisor: success records identity and spend, stays in owned paths, reta
 
 test('supervisor: a worker that exits before a slow ps reads it is judged, not blocked', async () => {
  const shim = fs.mkdtempSync(path.join(W, 'slow-ps-'));
- fs.writeFileSync(path.join(shim, 'ps'), '#!/bin/sh\nsleep 1.2\nexec /bin/ps "$@"\n', { mode: 0o700 });
+ // A `ps -p PID` that answers only once PID is gone: the worker always exits before its identity is read.
+ fs.writeFileSync(path.join(shim, 'ps'), '#!/bin/sh\nfor last; do :; done\ncase " $* " in *" -p "*) while kill -0 "$last" 2>/dev/null; do sleep 0.02; done;; esac\nexec /bin/ps "$@"\n', { mode: 0o700 });
  const savedPath = process.env.PATH;
  process.env.PATH = `${shim}${path.delimiter}${savedPath}`;
  const s = await setup();
  try {
-  // The fake worker commits and settles at ~300 ms, well before ps answers.
-  const pi = fakePi(`commit('src/a.txt','a\\n'); finish(); process.exit(0);`);
+   const pi = fakePi(`commit('src/a.txt','a\\n'); finish(); process.exit(0);`);
   const done = await new Supervisor(s.options({ piExecutable: pi.bin })).runAttempt(task('t1'), soon());
   assert.equal(done.status, 'succeeded', done.reason ?? '');
   assert.equal(done.spentUsd, 0.25);
   assert.equal(done.worker, null, 'no identity was recorded for the already-exited worker');
+ } finally {
+  process.env.PATH = savedPath;
+  await s.store.close();
+ }
+});
+
+test('supervisor: a slow ps on a loaded host still records a live worker', async () => {
+ // Each ps takes longer than the former 2 s timeout, as on a heavily loaded Mac.
+ const shim = fs.mkdtempSync(path.join(W, 'slow-ps-'));
+ fs.writeFileSync(path.join(shim, 'ps'), '#!/bin/sh\nsleep 2.3\nexec /bin/ps "$@"\n', { mode: 0o700 });
+ const savedPath = process.env.PATH;
+ process.env.PATH = `${shim}${path.delimiter}${savedPath}`;
+ const s = await setup();
+ try {
+  const recorded = path.join(s.ws, 'recorded');
+  const pi = fakePi(`after(${JSON.stringify(recorded)}, () => { commit('src/a.txt','a\\n'); finish(); });`);
+  const running = new Supervisor(s.options({ piExecutable: pi.bin })).runAttempt(task('t1'), soon(60_000));
+  let settled = false;
+  running.then(() => { settled = true; }, () => { settled = true; });
+  while (!settled && !(await s.store.read()).attempts.find((a) => a.key === 't1#1')?.worker) await new Promise((r) => setTimeout(r, 20));
+  fs.writeFileSync(recorded, '');
+  const done = await running;
+  assert.equal(done.status, 'succeeded', done.reason ?? '');
+  assert.equal(done.worker?.pid, pi.spawns()[0].pid);
  } finally {
   process.env.PATH = savedPath;
   await s.store.close();
@@ -267,7 +293,7 @@ test('supervisor: deadline is enforced without a client; unknown spend halts the
   const hang = fakePi('setInterval(()=>{},1000);');
   const controller = new AbortController();
   const running = new Supervisor(c.options({ piExecutable: hang.bin })).runAttempt(task('t1'), { ...soon(), signal: controller.signal });
-  const waitUntil = Date.now() + 10_000;
+  const waitUntil = Date.now() + 60_000; // hang guard; the spawn always happens
   while (hang.spawns().length === 0 && Date.now() < waitUntil) await new Promise((resolve) => setTimeout(resolve, 25));
   controller.abort();
   const cancelled = await running;

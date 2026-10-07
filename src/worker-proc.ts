@@ -235,6 +235,7 @@ export interface PilotProcOptions {
 
 /** `spawned.startIdentity` of a child that exited before `ps` could read it; nothing was recorded. */
 export const EXITED_BEFORE_IDENTITY = "exited before its identity was read";
+const IDENTITY_READS = 3;
 
 export interface PilotProcResult extends WorkerResult {
 	/** Recorded identity, or null when the child never got one. */
@@ -301,9 +302,10 @@ export async function runPilotProc(agent: AgentConfig, task: string, options: Pi
 		seen,
 		onSpawn: async (pid, exited) => {
 			const { processStartIdentity } = await import("./durable/store.ts");
-			const startIdentity = await processStartIdentity(pid);
-			// `ps` loses a PID only after Node reaped our child, so an observed exit means a fast exit, not an unknown worker.
-			if (startIdentity === null && exited()) {
+			let startIdentity = await processStartIdentity(pid);
+			for (let read = 1; !startIdentity && !exited() && read < IDENTITY_READS; read++) startIdentity = await processStartIdentity(pid);
+			// Node saw our own child exit, so a missing identity means a fast exit, not an unknown worker.
+			if (!startIdentity && exited()) {
 				spawned = { pid, startIdentity: EXITED_BEFORE_IDENTITY };
 				return undefined;
 			}

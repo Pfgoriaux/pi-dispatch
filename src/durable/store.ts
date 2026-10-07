@@ -74,8 +74,9 @@ function releaseOwnerLock(db: DatabaseSync): void {
 export async function processStartIdentity(pid: number): Promise<string | null | undefined> {
 	if (process.platform === "win32" || !Number.isSafeInteger(pid) || pid <= 0) return undefined;
 	try {
+		// `ps` normally answers in milliseconds; the timeout only bounds a hung `ps`, so a loaded host is not misread as unknown.
 		const { stdout } = await exec("ps", ["-o", "lstart=", "-p", String(pid)], {
-			timeout: 2000, env: { ...process.env, LC_ALL: "C" },
+			timeout: 10_000, env: { ...process.env, LC_ALL: "C" },
 		});
 		return stdout.trim() || undefined;
 	} catch (error) {

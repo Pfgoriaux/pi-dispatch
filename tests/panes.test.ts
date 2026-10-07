@@ -21,12 +21,13 @@ test(`viewer tabs clean up ${status} and unfinished workers without Git`, async 
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
 	// A shell fake starts in milliseconds; a Node fake can exceed herdrCommand's 5 s timeout on a loaded machine.
-	// Each call is logged as arguments joined by US (\x1f) and terminated by RS (\x1e).
+	// Each call appends one record in a single write (panes and rows call concurrently):
+	// arguments joined by US (\x1f), terminated by RS (\x1e).
 	fs.writeFileSync(
 		path.join(dir, "herdr"),
 		`#!/bin/sh
-printf '%s\\037' "$@" >> '${log}'
-printf '\\036' >> '${log}'
+rec=$(printf '%s\\037' "$@"; printf '\\036')
+printf '%s' "$rec" >> '${log}'
 if [ "$1" = pane ] && [ "$2" = current ]; then
  printf '%s\\n' '{"result":{"pane":{"workspace_id":"w-test","pane_id":"w-test:p0"}}}'
 elif [ "$1" = tab ] && [ "$2" = create ]; then
