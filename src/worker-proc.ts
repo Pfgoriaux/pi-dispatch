@@ -431,6 +431,8 @@ async function runOneProc(
 	// only when the child is killed before agent_end, never a final answer.
 	let lastModel: string | undefined;
 	let lastError: { stopReason?: string; errorMessage?: string } | undefined;
+	// Pi 1.1+ marks a cancelled run on agent_settled, even before any assistant message.
+	let childAborted = false;
 
 	const toolHealth = new ToolHealth(web.tools);
 	let buffer = "";
@@ -449,6 +451,7 @@ async function runOneProc(
 				if (pilot && pilot.seen.sessionId === undefined && typeof event.id === "string") pilot.seen.sessionId = event.id;
 				break;
 			case "agent_settled":
+				childAborted = event.aborted === true;
 				if (pilot) pilot.seen.settled = true;
 				break;
 			case "message_start":
@@ -492,6 +495,7 @@ async function runOneProc(
 					type: event.type,
 					toolName: typeof event.toolName === "string" ? event.toolName : "",
 					isError: event.isError === true,
+					durationMs: typeof event.durationMs === "number" ? event.durationMs : undefined,
 				}));
 				break;
 			case "agent_end": {
@@ -610,7 +614,7 @@ async function runOneProc(
 
 	if (gateError) return { ...fail("error", gateError), model, usage: sumUsage(endedMessages) };
 
-	if (wasAborted || options.signal?.aborted || lastError?.stopReason === "aborted") {
+	if (wasAborted || childAborted || options.signal?.aborted || lastError?.stopReason === "aborted") {
 		// Partial = whatever assistant text was streamed before the kill call.
 		const partial =
 			finalText || finalAssistantText(endedMessages) || streamedText;

@@ -191,7 +191,7 @@ test("child args prevent recursive workflows, forward thinking, and inherit pare
 		bin,
 		`#!/usr/bin/env node
 const content = [{ type: "text", text: JSON.stringify(process.argv.slice(2)) }];
-console.log(JSON.stringify({type: "tool_execution_end", toolName: "read", isError: true, result: {secret: "hidden"}}));
+console.log(JSON.stringify({type: "tool_execution_end", toolName: "read", isError: true, result: {secret: "hidden"}, durationMs: 1234}));
 console.log(JSON.stringify({type: "tool_execution_end", toolName: "read private/path</arg_value>", isError: true}));
 console.log(JSON.stringify({type: "message_end", message: {role: "assistant", content, model: "fake-model", stopReason: "stop"}}));
 `,
@@ -207,7 +207,7 @@ console.log(JSON.stringify({type: "message_end", message: {role: "assistant", co
 		thinking: "high",
 	});
 	assert.equal(result.status, "ok");
-	assert.ok(logs.includes("tool_execution_end: read [error]"));
+	assert.ok(logs.includes("tool_execution_end: read [error] 1.2s"));
 	assert.ok(logs.includes("tool_execution_end: [unregistered tool] [error]"));
 	assert.ok(!logs.join("\n").includes("private"));
 	assert.ok(!logs.join("\n").includes("hidden"));
@@ -226,4 +226,22 @@ console.log(JSON.stringify({type: "message_end", message: {role: "assistant", co
 		"error",
 		"zero exit with blank output must fail",
 	);
+});
+
+test("child that reports an aborted run settles as aborted, not blank", async (t) => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-child-abort-"));
+	const bin = path.join(dir, "fake-pi");
+	const previous = process.env.PI_DISPATCH_PI_BIN;
+	t.after(() => {
+		if (previous === undefined) delete process.env.PI_DISPATCH_PI_BIN;
+		else process.env.PI_DISPATCH_PI_BIN = previous;
+		fs.rmSync(dir, { recursive: true, force: true });
+	});
+	fs.writeFileSync(bin, `#!/usr/bin/env node
+console.log(JSON.stringify({type: "agent_start"}));
+console.log(JSON.stringify({type: "agent_settled", aborted: true}));
+`, { mode: 0o700 });
+	process.env.PI_DISPATCH_PI_BIN = bin;
+	const result = await runWorkerProc(agent, "test", { cwd: dir, model: "parent/model", modelOverride: "inherit" });
+	assert.equal(result.status, "aborted");
 });
