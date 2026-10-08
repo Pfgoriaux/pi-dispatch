@@ -10,7 +10,6 @@ import { formatReport, openBatch, policyHash, type BatchOwner, type PilotConfig 
 import { processStartIdentity } from '../src/durable/store.ts';
 import { parseReview, pilotSessionId, Supervisor } from '../src/durable/supervisor.ts';
 import { discoverAgents } from '../src/agents.ts';
-import { batchesDir, registerDurableBatchTool } from '../src/tools/durable-batch.ts';
 
 // Every repository, remote, store, fake Pi, and fake gh lives in this disposable workspace.
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -634,83 +633,11 @@ test('recovery: a review interrupted by an owner crash is adopted, not repeated'
  assert.deepEqual([pi.starts('a').length, pi.reviews('a').length, gh.prs().length], [1, 1, 1]);
 });
 
-/** The registered durable_batch tool and a context whose confirm answers are scripted. */
-function batchTool() {
- let tool: any;
- registerDurableBatchTool({ registerTool: (t: unknown) => { tool = t; } } as any);
- const asked: string[] = [];
- const ctx = (hasUI: boolean, answer: boolean) => ({ hasUI, ui: { confirm: async (title: string, message: string) => { asked.push(`${title}\n${message}`); return answer; } } });
- const call = async (params: object, context = ctx(true, true)) => (await tool.execute('id', params, undefined, undefined, context)).content[0].text as string;
- return { call, ctx, asked };
-}
-
 test('roster: the commit-authorized durable writer is not a dispatch role', () => {
  const { byName } = discoverAgents({ cwd: W, isProjectTrusted: () => false } as any);
  assert.ok(byName.has('reviewer'));
  assert.equal(byName.has('durable-writer'), false);
  assert.equal(writerAgent().name, 'durable-writer', 'the pilot still loads it directly');
-});
-
-test('durable_batch: drafts are validated and saved privately', async () => {
- const w = workspace();
- const { call } = batchTool();
- const invalid = await call({ action: 'draft', config: { batch: { id: 'x' } } });
- assert.match(invalid, /Invalid batch configuration/);
- const cfg = config(w, [{ id: 'a' }], '/bin/pi', '/bin/gh');
- const saved = await call({ action: 'draft', config: { ...cfg, batch: { ...cfg.batch, id: `draft-${uid()}` } } });
- const file = /Draft saved: (\S+)/.exec(saved)![1];
- assert.equal(path.dirname(file), batchesDir());
- assert.equal(fs.statSync(file).mode & 0o777, 0o600); assert.equal(fs.statSync(batchesDir()).mode & 0o777, 0o700);
- assert.match(saved, /Tasks \(1\):\n- a; owns src\/\n  checks: ".*node" "-e" "process.exit\(0\)"\n  prompt: do a/);
- fs.writeFileSync(cfg.store, '');
- assert.match(await call({ action: 'draft', config: cfg }), /already has a store/);
- assert.match(await call({ action: 'launch', id: '../etc' }).catch((e) => String(e)), /must name a drafted batch/);
-});
-
-test('durable_batch: launch is refused without a UI, inside workers, and when the user declines', async () => {
- const w = workspace();
- const pi = fakePi({});
- const cfg = config(w, [{ id: 'a' }], pi.bin, fakeGh(w.bare).bin);
- const id = `refuse-${uid()}`;
- const { call, ctx, asked } = batchTool();
- await call({ action: 'draft', config: { ...cfg, batch: { ...cfg.batch, id } } });
- assert.match(await call({ action: 'launch', id }, ctx(false, true)), /Launch refused: this session has no interactive UI/);
- process.env.PI_DISPATCH_DEPTH = '1';
- try { assert.match(await call({ action: 'launch', id }), /Launch refused: workers cannot launch/); } finally { delete process.env.PI_DISPATCH_DEPTH; }
- assert.equal(asked.length, 0, 'refusals never ask');
- assert.match(await call({ action: 'launch', id }, ctx(true, false)), /declined by the user; nothing started/);
- assert.equal(asked.length, 1);
- assert.equal(fs.existsSync(cfg.store), false); assert.equal(pi.starts().length, 0);
-});
-
-test('durable_batch: an approved launch starts exactly one owner; status and stop use its socket', async () => {
- const w = workspace();
- const pi = fakePi({ a: 'gate' });
- const gh = fakeGh(w.bare);
- const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin);
- const id = `launch-${uid()}`;
- const { call, asked } = batchTool();
- await call({ action: 'draft', config: { ...cfg, batch: { ...cfg.batch, id } } });
- const launched = await call({ action: 'launch', id });
- assert.match(launched, /Approved\. Owner pid \d+ is running and answers status/);
- const owner = Number(/pid (\d+)/.exec(launched)![1]);
- leftovers.push(owner);
- for (const shown of [`Batch: ${id} (run), policy sha256:`, `Repository: ${w.repo}`, '- a; owns src/', `Worker: ${JSON.stringify(pi.bin)}, model fake/model`, 'Spend allowance: $10', `Deadline: ${cfg.limits.deadline}`, `Publication: draft PRs on owner/proj via origin (${w.bare}) with ${gh.bin}`, `Store: ${cfg.store}`]) {
-  assert.ok(asked[0].includes(shown), shown);
- }
- assert.match(await call({ action: 'launch', id }), /already has a live owner/);
- assert.equal(asked.length, 1, 'a live owner is never asked about twice');
- assert.ok(asked[0].includes('Reviewer: fake/reviewer; fallbacks: fake/fallback'));
- await waitFor(() => pi.starts('a').length === 1, 30_000);
- assert.match(await call({ action: 'status', id }), /running +a/);
- assert.match(await call({ action: 'stop', id }), /Draining/);
- pi.release('a');
- await exitOf(owner, await processStartIdentity(owner));
- const log = fs.readFileSync(path.join(batchesDir(), `${id}.log`), 'utf8');
- assert.match(log, /Batch launch-\d+: running/);
- assert.equal(fs.statSync(path.join(batchesDir(), `${id}.log`)).mode & 0o777, 0o600);
- assert.match(await call({ action: 'status', id }), /No live owner/);
- assert.equal(pi.starts('a').length, 1);
 });
 
 test('recovery: a reserved slot keeps an adopted worker from starving other tasks at maxWorkers 1', async () => {

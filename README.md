@@ -321,6 +321,32 @@ Git repos and mocked models/commands. They do not verify live providers or Herdr
 The repository does not auto-load its extension into development sessions;
 use `pi -ne -e ./src/index.ts` for an explicit isolated load.
 
+## Durable batches through Foreman
+
+`durable_batch` is an HTTP client of the running Foreman coordinator. Set
+`FOREMAN_URL` to `http://host:port` or `unix:/absolute/socket/path` and
+`FOREMAN_TOKEN` to a bearer token from approved secret storage. The token's
+principal needs Foreman approval permission to launch a batch. Requests time
+out after 60 seconds and responses are capped at 4 MiB.
+
+- `draft` sends `config` to Foreman for validation and storage. It returns the
+  server's batch ID, policy hash, and approval summary. No local draft is saved.
+- `launch` takes `id`, reads the batch, and accepts only `pending` or `stopped`.
+  It shows the cached server summary from this Pi session, or builds one from
+  the stored config after a session change. The user confirms that summary
+  and policy hash in the Pi UI before the tool sends approval with that exact
+  hash. No UI/print mode and dispatch workers cannot launch. Only a reply with
+  `state: "approved"` confirms launch; Foreman runs the batch, not Pi.
+- `status` takes `id` and reports the batch state, error, and each task's state,
+  attempts, accounted spend, and PR from Foreman. Text reports are capped at 12 KB.
+- `stop` takes `id` and optionally `cancel: true`. Foreman drains active work;
+  cancellation also stops running workers. Without a live owner, Foreman cancels
+  a pending or stopped batch. The tool returns the server's reply.
+
+Calls run sequentially. Foreman defines and validates the configuration schema;
+its worker review settings use `worker.reviewModel` and `worker.reviewThinking`.
+The standalone pilot CLI below retains its own configuration and owner lifecycle.
+
 ## Durable pilot batches
 
 A standalone CLI runs a fixed batch of writer tasks on a Durable store and
@@ -334,23 +360,6 @@ node --import tsx src/durable/cli.ts status batch.json [--json]
 node --import tsx src/durable/cli.ts stop   batch.json [--cancel]
 # run/resume also take --expect-hash=<policy hash> and then start nothing if the file has another hash
 ```
-
-Agents can prepare a batch with the `durable_batch` tool; the user approves the launch:
-
-- `draft` validates a configuration with the same parser as the CLI and saves
-  it as `~/.pi/agent/pi-dispatch/batches/<id>.json` (private directory and
-  file). It refuses to change a batch that has a store.
-- `launch` shows a Pi confirm dialog with the policy hash, repository,
-  worker executable and model, reviewer models, allowance, deadline, publication target and
-  `gh`, store and roots, and each task's owned paths, checks, and prompt (first
-  200 characters). Only an approval starts one detached owner (`run`, or
-  `resume` when the store exists), logging to `<id>.log` next to the draft;
-  the tool returns its PID. The owner gets `--expect-hash=<policy hash>` and
-  starts nothing if the file changed after approval. The tool runs alone in a
-  turn. It refuses without a dialog-capable UI (print and JSON modes), inside
-  dispatch workers, and while an owner is live.
-- `status` and `stop` (`cancel: true` to cancel workers) use the owner socket.
-- The pilot writer role lives in `agents/durable/`, outside the dispatch roster.
 
 Every field is required, except `worker.piPrefixArgs`:
 
