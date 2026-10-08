@@ -1,33 +1,20 @@
-/**
- * durable_batch — lets an agent draft a durable pilot batch and ask the user
- * to launch it. Only the user's confirmation in the Pi UI starts work.
- *
- * - draft: validate with `parseConfig`, save `<agent dir>/pi-dispatch/batches/<id>.json`.
- * - launch: show the batch, including every command it runs, ask
- *   `ctx.ui.confirm`, then start one detached owner (`cli.ts run`, or
- *   `resume` when the store exists) logging to `<id>.log` next to the draft.
- *   The owner gets the approved policy hash and refuses a changed file.
- *   Refused without a UI or inside a worker.
- * - status / stop: talk to the live owner over its socket.
- */
-
-import { spawn } from "node:child_process";
-import fs from "node:fs";
-import { createRequire } from "node:module";
-import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+/** durable_batch asks for user approval; Foreman owns validation and execution. */
 import { Type } from "@earendil-works/pi-ai";
-import { getAgentDir, getPackageDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ConfigError, loadConfig, parseConfig, request, socketPath } from "../durable/cli.ts";
-import { formatReport, policyHash, type BatchReport, type PilotConfig } from "../durable/scheduler.ts";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { ForemanClient } from "../foreman-client.ts";
+import type { BatchReport, PilotConfig } from "../durable/scheduler.ts";
+import { truncateText } from "../worker.ts";
 
-const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const CLI = fileURLToPath(new URL("../durable/cli.ts", import.meta.url));
-const HOST_SDK_HOOK = new URL("../durable/host-sdk.mjs", import.meta.url).href;
-const OWNER_WAIT_MS = 20_000;
-
-export const batchesDir = (): string => path.join(getAgentDir(), "pi-dispatch", "batches");
-
+type ForemanConfig = Omit<PilotConfig, "reviewer"> & {
+	executor?: string;
+	reviewer?: PilotConfig["reviewer"];
+	worker: PilotConfig["worker"] & { reviewModel?: string; reviewThinking?: string };
+};
+interface Draft { id: string; policyHash: string; summary: string[] }
+interface Status {
+	batch: { id: string; state: string; error: string | null; policyHash: string; config: ForemanConfig };
+	report: (BatchReport & { stopped?: string | null }) | null;
+}
 interface Params {
 	action: "draft" | "launch" | "status" | "stop";
 	config?: unknown;
@@ -35,45 +22,18 @@ interface Params {
 	cancel?: boolean;
 }
 
-const text = (body: string) => ({ content: [{ type: "text" as const, text: body }], details: undefined });
+const text = (body: string) => ({ content: [{ type: "text" as const, text: truncateText(body).text }], details: undefined });
 
-function privateDir(): string {
-	const dir = batchesDir();
-	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-	fs.chmodSync(dir, 0o700);
-	return dir;
-}
-
-function draftFile(id: string | undefined): string {
-	if (!id || !SAFE_ID.test(id)) throw new Error("durable_batch: `id` must name a drafted batch.");
-	return path.join(batchesDir(), `${id}.json`);
-}
-
-function loadDraft(id: string | undefined): { file: string; config: PilotConfig } {
-	const file = draftFile(id);
-	if (!fs.existsSync(file)) throw new Error(`durable_batch: no draft ${id}; draft it first.`);
-	return { file, config: loadConfig(file) };
-}
-
-function draft(config: unknown): string {
-	let parsed: PilotConfig;
-	try {
-		parsed = parseConfig(config);
-	} catch (error) {
-		if (error instanceof ConfigError) return error.message;
-		throw error;
-	}
-	const file = path.join(privateDir(), `${parsed.batch.id}.json`);
-	if (fs.existsSync(parsed.store)) return `Batch ${parsed.batch.id} already has a store at ${parsed.store}; its draft cannot change. Pick another batch id.`;
-	fs.writeFileSync(file, `${JSON.stringify(parsed, null, 2)}\n`, { mode: 0o600 });
-	return `Draft saved: ${file}\n${summary(parsed, "run").join("\n")}\nAsk the user to approve, then call durable_batch with action "launch" and id "${parsed.batch.id}".`;
+function batchRoute(id: string | undefined): string {
+	if (!id) throw new Error("durable_batch: `id` is required for launch/status/stop.");
+	return `/batches/${encodeURIComponent(id)}`;
 }
 
 const argv = (parts: readonly string[]) => parts.map((part) => JSON.stringify(part)).join(" ");
 const PROMPT_CHARS = 200;
 
 /** Everything the user approves: targets, limits, and every command and prompt the batch runs. */
-function summary(config: PilotConfig, mode: "run" | "resume"): string[] {
+function summary(config: ForemanConfig, mode: "run" | "resume"): string[] {
 	const { worker, publication, repo, limits } = config;
 	const tasks = config.batch.tasks.flatMap((t) => [
 		`- ${t.id}${t.dependencies.length ? ` (after ${t.dependencies.join(", ")})` : ""}; owns ${t.ownedFiles.join(", ")}`,
@@ -81,10 +41,13 @@ function summary(config: PilotConfig, mode: "run" | "resume"): string[] {
 		`  prompt: ${Array.from(t.prompt.replace(/\s+/g, " ")).slice(0, PROMPT_CHARS).join("")}${t.prompt.length > PROMPT_CHARS ? "…" : ""}`,
 	]);
 	return [
-		`Batch: ${config.batch.id} (${mode}), policy ${policyHash(config)}`,
+		`Batch: ${config.batch.id} (${mode})`,
+		`Executor: ${config.executor ?? "local"}`,
 		`Repository: ${repo.root}, base branch ${repo.baseBranch}, branches ${repo.branchPrefix}/…`,
 		`Worker: ${argv([worker.piExecutable, ...(worker.piPrefixArgs ?? [])])}, model ${worker.model} (${worker.thinking})`,
-		`Reviewer: ${config.reviewer.model}; fallbacks: ${config.reviewer.fallbacks.join(", ")}`,
+		config.reviewer
+			? `Reviewer: ${config.reviewer.model}; fallbacks: ${config.reviewer.fallbacks.join(", ")}`
+			: `Reviewer: ${worker.reviewModel ?? worker.model} (${worker.reviewThinking ?? worker.thinking})`,
 		`Spend allowance: $${config.spend.allowanceUsd} (stopped reviews charge reservations; not a provider cap)`,
 		`Deadline: ${limits.deadline}; up to ${limits.maxWorkers} workers, ${limits.maxAttemptsPerTask} attempts per task`,
 		`Publication: draft PRs on ${publication.repo} via ${publication.remote} (${publication.url}) with ${publication.gh}; no merges`,
@@ -101,95 +64,72 @@ function launchRefusal(ctx: ExtensionContext): string | undefined {
 	return undefined;
 }
 
-function tsxLoader(): string {
-	try {
-		return pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
-	} catch {
-		throw new Error("durable_batch: tsx is not installed for pi-dispatch; run `npm ci` in the extension.");
+async function launch(client: ForemanClient, route: string, drafts: Map<string, Draft>, ctx: ExtensionContext): Promise<string> {
+	const { batch } = await client.request<Status>("GET", route);
+	if (!["pending", "stopped"].includes(batch.state)) return `Launch refused: batch ${batch.id} is ${batch.state}.`;
+	const cached = drafts.get(batch.id);
+	const facts = cached?.policyHash === batch.policyHash ? cached.summary : summary(batch.config, batch.state === "stopped" ? "resume" : "run");
+	const approved = await ctx.ui.confirm("Launch durable batch?", [
+		...facts, `Policy hash: ${batch.policyHash}`, "", "Workers run unattended and spend money. Approve?",
+	].join("\n"));
+	if (!approved) return `Launch declined by the user; nothing started for ${batch.id}.`;
+	return JSON.stringify(await client.request("POST", `${route}/approve`, { policyHash: batch.policyHash }));
+}
+
+const usd = (value: number | null) => value === null ? "unknown" : `$${value.toFixed(2)}`;
+
+function status({ batch, report }: Status): string {
+	const lines = [`Batch ${batch.id}: ${batch.state}`];
+	if (batch.error) lines.push(`Error: ${batch.error}`);
+	if (!report) return lines.join("\n");
+	lines.push(`Phase: ${report.phase}; deadline ${report.deadline}`,
+		`Accounted spend: ${usd(report.spentUsd)} of ${usd(report.allowanceUsd)} allowance (not a provider spending cap)`);
+	if (report.stopped) lines.push(`Stopped: ${report.stopped}`);
+	lines.push(...report.halted.map((reason) => `Halted: ${reason}`));
+	for (const task of report.tasks) {
+		const pr = task.pr ? ` PR #${task.pr.number}` : "";
+		const reason = task.reason ? ` — ${task.reason}` : "";
+		lines.push(`  ${task.state.padEnd(8)} ${task.id} (${task.attempts} attempt${task.attempts === 1 ? "" : "s"}, ${usd(task.spentUsd)})${pr}${reason}`);
 	}
-}
-
-/** The launching Pi's own SDK entry; the owner falls back to it (see durable/host-sdk.mjs). */
-export function hostSdkEntry(packageDir: string = getPackageDir()): string {
-	const entry = path.join(packageDir, "dist", "index.js");
-	if (!fs.existsSync(entry)) throw new Error(`durable_batch: Pi SDK entry not found at ${entry}; cannot start the owner.`);
-	return pathToFileURL(entry).href;
-}
-
-async function waitForOwner(config: PilotConfig, exited: () => boolean): Promise<boolean> {
-	const until = Date.now() + OWNER_WAIT_MS;
-	while (Date.now() < until && !exited()) {
-		const live = await request(socketPath(config.store), { op: "status" }).catch(() => undefined);
-		if (live?.ok) return true;
-		await new Promise((resolve) => setTimeout(resolve, 200));
-	}
-	return false;
-}
-
-async function launch(params: Params, ctx: ExtensionContext): Promise<string> {
-	const refused = launchRefusal(ctx);
-	if (refused) return `Launch refused: ${refused}. Ask the user to run it from an interactive Pi session or the CLI.`;
-	const { file, config } = loadDraft(params.id);
-	if ((await request(socketPath(config.store), { op: "status" }).catch(() => undefined))?.ok) return `Batch ${config.batch.id} already has a live owner.`;
-	const mode = fs.existsSync(config.store) ? "resume" : "run";
-	const approved = await ctx.ui.confirm("Launch durable batch?", [...summary(config, mode), "", "Workers run unattended and spend money. Approve?"].join("\n"));
-	if (!approved) return `Launch declined by the user; nothing started for ${config.batch.id}.`;
-	const sdk = hostSdkEntry();
-	const log = path.join(privateDir(), `${config.batch.id}.log`);
-	const fd = fs.openSync(log, "a", 0o600);
-	let exited = false;
-	try {
-		const child = spawn(process.execPath, ["--import", tsxLoader(), "--import", HOST_SDK_HOOK, CLI, mode, file, `--expect-hash=${policyHash(config)}`], {
-			cwd: path.dirname(path.dirname(CLI)), detached: true, stdio: ["ignore", fd, fd],
-			env: { ...process.env, PI_DISPATCH_DEPTH: "0", PI_DISPATCH_HOST_SDK: sdk },
-		});
-		child.once("exit", () => { exited = true; });
-		child.unref();
-		const answering = await waitForOwner(config, () => exited);
-		const state = exited ? "exited; read the log" : answering ? "is running and answers status" : "has not answered status yet; read the log";
-		return `Approved. Owner pid ${child.pid} ${state}.\nLog: ${log}`;
-	} finally {
-		fs.closeSync(fd);
-	}
-}
-
-async function status(params: Params): Promise<string> {
-	const { config } = loadDraft(params.id);
-	const live = await request(socketPath(config.store), { op: "status" });
-	if (!live?.ok) return `No live owner for ${config.batch.id}. Log: ${path.join(batchesDir(), `${config.batch.id}.log`)}`;
-	return formatReport(live.report as BatchReport);
-}
-
-async function stop(params: Params): Promise<string> {
-	const { config } = loadDraft(params.id);
-	const reply = await request(socketPath(config.store), { op: "stop", cancel: params.cancel === true });
-	if (!reply) return `No live owner for ${config.batch.id}.`;
-	return params.cancel ? "Stopping and cancelling running workers." : "Draining: running workers finish, nothing new starts.";
+	return lines.join("\n");
 }
 
 export function registerDurableBatchTool(pi: ExtensionAPI): void {
+	const drafts = new Map<string, Draft>();
+	pi.on("session_start", () => { drafts.clear(); });
 	pi.registerTool({
 		name: "durable_batch",
 		label: "Durable batch",
 		description:
-			"Draft an unattended durable pilot batch (validated config saved under the Pi agent dir), ask the user to launch it, or check status/stop it. Launch always asks the user to confirm in the Pi UI; agents cannot start work themselves.",
-		promptSnippet: "Draft durable overnight batches; launch only with user approval",
+			"Draft an unattended batch on the Foreman coordinator, ask the user to launch it, or check status/stop it. Launch always asks the user to confirm in the Pi UI; the coordinator runs the batch.",
+		promptSnippet: "Draft Foreman batches; launch only with user approval",
 		promptGuidelines: [
-			"durable_batch: Draft only when the user asks for an unattended batch. launch shows the batch and asks the user; never say a batch started unless launch returned an owner pid.",
+			"durable_batch: Draft only when the user asks for an unattended batch. launch shows the batch and asks the user to confirm; the Foreman coordinator runs it. Never say a batch started unless approve returned state approved.",
 		],
-		// Never run beside another call in the same turn: a parallel draft could replace the file under review.
 		executionMode: "sequential",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("draft"), Type.Literal("launch"), Type.Literal("status"), Type.Literal("stop")]),
-			config: Type.Optional(Type.Any({ description: "draft: full batch configuration (see README, Durable pilot batches)" })),
-			id: Type.Optional(Type.String({ description: "launch/status/stop: batch id of a saved draft" })),
+			config: Type.Optional(Type.Any({ description: "draft: full Foreman batch configuration (validated by the coordinator)" })),
+			id: Type.Optional(Type.String({ description: "launch/status/stop: batch id on the coordinator" })),
 			cancel: Type.Optional(Type.Boolean({ description: "stop: also cancel running workers" })),
 		}),
 		async execute(_toolCallId, params: Params, _signal, _onUpdate, ctx) {
-			if (params.action === "draft") return text(draft(params.config));
-			if (params.action === "launch") return text(await launch(params, ctx));
-			if (params.action === "status") return text(await status(params));
-			return text(await stop(params));
+			const refused = params.action === "launch" ? launchRefusal(ctx) : undefined;
+			if (refused) return text(`Launch refused: ${refused}. Ask the user to use an interactive Pi session.`);
+			try {
+				const client = new ForemanClient();
+				if (params.action === "draft") {
+					const draft = await client.request<Draft>("POST", "/batches", params.config);
+					drafts.set(draft.id, draft);
+					return text([`Batch: ${draft.id}`, `Policy hash: ${draft.policyHash}`, ...draft.summary].join("\n"));
+				}
+				const route = batchRoute(params.id);
+				if (params.action === "launch") return text(await launch(client, route, drafts, ctx));
+				if (params.action === "status") return text(status(await client.request<Status>("GET", route)));
+				return text(JSON.stringify(await client.request("POST", `${route}/stop`, { cancel: params.cancel === true })));
+			} catch (error) {
+				return { ...text(error instanceof Error ? error.message : String(error)), isError: true };
+			}
 		},
 	});
 }

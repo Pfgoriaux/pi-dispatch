@@ -1,11 +1,11 @@
 /**
- * Preloaded into the durable owner (`node --import`) by durable_batch.
+ * Preload (`node --import`) for running the durable CLI from an installed copy.
  *
- * Pi installs git packages without peer or dev dependencies, so a standalone
- * owner cannot resolve `@earendil-works/pi-coding-agent` from pi-dispatch's own
- * node_modules. The launching Pi process passes its own SDK entry in
- * PI_DISPATCH_HOST_SDK; the hook uses it only when normal resolution fails, so
- * development checkouts keep their installed copy.
+ * Pi installs git packages without peer or dev dependencies, so the CLI cannot
+ * resolve `@earendil-works/pi-coding-agent` from pi-dispatch's own
+ * node_modules. PI_DISPATCH_HOST_SDK names a Pi installation's SDK entry; the
+ * hook uses it only when normal resolution fails, so development checkouts
+ * keep their installed copy.
  */
 import { register } from "node:module";
 

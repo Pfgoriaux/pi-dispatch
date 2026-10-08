@@ -5,7 +5,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { hostSdkEntry } from "../src/tools/durable-batch.ts";
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const hook = path.join(repoRoot, "src/durable/host-sdk.mjs");
@@ -27,14 +26,8 @@ test("owner without the host hook cannot resolve the Pi SDK", (t) => {
 	assert.match(result.stderr, /ERR_MODULE_NOT_FOUND/);
 });
 
-test("host hook resolves the Pi SDK from the launching Pi", (t) => {
-	const result = runIsolated(t, ["--import", pathToFileURL(hook).href], { PI_DISPATCH_HOST_SDK: hostSdkEntry(sdkDir) });
+test("host hook resolves the Pi SDK from PI_DISPATCH_HOST_SDK", (t) => {
+	const result = runIsolated(t, ["--import", pathToFileURL(hook).href], { PI_DISPATCH_HOST_SDK: pathToFileURL(path.join(sdkDir, "dist", "index.js")).href });
 	assert.equal(result.status, 0, result.stderr);
 	assert.equal(result.stdout.trim(), "function function");
-});
-
-test("hostSdkEntry refuses a package directory without the SDK entry", (t) => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-no-sdk-"));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	assert.throws(() => hostSdkEntry(dir), /Pi SDK entry not found/);
 });
