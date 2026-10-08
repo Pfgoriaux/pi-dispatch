@@ -14,6 +14,9 @@ test("invalid names are counted across changing guesses and never echoed into lo
 	assert.ok(!health.failure!.includes("private"));
 	assert.equal(health.format(end("read")), "tool_execution_end: read [error]");
 	assert.equal(health.format(end("read", false)), "tool_execution_end: read [ok]");
+	assert.equal(health.format({ ...end("read", false), durationMs: 340.4 }), "tool_execution_end: read [ok] 340ms");
+	assert.equal(health.format({ ...end("read", false), durationMs: 12_345 }), "tool_execution_end: read [ok] 12.3s");
+	assert.equal(health.format({ ...end("read", false), durationMs: -1 }), "tool_execution_end: read [ok]");
 	assert.equal(health.format({ type: "tool_execution_start", toolName: "ls" }), "tool_execution_start: ls");
 });
 

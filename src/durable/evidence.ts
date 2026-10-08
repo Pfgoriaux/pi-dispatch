@@ -3,7 +3,8 @@
  *
  * Two files in the attempt's session directory, both written by the child:
  * - `events.log`: the `--mode json` event stream. `agent_settled` is the
- *   completion marker the live owner also requires.
+ *   completion marker the live owner also requires; `aborted: true` on it
+ *   marks a cancelled run.
  * - `<timestamp>_<sessionId>.jsonl`: Pi's session file (SDK 1.0.4 format: a
  *   `session` header with `version: 3`, then entries; every assistant message
  *   is a `message` entry with `usage`). Spend and the final answer come from it.
@@ -79,7 +80,8 @@ export function readEvidence(dir: string, sessionId: string): Evidence {
 	if (!events) return ambiguous("worker event log is missing or unreadable");
 	const header = events.find((e) => e.type === "session");
 	if (header?.id !== sessionId) return ambiguous(`worker event log is not session ${sessionId}`);
-	if (!events.some((e) => e.type === "agent_settled")) return { state: "unsettled" };
+	const settled = events.find((e) => e.type === "agent_settled");
+	if (!settled) return { state: "unsettled" };
 	const file = sessionFile(dir, sessionId);
 	if (typeof file !== "string") return ambiguous(`expected one Pi session file for ${sessionId}, found ${file.length}`);
 	const entries = jsonLines(file);
@@ -91,5 +93,5 @@ export function readEvidence(dir: string, sessionId: string): Evidence {
 	const priced = assistant.length > 0 && assistant.every((m) => pricedUsage(m.usage));
 	const spentUsd = priced ? assistant.reduce((sum, m) => sum + m.usage!.cost.total, 0) : null;
 	const last = assistant.at(-1);
-	return { state: "settled", spentUsd, text: last ? textOf(last) : "", problem: finalProblem(last) };
+	return { state: "settled", spentUsd, text: last ? textOf(last) : "", problem: settled.aborted === true ? "worker run was aborted" : finalProblem(last) };
 }
