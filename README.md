@@ -123,14 +123,24 @@ parallel
 ├─ Opus reviewer: correctness/security
 ├─ Astra reviewer: correctness
 ├─ DeepSeek scout (medium thinking): pre-mortem
-└─ slop-reviewer: unnecessary code/docs
+├─ slop-reviewer: unnecessary code/docs
+└─ GLM reviewer: spec gaps, reachable edge cases, overlaps, reuse
 reviewer → verify findings against diff and code → report
 ```
 
+The spec + reuse reviewer checks the diff against `intent` and, for a PR number,
+the PR description fetched with `gh pr view` and saved next to the diff. Only this
+reviewer and the verifier read that file. It reports missing or unrequested
+behaviour, edge cases the diff makes reachable, other readers and writers of
+changed tables, statuses, events and shared functions, and new code that
+duplicates an existing equivalent. With neither `intent` nor a PR description,
+it skips the spec check. The fix writer acts only on the Findings and Slop
+sections; spec gaps, overlaps and reuse stay for the user to decide.
+
 The two code reviewers cannot share a model after fallback. If both fail, review
-stops; failed verification returns unverified reports. Configure the first three
-steps with `DISPATCH_REVIEW_OPUS_MODEL`, `DISPATCH_REVIEW_ASTRA_MODEL` and
-`DISPATCH_REVIEW_PREMORTEM_MODEL`.
+stops; failed verification returns unverified reports. Configure the models with
+`DISPATCH_REVIEW_OPUS_MODEL`, `DISPATCH_REVIEW_ASTRA_MODEL`,
+`DISPATCH_REVIEW_PREMORTEM_MODEL` and `DISPATCH_REVIEW_SPEC_MODEL`.
 
 `fix` defaults to false. Authorized fixes require the session cwd to be a trusted,
 clean feature repo root matching the reviewed head; `cwd` cannot point fixes at a
