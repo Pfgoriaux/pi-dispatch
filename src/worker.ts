@@ -14,7 +14,8 @@ import { startupTimeoutMs } from "./startup.ts";
  */
 
 import type { Usage } from "@earendil-works/pi-ai";
-import { buildAdaptedSystemPrompt, knownModelFamily } from "@pf/pi-model-prompts";
+import { buildAdaptedSystemPrompt } from "./model-prompts/adaptations.ts";
+import { knownModelFamily } from "./model-prompts/families.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {

@@ -228,8 +228,7 @@ before spawn.
 ## Context and tools
 
 Only the selected role prompt loads into a worker, plus shared worker rules and
-model-family guidance from the packaged `@pf/pi-model-prompts` dependency.
-Keep its vendor archive, dependency and lockfile together when updating it.
+model-family guidance (see [Model-specific guidance](#model-specific-guidance)).
 
 In-process workers disable general extension, skill and context-file discovery.
 Their tasks must provide constraints or name applicable instruction files.
@@ -250,6 +249,43 @@ Final reports and recovery references enter model-visible `content`.
 Status, usage and previews are in UI-only `details`. Worker/error texts have
 a 12 KB UTF-8 cap per text plus a truncation marker, not per combined result. Raw transcripts stay inside
 workers; saved reports/session references allow recovery without repeating work.
+
+## Model-specific guidance
+
+`src/model-prompts/` appends a short section of guidance for the active model
+family to the system prompt. It never replaces role or project instructions,
+and unknown models are unchanged. These are local prompting choices, not
+measured performance claims.
+
+```text
+main session: before_agent_start (src/model-prompts/extension.ts)
+└─ knownModelFamily(ctx.model) → buildAdaptedSystemPrompt
+in-process worker: runWorker (src/worker.ts)
+└─ buildAdaptedSystemPrompt per resolved model, including fallbacks
+child writer: runWorkerProc (src/worker-proc.ts)
+└─ pi --extension src/model-prompts/extension.ts → child's actual model selects
+```
+
+The package lists the hook as its own `pi.extensions` entry, so installing
+pi-dispatch also adapts the main session. Applying the same section twice is a
+no-op.
+
+| Family | IDs (case-insensitive; provider/HF prefixes stripped) |
+|---|---|
+| Fable 5.1 | `claude-fable-5-1`, `claude-fable-5.1`, `fable-5.1` |
+| Opus 5.5 | `claude-opus-5-5`, `claude-opus-5.5` |
+| Sonnet 5.5 | `claude-sonnet-5-5`, `claude-sonnet-5.5` |
+| GPT-6 Astra | `gpt-6-astra` and dash-suffixed variants |
+| GPT-6.1 Sol | `gpt-6.1-sol` and dash-suffixed variants |
+| GLM-5.3 | `glm-5.3` and dash-suffixed variants |
+| Kimi K3 | `kimi-k3` and dash-suffixed variants |
+| DeepSeek 4.1 | `deepseek-v4.1` and dash-suffixed variants |
+
+Other versions do not inherit a neighbouring version's guidance; GPT-6 Sol,
+GPT-6 Luna, GPT-5.6 and DeepSeek V4 pass through unchanged. The notes in
+[`docs/model-prompts/`](docs/model-prompts/) explain each adaptation and link to
+provider guides. Prompt text does not change reasoning effort, sampling,
+caching, tools, or reasoning-history handling.
 
 ## Herdr
 

@@ -13,7 +13,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -389,7 +389,7 @@ async function runOneProc(
 	const web = workerTools(agent.tools);
 	if (web.warning) options.onWarning?.(web.warning);
 	// Let the child's actual selected model choose its adaptation, including CLI defaults.
-	const promptExtension = createRequire(import.meta.url).resolve("@pf/pi-model-prompts/extension");
+	const promptExtension = fileURLToPath(new URL("./model-prompts/extension.ts", import.meta.url));
 	const session = pilot?.sessionArgs ?? ["--no-session"];
 	const args: string[] = ["-p", ...session, "--mode", "json", "--extension", promptExtension];
 	for (const entry of web.extensionPaths) args.push("--extension", entry);
