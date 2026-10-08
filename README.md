@@ -196,7 +196,7 @@ before spawn.
 
 - Kimi and DeepSeek retry their Neuralwatt/Synthetic counterparts (direct and
   Aperture routes supported). Kimi and GLM 5.3 retain a terminal Codex Sol 6.1
-  fallback; DeepSeek falls back through Sonnet then Sol.
+  fallback; DeepSeek falls back through Haiku 5.5 then Sol.
 - Opus and Astra retry each other and end with Sol; Sonnet also falls back to Sol.
   Ordinary GLM routing stays on Neuralwatt before Sol; workflow last resorts
   additionally include GLM on Neuralwatt and direct Synthetic.

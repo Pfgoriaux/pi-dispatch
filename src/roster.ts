@@ -127,9 +127,10 @@ const SYNTHETIC_COUNTERPARTS = new Map([
 	["deepseek-v4.1-flash", "hf:deepseek-ai/DeepSeek-V4.1-Flash"],
 ]);
 
-// DeepSeek 4.1 (either route) falls back to Sonnet 5.5, then the terminal 6.1 Sol.
+// DeepSeek 4.1 (either route) falls back to Haiku 5.5, then the terminal 6.1 Sol.
+// Paid Neuralwatt/Synthetic routes come first; Haiku spends Anthropic quota only when both fail.
 const DEEPSEEK_ROUTES = new Set(["neuralwatt/deepseek-v4.1-flash", "synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash"]);
-const DEEPSEEK_FALLBACK = "anthropic/claude-sonnet-5-5";
+const DEEPSEEK_FALLBACK = "anthropic/claude-haiku-5-5";
 
 const OPENAI_FALLBACK = "openai-codex/gpt-6.1-sol";
 
