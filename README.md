@@ -129,11 +129,13 @@ reviewer → verify findings against diff and code → report
 ```
 
 The spec + reuse reviewer checks the diff against `intent` and, for a PR number,
-the PR description fetched with `gh pr view`. It reports missing or unrequested
+the PR description fetched with `gh pr view` and saved next to the diff. Only this
+reviewer and the verifier read that file. It reports missing or unrequested
 behaviour, edge cases the diff makes reachable, other readers and writers of
 changed tables, statuses, events and shared functions, and new code that
 duplicates an existing equivalent. With neither `intent` nor a PR description,
-it skips the spec check.
+it skips the spec check. The fix writer acts only on the Findings and Slop
+sections; spec gaps, overlaps and reuse stay for the user to decide.
 
 The two code reviewers cannot share a model after fallback. If both fail, review
 stops; failed verification returns unverified reports. Configure the models with

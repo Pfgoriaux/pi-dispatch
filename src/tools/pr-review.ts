@@ -202,6 +202,21 @@ export async function fetchPrBody(
 	return result.code === 0 && !result.killed ? result.stdout.trim() : "";
 }
 
+/** Saves the PR description next to the diff; undefined when there is none. */
+async function savePrBody(
+	pi: ExtensionAPI,
+	prArg: string | undefined,
+	cwd: string,
+	workdir: string,
+	signal?: AbortSignal,
+): Promise<string | undefined> {
+	const body = await fetchPrBody(pi, prArg, cwd, signal);
+	if (!body) return undefined;
+	const file = path.join(workdir, "pr-body.md");
+	fs.writeFileSync(file, body, "utf8");
+	return file;
+}
+
 // ---------------------------------------------------------------------------
 // review steps
 // ---------------------------------------------------------------------------
@@ -391,9 +406,8 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 							signal,
 						);
 
-					// A long PR description is context, not review material: truncating it must not block fixes.
-					const prBody = truncateText(await fetchPrBody(pi, params.pr, cwd, signal)).text;
-					const reviewerCtx = { cwd, diffFile, intent: params.intent, prBody };
+					const prBodyFile = await savePrBody(pi, params.pr, cwd, workdir, signal);
+					const reviewerCtx = { cwd, diffFile, intent: params.intent, prBodyFile };
 					// Opus and Astra exclude each other so failover never duplicates a reviewer.
 					const [opus, astra, preMortem, slop, specReuse] = await Promise.all([
 						runStep(0, correctnessSecurityTask(reviewerCtx), {
@@ -450,7 +464,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					];
 					const aggregateResult = await runStep(
 						5,
-						verifyAggregateTask({ cwd, label, diffFile, reports, intent: params.intent, prBody }),
+						verifyAggregateTask({ cwd, label, diffFile, reports, intent: params.intent, prBodyFile }),
 						{},
 					);
 					const findings =
