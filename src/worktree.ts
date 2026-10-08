@@ -14,6 +14,8 @@ import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { resolveSessionCwd } from "./session-cwd.ts";
 import { promisify } from "node:util";
 
 const execFileP = promisify(execFile);
@@ -133,10 +135,32 @@ export async function assertCleanTree(repoRoot: string): Promise<void> {
 	if (dirty.length) throw new Error(`write tier requires a clean working tree at ${repoRoot} — uncommitted: ${dirty.slice(0, 3).join(", ")}`);
 }
 
+/**
+ * Resolve the write-tier `target` directory. Inside the session cwd it is
+ * accepted as any cwd is. Outside, it is accepted only when it is a linked
+ * worktree of the repository the session runs in (same git common dir), which
+ * is where feature worktrees live under the central folder. Any other
+ * repository is refused.
+ */
+export async function resolveWorktreeTargetDir(target: string | undefined, ctx: ExtensionContext): Promise<string> {
+	try {
+		return (await resolveSessionCwd(target, ctx, "dispatch")) ?? ctx.cwd;
+	} catch (error) {
+		const resolved = path.resolve(ctx.cwd, target ?? "");
+		if (!fs.existsSync(resolved) || !sameRepository(resolved, ctx.cwd)) throw error;
+		return fs.realpathSync(resolved);
+	}
+}
+
+function sameRepository(a: string, b: string): boolean {
+	try { return fs.realpathSync(mainCheckout(a)) === fs.realpathSync(mainCheckout(b)); }
+	catch { return false; }
+}
+
 /** Pin every worker in a call to the same clean feature commit. */
 export async function resolveWorktreeTarget(dir: string): Promise<{ root: string; base: string; baseCommit: string }> {
 	const root = await getRepoRoot(dir);
-	if (!root) throw new Error("dispatch: set target to a clean feature repo root inside the session cwd");
+	if (!root) throw new Error("dispatch: set target to a clean feature repo root: the session cwd or a linked worktree of its repository");
 	if (fs.realpathSync(dir) !== fs.realpathSync(root)) throw new Error("dispatch: target must be the repo root");
 	await assertCleanTree(root);
 	const branch = await gitRun(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
