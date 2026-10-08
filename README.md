@@ -107,9 +107,12 @@ a failed final step returns earlier reports. Configure defaults with
 
 ### PR review
 
-`pr_review({ pr?, intent, fix?, herdr? })` accepts a GitHub PR number (via `gh`),
+`pr_review({ pr?, intent, cwd?, fix?, herdr? })` accepts a GitHub PR number (via `gh`),
 revision range, branch compared with HEAD, or the default origin-base comparison.
 Invalid diffs fail before models start; empty diffs skip model calls.
+`cwd` selects the checkout to review and defaults to the session cwd. It must
+resolve inside the session cwd, so a session started above several repos can
+review any of them.
 
 ```text
 parallel
@@ -125,8 +128,8 @@ stops; failed verification returns unverified reports. Configure the first three
 steps with `DISPATCH_REVIEW_OPUS_MODEL`, `DISPATCH_REVIEW_ASTRA_MODEL` and
 `DISPATCH_REVIEW_PREMORTEM_MODEL`.
 
-`fix` defaults to false. Authorized fixes require a trusted, clean feature repo
-root matching the reviewed head. After successful, untruncated verification, a
+`fix` defaults to false. Authorized fixes require `cwd` to be a trusted, clean
+feature repo root matching the reviewed head. After successful, untruncated verification, a
 writer starts from that pinned head and returns a retained branch, never a merge.
 It uses the default writer tier. For auth, migrations, concurrency or shared
 interfaces, review only, then dispatch an authorized `precise` writer.

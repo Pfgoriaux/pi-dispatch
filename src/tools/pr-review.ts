@@ -39,6 +39,7 @@ import {
 	verifyAggregateTask,
 } from "./pr-review-prompts.ts";
 import { pinFixHead, assertFixHead } from "./review-target.ts";
+import { resolveSessionCwd } from "../session-cwd.ts";
 import {
 	createWorktree,
 	ensureExcluded,
@@ -225,8 +226,8 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 		promptSnippet:
 			"Multi-model PR review with optional fixes",
 		promptGuidelines: [
-			"pr_review: Use for requested reviews or PRs you opened with 100+ changed lines, auth, data, migrations, or infrastructure. Self-review smaller PRs. Always pass intent.",
-			"pr_review: fix:true requires authorization to edit/commit and a trusted, clean feature repo root; it uses the default writer. For high-risk fixes, review only, then dispatch an authorized worktree writer with model:'precise'.",
+			"pr_review: Use for requested reviews or PRs you opened with 100+ changed lines, auth, data, migrations, or infrastructure. Self-review smaller PRs. Always pass intent; pass cwd when the repo is not the session cwd.",
+			"pr_review: fix:true requires authorization to edit/commit and cwd at a trusted, clean feature repo root; it uses the default writer. For high-risk fixes, review only, then dispatch an authorized worktree writer with model:'precise'.",
 		],
 		parameters: Type.Object({
 			herdr: Type.Optional(
@@ -238,6 +239,12 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 				Type.String({
 					description:
 						"GitHub PR number, rev-range ('main...feature'), or branch vs HEAD. Default: '<origin-default>...HEAD'",
+				}),
+			),
+			cwd: Type.Optional(
+				Type.String({
+					description:
+						"Repository checkout to review, inside the session cwd; defaults to session cwd",
 				}),
 			),
 			fix: Type.Optional(
@@ -280,21 +287,22 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 				onUpdate?.({ content: [{ type: "text", text }], details: undefined });
 
 			// ---- repo + write-tier preconditions (before any work runs) ----
-			const repoRoot = await getRepoRoot(ctx.cwd);
+			const cwd = (await resolveSessionCwd(params.cwd, ctx, "pr_review")) ?? ctx.cwd;
+			const repoRoot = await getRepoRoot(cwd);
 			if (!repoRoot) {
 				throw new Error(
-					"pr_review: the session cwd must be a git repository (git rev-parse --show-toplevel failed)",
+					`pr_review: ${cwd} is not a git repository (git rev-parse --show-toplevel failed). Pass cwd with a repository path.`,
 				);
 			}
 			const wantFix = params.fix === true;
-			const atRoot = (await realpath(ctx.cwd)) === repoRoot;
+			const atRoot = (await realpath(cwd)) === repoRoot;
 			if (wantFix) {
 				if (!ctx.isProjectTrusted())
 					throw new Error("pr_review: fixes require a trusted repository.");
 				if (!atRoot) {
 					throw new Error(
-						`pr_review: the fix step requires the session cwd (${ctx.cwd}) to be the git repo root (${repoRoot}). ` +
-							"Start pi there, or run pr_review with fix=false.",
+						`pr_review: the fix step requires cwd (${cwd}) to be the git repo root (${repoRoot}). ` +
+							"Pass the repo root as cwd, or run pr_review with fix=false.",
 					);
 				}
 				await resolveWorktreeTarget(repoRoot);
@@ -308,7 +316,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 				const { diffFile, label, empty } = await resolveDiff(
 					pi,
 					params.pr,
-					ctx.cwd,
+					cwd,
 					workdir,
 					signal,
 				);
@@ -339,7 +347,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					onUpdate,
 				);
 				try {
-					await progress.open(ctx.cwd, signal);
+					await progress.open(cwd, signal);
 					// The two code reviewers share one pool so fallback never gives them the same model.
 					// Pre-mortem and slop stay out of it: they must not take a reviewer's last fallback.
 					const pool = new ModelDiversity();
@@ -354,7 +362,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 								runWorker(byName.get(STEPS[index].agent)!, task, {
 									registry: ctx.modelRegistry,
 									fallbackModel: ctx.model,
-									cwd: ctx.cwd,
+									cwd,
 									signal,
 									thinking: model.thinking ?? "high",
 									modelSpec: model.spec,
@@ -367,7 +375,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 							signal,
 						);
 
-					const reviewerCtx = { cwd: ctx.cwd, diffFile, intent: params.intent };
+					const reviewerCtx = { cwd, diffFile, intent: params.intent };
 					// Opus and Astra exclude each other so failover never duplicates a reviewer.
 					const [opus, astra, preMortem, slop] = await Promise.all([
 						runStep(0, correctnessSecurityTask(reviewerCtx), {
@@ -419,7 +427,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 						report(preMortem, "Pre-mortem", cap),
 						report(slop, "Slop reviewer", cap),
 					];
-					const aggregateResult = await runStep(4, verifyAggregateTask({ cwd: ctx.cwd, label, diffFile, reports }), {});
+					const aggregateResult = await runStep(4, verifyAggregateTask({ cwd, label, diffFile, reports }), {});
 					const findings =
 						aggregateResult.status === "ok"
 							? cap(aggregateResult.text || "(no output)")
