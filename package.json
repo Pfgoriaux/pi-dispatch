@@ -26,7 +26,8 @@
   },
   "pi": {
     "extensions": [
-      "./src/index.ts"
+      "./src/index.ts",
+      "./src/model-prompts/extension.ts"
     ]
   },
   "repository": {
@@ -34,7 +35,6 @@
   },
   "dependencies": {
     "@earendil-works/pi-durable": "1.0.4",
-    "@pf/pi-model-prompts": "file:vendor/pf-pi-model-prompts-4.0.0.tgz",
     "tsx": "^4.20.0"
   }
 }

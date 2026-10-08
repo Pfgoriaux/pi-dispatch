@@ -107,9 +107,12 @@ a failed final step returns earlier reports. Configure defaults with
 
 ### PR review
 
-`pr_review({ pr?, intent, fix?, herdr? })` accepts a GitHub PR number (via `gh`),
+`pr_review({ pr?, intent, cwd?, fix?, herdr? })` accepts a GitHub PR number (via `gh`),
 revision range, branch compared with HEAD, or the default origin-base comparison.
 Invalid diffs fail before models start; empty diffs skip model calls.
+`cwd` selects the checkout to review and defaults to the session cwd. It must
+resolve inside the session cwd, so a session started above several repos can
+review any of them.
 
 ```text
 parallel
@@ -125,8 +128,9 @@ stops; failed verification returns unverified reports. Configure the first three
 steps with `DISPATCH_REVIEW_OPUS_MODEL`, `DISPATCH_REVIEW_ASTRA_MODEL` and
 `DISPATCH_REVIEW_PREMORTEM_MODEL`.
 
-`fix` defaults to false. Authorized fixes require a trusted, clean feature repo
-root matching the reviewed head. After successful, untruncated verification, a
+`fix` defaults to false. Authorized fixes require the session cwd to be a trusted,
+clean feature repo root matching the reviewed head; `cwd` cannot point fixes at a
+nested repo, since session trust does not cover it. After successful, untruncated verification, a
 writer starts from that pinned head and returns a retained branch, never a merge.
 It uses the default writer tier. For auth, migrations, concurrency or shared
 interfaces, review only, then dispatch an authorized `precise` writer.
@@ -196,7 +200,7 @@ before spawn.
 
 - Kimi and DeepSeek retry their Neuralwatt/Synthetic counterparts (direct and
   Aperture routes supported). Kimi and GLM 5.3 retain a terminal Codex Sol 6.1
-  fallback; DeepSeek falls back through Sonnet then Sol.
+  fallback; DeepSeek falls back through Haiku 5.5 then Sol.
 - Opus and Astra retry each other and end with Sol; Sonnet also falls back to Sol.
   Ordinary GLM routing stays on Neuralwatt before Sol; workflow last resorts
   additionally include GLM on Neuralwatt and direct Synthetic.
@@ -228,8 +232,7 @@ before spawn.
 ## Context and tools
 
 Only the selected role prompt loads into a worker, plus shared worker rules and
-model-family guidance from the packaged `@pf/pi-model-prompts` dependency.
-Keep its vendor archive, dependency and lockfile together when updating it.
+model-family guidance (see [Model-specific guidance](#model-specific-guidance)).
 
 In-process workers disable general extension, skill and context-file discovery.
 Their tasks must provide constraints or name applicable instruction files.
@@ -250,6 +253,43 @@ Final reports and recovery references enter model-visible `content`.
 Status, usage and previews are in UI-only `details`. Worker/error texts have
 a 12 KB UTF-8 cap per text plus a truncation marker, not per combined result. Raw transcripts stay inside
 workers; saved reports/session references allow recovery without repeating work.
+
+## Model-specific guidance
+
+`src/model-prompts/` appends a short section of guidance for the active model
+family to the system prompt. It never replaces role or project instructions,
+and unknown models are unchanged. These are local prompting choices, not
+measured performance claims.
+
+```text
+main session: before_agent_start (src/model-prompts/extension.ts)
+└─ knownModelFamily(ctx.model) → buildAdaptedSystemPrompt
+in-process worker: runWorker (src/worker.ts)
+└─ buildAdaptedSystemPrompt per resolved model, including fallbacks
+child writer: runWorkerProc (src/worker-proc.ts)
+└─ pi --extension src/model-prompts/extension.ts → child's actual model selects
+```
+
+The package lists the hook as its own `pi.extensions` entry, so installing
+pi-dispatch also adapts the main session. Applying the same section twice is a
+no-op.
+
+| Family | IDs (case-insensitive; provider/HF prefixes stripped) |
+|---|---|
+| Fable 5.1 | `claude-fable-5-1`, `claude-fable-5.1`, `fable-5.1` |
+| Opus 5.5 | `claude-opus-5-5`, `claude-opus-5.5` |
+| Sonnet 5.5 | `claude-sonnet-5-5`, `claude-sonnet-5.5` |
+| GPT-6 Astra | `gpt-6-astra` and dash-suffixed variants |
+| GPT-6.1 Sol | `gpt-6.1-sol` and dash-suffixed variants |
+| GLM-5.3 | `glm-5.3` and dash-suffixed variants |
+| Kimi K3 | `kimi-k3` and dash-suffixed variants |
+| DeepSeek 4.1 | `deepseek-v4.1` and dash-suffixed variants |
+
+Other versions do not inherit a neighbouring version's guidance; GPT-6 Sol,
+GPT-6 Luna, GPT-5.6 and DeepSeek V4 pass through unchanged. The notes in
+[`docs/model-prompts/`](docs/model-prompts/) explain each adaptation and link to
+provider guides. Prompt text does not change reasoning effort, sampling,
+caching, tools, or reasoning-history handling.
 
 ## Herdr
 
@@ -360,6 +400,12 @@ node --import tsx src/durable/cli.ts status batch.json [--json]
 node --import tsx src/durable/cli.ts stop   batch.json [--cancel]
 # run/resume also take --expect-hash=<policy hash> and then start nothing if the file has another hash
 ```
+
+These commands resolve `@earendil-works/pi-coding-agent` from the checkout's
+`node_modules`, so run them from a development checkout after `npm ci`. Pi
+installs Git packages without that SDK. In an installed copy, add
+`--import ./src/durable/host-sdk.mjs` and set `PI_DISPATCH_HOST_SDK` to the
+file URL of a Pi installation's `dist/index.js`.
 
 Every field is required, except `worker.piPrefixArgs`:
 

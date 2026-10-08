@@ -3,6 +3,7 @@ import test from "node:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import { ModelRuntime, type ExtensionAPI, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import { resolveDiff, registerPrReviewTool } from "../src/tools/pr-review.ts";
@@ -338,4 +339,31 @@ test("PR fix schema advertises opt-in commits", () => {
 		},
 	} as ExtensionAPI);
 	assert.match(tool.parameters.properties.fix.description, /default false/);
+});
+
+test("pr_review runs Git in a cwd inside a non-Git session folder", async (t) => {
+	const session = fs.realpathSync(fixture(t));
+	const repo = path.join(session, "repo");
+	execFileSync("git", ["init", "-q", repo]);
+	const outside = fs.realpathSync(fixture(t));
+	const cwds: (string | undefined)[] = [];
+	let tool: any;
+	registerPrReviewTool({
+		registerTool: (value: unknown) => { tool = value; },
+		exec: async (_cmd: string, _args: string[], options: { cwd?: string }) => {
+			cwds.push(options.cwd);
+			return { code: 128, stdout: "", stderr: "diff sentinel", killed: false };
+		},
+	} as unknown as ExtensionAPI);
+	const run = (cwd?: string, fix = false) => tool.execute("test", { pr: "main...HEAD", cwd, fix, herdr: false }, undefined, undefined, {
+		cwd: session, isProjectTrusted: () => true,
+	});
+	await assert.rejects(run(), /is not a git repository[\s\S]*Pass cwd/);
+	await assert.rejects(run(outside), /outside the session cwd/);
+	fs.symlinkSync(outside, path.join(session, "escape"));
+	await assert.rejects(run("escape"), /outside the session cwd/);
+	await assert.rejects(run("repo", true), /fix step requires the session cwd/, "session trust does not cover a nested repo");
+	assert.deepEqual(cwds, [], "rejected cwds never reach Git");
+	await assert.rejects(run("repo"), /diff sentinel/);
+	assert.deepEqual(cwds, [repo]);
 });

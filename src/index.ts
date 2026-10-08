@@ -18,11 +18,9 @@
  * after Herdr review.)
  *
  * Per-task `cwd` is confined to the parent session's cwd subtree (realpath
- * checked) — see validateTaskCwd.
+ * checked) — see resolveSessionCwd.
  */
 
-import * as path from "node:path";
-import { realpath } from "node:fs/promises";
 import { Type } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
@@ -34,6 +32,7 @@ import { renderDispatchCall, renderDispatchResult } from "./render.ts";
 import { findWorkerSession, runWorker, truncateText } from "./worker.ts";
 import { notifyDispatchDone } from "./herdr.ts";
 import { DispatchProgress } from "./progress.ts";
+import { resolveSessionCwd } from "./session-cwd.ts";
 import { runWorkerProc } from "./worker-proc.ts";
 import { describeWorktree, formatHandoff, type WorktreeHandoff } from "./handoff.ts";
 import {
@@ -126,36 +125,6 @@ async function mapWithConcurrency<T, R>(
 	);
 	await Promise.all(runners);
 	return results;
-}
-
-/**
- * Constrain per-task cwd to the parent session's cwd subtree. `..`, `~`, and
- * symlink escapes are rejected so a prompt-injected task cannot point workers
- * at arbitrary filesystem locations.
- */
-async function validateTaskCwd(
-	cwd: string | undefined,
-	ctx: ExtensionContext,
-): Promise<string | undefined> {
-	const raw = cwd?.trim();
-	if (!raw) return undefined;
-	const resolved = path.resolve(ctx.cwd, raw);
-	let root: string;
-	let target: string;
-	try {
-		[root, target] = await Promise.all([realpath(ctx.cwd), realpath(resolved)]);
-	} catch {
-		throw new Error(
-			`dispatch: task cwd does not exist: ${resolved} (tasks must run inside the session cwd)`,
-		);
-	}
-	if (target !== root && !target.startsWith(root + path.sep)) {
-		throw new Error(
-			`dispatch: task cwd (${resolved}) is outside the session cwd (${ctx.cwd}). ` +
-				"Run pi from the target project or use read tools with absolute paths instead.",
-		);
-	}
-	return resolved;
 }
 
 function labeledOutputs(results: WorkerResult[]): {
@@ -353,7 +322,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 		}
 
 		// Worktree tasks get their own git worktree — an explicit cwd there is
-		// meaningless and conflicting. Checked BEFORE validateTaskCwd so the
+		// meaningless and conflicting. Checked BEFORE resolveSessionCwd so the
 		// error the caller sees is the clearer of the two.
 		const wantsWorktree = items.some((i) => i.worktree === true);
 		if (items.some(i => i.agent === "writer" && i.worktree !== true)) {
@@ -373,7 +342,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 
 		// Validate every per-task cwd up front (fail fast, before any worker runs).
 		const taskCwds = await Promise.all(
-			items.map((item) => validateTaskCwd(item.cwd, ctx)),
+			items.map((item) => resolveSessionCwd(item.cwd, ctx, "dispatch")),
 		);
 
 		// ---- write tier setup (worktree tasks) ----
@@ -386,7 +355,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 		let target: Awaited<ReturnType<typeof resolveWorktreeTarget>> | undefined;
 		const handoffs: WorktreeHandoff[] = [];
 		if (wantsWorktree) {
-			const directory = await validateTaskCwd(params.target, ctx) ?? ctx.cwd;
+			const directory = await resolveSessionCwd(params.target, ctx, "dispatch") ?? ctx.cwd;
 			target = await resolveWorktreeTarget(directory);
 			repoRoot = target.root;
 			ensureExcluded(repoRoot);

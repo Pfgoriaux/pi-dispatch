@@ -164,6 +164,9 @@ test('evidence: completion needs agent_settled and a session file that agrees wi
  assert.match((readEvidence(dir, sid) as any).reason, /0 assistant messages, event log 1/);
  write(`2026-01-01T00-00-00-000Z_${sid}.jsonl`, [header, { type: 'message', id: 'a', message: message('done') }]);
  assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: 0.25, text: 'done', problem: null });
+ write('events.log', [header, { type: 'message_end', message: message('done') }, { type: 'agent_settled', aborted: true }]);
+ assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: 0.25, text: 'done', problem: 'worker run was aborted' });
+ write('events.log', [header, { type: 'message_end', message: message('done') }, { type: 'agent_settled', aborted: false }]);
  write(`2026-01-01T00-00-00-000Z_${sid}.jsonl`, [header, { type: 'message', id: 'a', message: message('', { ...usage, cost: undefined }) }]);
  assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: null, text: '', problem: 'blank response from child pi' });
  write(`2026-01-01T00-00-00-000Z_${sid}.jsonl`, [{ ...header, id: 'other' }]);

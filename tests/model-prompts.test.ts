@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -54,10 +54,10 @@ test("worker adapts the resolved model on every fallback without changing role o
   assert.doesNotMatch(seen[1], /Model-specific guidance \(kimi-k3\)/);
 });
 
-test("built extension loads through Pi's actual resource loader without provider calls", async (t) => {
+test("model-prompts extension loads through Pi's actual resource loader without provider calls", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-prompts-loader-"));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  const entry = createRequire(import.meta.url).resolve("@pf/pi-model-prompts/extension");
+  const entry = fileURLToPath(new URL("../src/model-prompts/extension.ts", import.meta.url));
   const loader = new DefaultResourceLoader({
     cwd: root, agentDir: root, settingsManager: SettingsManager.inMemory(),
     noExtensions: true, additionalExtensionPaths: [entry],

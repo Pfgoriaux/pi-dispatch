@@ -3,6 +3,13 @@ export interface ToolBoundary {
 	type: "tool_execution_start" | "tool_execution_end";
 	toolName: string;
 	isError?: boolean;
+	/** Pi 1.1+: execution time of a finished tool. */
+	durationMs?: number;
+}
+
+function duration(ms: number | undefined): string {
+	if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return "";
+	return ms < 1000 ? ` ${Math.round(ms)}ms` : ` ${(ms / 1000).toFixed(1)}s`;
 }
 
 export class ToolHealth {
@@ -21,7 +28,7 @@ export class ToolHealth {
 			? event.toolName : "[unregistered tool]";
 		const status = event.type === "tool_execution_end"
 			? event.isError ? " [error]" : " [ok]" : "";
-		return `${event.type}: ${name}${status}`;
+		return `${event.type}: ${name}${status}${duration(event.durationMs)}`;
 	}
 
 	observe(event: ToolBoundary): string | undefined {
