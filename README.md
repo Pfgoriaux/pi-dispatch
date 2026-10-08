@@ -53,9 +53,13 @@ dispatch({
 })
 ```
 
-- `target` defaults to the session cwd. It must be a clean repo root on a named
-  feature branch; `main`, `master`, `production` and detached HEAD are rejected.
-  A call has one target. Worktree tasks cannot set per-task `cwd`.
+- `target` defaults to the session cwd. It can also be a directory inside the
+  session cwd or a linked worktree of the session's repository, for example
+  `~/eden/.worktrees/products/app/feat-x` while the session runs in
+  `~/eden/products/app`. It must be a clean repo root on a named feature
+  branch; `main`, `master`, `production` and detached HEAD are rejected. A
+  different repository is refused. A call has one target. Worktree tasks
+  cannot set per-task `cwd`.
 - Worktrees branch from one pinned commit. Writers need authorization to edit
   and commit, stage only task files, and do not push or merge.
 - A successful writer must leave clean edits, the assigned branch and a HEAD

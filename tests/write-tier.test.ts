@@ -287,3 +287,23 @@ test('aborted dispatch returns the retained worktree handoff',async()=>{
  assert.ok(fs.existsSync(result.details.worktrees[0].path));
  assert.match(result.content[0].text,/aborted — not ready/);
 });
+
+test('a linked worktree of the session repository outside the cwd is an accepted target', async()=>{
+ const dir=repo(); git(dir,'checkout','-q','-b','main');
+ const outside=fs.mkdtempSync(path.join(os.tmpdir(),'dispatch-linked-'));
+ const wt=path.join(outside,'feat-x'); git(dir,'worktree','add','-q',wt,'-b','feat/x');
+ const head=git(wt,'rev-parse','HEAD');
+ fake(final);
+ const result=await call(dir,{target:wt,tasks:[{agent:'writer',task:'fixture',model:'fake/model',worktree:true}],aggregate:false});
+ assert.equal(result.details.items[0].status,'ok');
+ assert.equal(result.details.worktrees[0].base,'feat/x');
+ assert.equal(result.details.worktrees[0].baseCommit,head);
+ await assert.rejects(()=>call(dir,{target:dir,tasks:[{agent:'writer',task:'fixture',model:'fake/model',worktree:true}],aggregate:false}),/check out a feature branch/);
+});
+
+test('a worktree of another repository outside the cwd is refused', async()=>{
+ const dir=repo(), other=repo();
+ const outside=fs.mkdtempSync(path.join(os.tmpdir(),'dispatch-other-'));
+ const wt=path.join(outside,'feat-y'); git(other,'worktree','add','-q',wt,'-b','feat/y');
+ await assert.rejects(()=>call(dir,{target:wt,tasks:[{agent:'writer',task:'fixture',model:'fake/model',worktree:true}],aggregate:false}),/outside the session cwd/);
+});

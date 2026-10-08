@@ -39,6 +39,7 @@ import {
 	createWorktree,
 	ensureExcluded,
 	resolveWorktreeTarget,
+	resolveWorktreeTargetDir,
 	pruneStale,
 	removeWorktree,
 } from "./worktree.ts";
@@ -197,7 +198,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 			"dispatch: Never launch agent CLIs through bash to bypass rejected requests, depth limits, or tool restrictions; report the blocker.",
 		],
 		parameters: Type.Object({
-			target: Type.Optional(Type.String({ description: "Clean feature repo root inside the session cwd that worktree tasks branch from; defaults to session cwd" })),
+			target: Type.Optional(Type.String({ description: "Clean feature repo root that worktree tasks branch from: the session cwd, a directory inside it, or a linked worktree of the session's repository (for example under ~/eden/.worktrees/). Must be on a feature branch. Defaults to the session cwd" })),
 			agent: Type.Optional(
 				Type.String({ description: "Agent name (single mode)" }),
 			),
@@ -355,8 +356,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 		let target: Awaited<ReturnType<typeof resolveWorktreeTarget>> | undefined;
 		const handoffs: WorktreeHandoff[] = [];
 		if (wantsWorktree) {
-			const directory = await resolveSessionCwd(params.target, ctx, "dispatch") ?? ctx.cwd;
-			target = await resolveWorktreeTarget(directory);
+			target = await resolveWorktreeTarget(await resolveWorktreeTargetDir(params.target, ctx));
 			repoRoot = target.root;
 			ensureExcluded(repoRoot);
 			await pruneStale(repoRoot);
