@@ -17,12 +17,13 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Type } from "@earendil-works/pi-ai";
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, getPackageDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ConfigError, loadConfig, parseConfig, request, socketPath } from "../durable/cli.ts";
 import { formatReport, policyHash, type BatchReport, type PilotConfig } from "../durable/scheduler.ts";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const CLI = fileURLToPath(new URL("../durable/cli.ts", import.meta.url));
+const HOST_SDK_HOOK = new URL("../durable/host-sdk.mjs", import.meta.url).href;
 const OWNER_WAIT_MS = 20_000;
 
 export const batchesDir = (): string => path.join(getAgentDir(), "pi-dispatch", "batches");
@@ -108,6 +109,13 @@ function tsxLoader(): string {
 	}
 }
 
+/** The launching Pi's own SDK entry; the owner falls back to it (see durable/host-sdk.mjs). */
+export function hostSdkEntry(packageDir: string = getPackageDir()): string {
+	const entry = path.join(packageDir, "dist", "index.js");
+	if (!fs.existsSync(entry)) throw new Error(`durable_batch: Pi SDK entry not found at ${entry}; cannot start the owner.`);
+	return pathToFileURL(entry).href;
+}
+
 async function waitForOwner(config: PilotConfig, exited: () => boolean): Promise<boolean> {
 	const until = Date.now() + OWNER_WAIT_MS;
 	while (Date.now() < until && !exited()) {
@@ -126,12 +134,14 @@ async function launch(params: Params, ctx: ExtensionContext): Promise<string> {
 	const mode = fs.existsSync(config.store) ? "resume" : "run";
 	const approved = await ctx.ui.confirm("Launch durable batch?", [...summary(config, mode), "", "Workers run unattended and spend money. Approve?"].join("\n"));
 	if (!approved) return `Launch declined by the user; nothing started for ${config.batch.id}.`;
+	const sdk = hostSdkEntry();
 	const log = path.join(privateDir(), `${config.batch.id}.log`);
 	const fd = fs.openSync(log, "a", 0o600);
 	let exited = false;
 	try {
-		const child = spawn(process.execPath, ["--import", tsxLoader(), CLI, mode, file, `--expect-hash=${policyHash(config)}`], {
-			cwd: path.dirname(path.dirname(CLI)), detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, PI_DISPATCH_DEPTH: "0" },
+		const child = spawn(process.execPath, ["--import", tsxLoader(), "--import", HOST_SDK_HOOK, CLI, mode, file, `--expect-hash=${policyHash(config)}`], {
+			cwd: path.dirname(path.dirname(CLI)), detached: true, stdio: ["ignore", fd, fd],
+			env: { ...process.env, PI_DISPATCH_DEPTH: "0", PI_DISPATCH_HOST_SDK: sdk },
 		});
 		child.once("exit", () => { exited = true; });
 		child.unref();

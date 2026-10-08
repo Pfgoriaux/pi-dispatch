@@ -46,6 +46,10 @@ worktrees. Usage, model routing, installation and Herdr: [README.md](README.md).
   A recorded reviewer stop can charge its reservation after confirmed exit;
   this exception never applies to writers. Reviewer failures and skipped
   claims have separate counts; only failures advance the reviewer model.
+- The durable owner runs under plain Node, outside Pi's module mapping, and Pi
+  installs Git packages without peer or dev dependencies. Its imports of
+  `@earendil-works/pi-coding-agent` resolve through `src/durable/host-sdk.mjs`
+  and the launching Pi's SDK; keep that preload in the owner spawn.
 - Agents may draft and request durable batches; only the user's confirmation
   in the Pi UI launches one (`src/tools/durable-batch.ts`). Never add an
   auto-approve path, and keep `agents/durable/writer.md` out of the roster.
