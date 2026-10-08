@@ -355,11 +355,14 @@ test("pr_review runs Git in a cwd inside a non-Git session folder", async (t) =>
 			return { code: 128, stdout: "", stderr: "diff sentinel", killed: false };
 		},
 	} as unknown as ExtensionAPI);
-	const run = (cwd?: string) => tool.execute("test", { pr: "main...HEAD", cwd, herdr: false }, undefined, undefined, {
-		cwd: session, isProjectTrusted: () => false,
+	const run = (cwd?: string, fix = false) => tool.execute("test", { pr: "main...HEAD", cwd, fix, herdr: false }, undefined, undefined, {
+		cwd: session, isProjectTrusted: () => true,
 	});
 	await assert.rejects(run(), /is not a git repository[\s\S]*Pass cwd/);
 	await assert.rejects(run(outside), /outside the session cwd/);
+	fs.symlinkSync(outside, path.join(session, "escape"));
+	await assert.rejects(run("escape"), /outside the session cwd/);
+	await assert.rejects(run("repo", true), /fix step requires the session cwd/, "session trust does not cover a nested repo");
 	assert.deepEqual(cwds, [], "rejected cwds never reach Git");
 	await assert.rejects(run("repo"), /diff sentinel/);
 	assert.deepEqual(cwds, [repo]);

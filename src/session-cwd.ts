@@ -5,7 +5,8 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 /**
  * Constrain a requested cwd to the parent session's cwd subtree. `..`, `~`, and
  * symlink escapes are rejected so a prompt-injected task cannot point workers
- * at arbitrary filesystem locations.
+ * at arbitrary filesystem locations. Returns the canonical path so later
+ * steps do not re-follow a symlink.
  */
 export async function resolveSessionCwd(
 	cwd: string | undefined,
@@ -30,5 +31,5 @@ export async function resolveSessionCwd(
 				"Run pi from the target project or use read tools with absolute paths instead.",
 		);
 	}
-	return resolved;
+	return target;
 }

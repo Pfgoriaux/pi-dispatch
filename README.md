@@ -128,8 +128,9 @@ stops; failed verification returns unverified reports. Configure the first three
 steps with `DISPATCH_REVIEW_OPUS_MODEL`, `DISPATCH_REVIEW_ASTRA_MODEL` and
 `DISPATCH_REVIEW_PREMORTEM_MODEL`.
 
-`fix` defaults to false. Authorized fixes require `cwd` to be a trusted, clean
-feature repo root matching the reviewed head. After successful, untruncated verification, a
+`fix` defaults to false. Authorized fixes require the session cwd to be a trusted,
+clean feature repo root matching the reviewed head; `cwd` cannot point fixes at a
+nested repo, since session trust does not cover it. After successful, untruncated verification, a
 writer starts from that pinned head and returns a retained branch, never a merge.
 It uses the default writer tier. For auth, migrations, concurrency or shared
 interfaces, review only, then dispatch an authorized `precise` writer.

@@ -227,7 +227,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 			"Multi-model PR review with optional fixes",
 		promptGuidelines: [
 			"pr_review: Use for requested reviews or PRs you opened with 100+ changed lines, auth, data, migrations, or infrastructure. Self-review smaller PRs. Always pass intent; pass cwd when the repo is not the session cwd.",
-			"pr_review: fix:true requires authorization to edit/commit and cwd at a trusted, clean feature repo root; it uses the default writer. For high-risk fixes, review only, then dispatch an authorized worktree writer with model:'precise'.",
+			"pr_review: fix:true requires authorization to edit/commit and a session started at a trusted, clean feature repo root; it uses the default writer. For high-risk fixes, review only, then dispatch an authorized worktree writer with model:'precise'.",
 		],
 		parameters: Type.Object({
 			herdr: Type.Optional(
@@ -295,14 +295,14 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 				);
 			}
 			const wantFix = params.fix === true;
-			const atRoot = (await realpath(cwd)) === repoRoot;
 			if (wantFix) {
+				// Session trust covers the session cwd, not a nested repo with its own trust decision.
 				if (!ctx.isProjectTrusted())
 					throw new Error("pr_review: fixes require a trusted repository.");
-				if (!atRoot) {
+				if ((await realpath(ctx.cwd)) !== repoRoot) {
 					throw new Error(
-						`pr_review: the fix step requires cwd (${cwd}) to be the git repo root (${repoRoot}). ` +
-							"Pass the repo root as cwd, or run pr_review with fix=false.",
+						`pr_review: the fix step requires the session cwd (${ctx.cwd}) to be the git repo root (${repoRoot}). ` +
+							"Start pi there, or run pr_review with fix=false.",
 					);
 				}
 				await resolveWorktreeTarget(repoRoot);
