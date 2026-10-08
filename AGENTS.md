@@ -30,7 +30,10 @@ worktrees. Usage, model routing, installation and Herdr: [README.md](README.md).
 - Expand chain `{previous}` placeholders with a replacer function so dollar
   sequences in reports remain literal.
 - Discover the advertised roster through the same trust/override path as execution.
-  Keep model-specific guidance subordinate to role, task and project constraints.
+  Keep model-specific guidance (`src/model-prompts/`) subordinate to role, task
+  and project constraints; never grant permissions or change instruction
+  precedence by model family. Unknown versions pass through unchanged. Check
+  primary sources before adding provider claims to `docs/model-prompts/`.
 - Herdr viewers and metadata belong to the caller's workspace. Visibility failures
   remain non-fatal and reported; release owned resources in `finally`. Metadata
   `--source` sequences updates but does not own keys; see README for workspace rules.
