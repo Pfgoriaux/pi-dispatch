@@ -75,7 +75,7 @@ for (const scenario of ["short", "review-long", "final-long", "verify-failed", "
 		assert.equal(result.details.truncated, !["short", "fixed", "fix-uncommitted"].includes(scenario));
 		assert.ok(!result.content[0].text.includes("�"));
 		if (scenario === "verify-failed") {
-			for (const label of ["Correctness + security reviewer", "Correctness reviewer", "Pre-mortem", "Slop reviewer"])
+			for (const label of ["Correctness + security reviewer", "Correctness reviewer", "Pre-mortem", "Slop reviewer", "Spec + reuse reviewer"])
 				assert.ok(result.content[0].text.includes(`### ${label}`));
 		}
 		if (scenario === "errors-long") {
@@ -94,7 +94,7 @@ for (const scenario of ["short", "review-long", "final-long", "verify-failed", "
 			assert.match(result.content[0].text, /Worktree branches \(not merged\)/);
 		} else if (fix) {
 			assert.match(result.content[0].text, /Fix skipped: review material was truncated/);
-			assert.equal(result.details.items.length, 5, "no writer or merge step runs");
+			assert.equal(result.details.items.length, 6, "no writer or merge step runs");
 		} else {
 			assert.match(result.content[0].text, /Fix skipped: fix=false/);
 		}

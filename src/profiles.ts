@@ -83,6 +83,7 @@ export const REVIEW_MODELS = {
 	opus: envModel("DISPATCH_REVIEW_OPUS_MODEL") ?? "anthropic/claude-opus-5-5",
 	astra: envModel("DISPATCH_REVIEW_ASTRA_MODEL") ?? "openai-codex/gpt-6-astra",
 	preMortem: envModel("DISPATCH_REVIEW_PREMORTEM_MODEL") ?? "aperture/neuralwatt/deepseek-v4.1-flash",
+	specReuse: envModel("DISPATCH_REVIEW_SPEC_MODEL") ?? "aperture/neuralwatt/glm-5.3",
 } as const;
 
 /**
