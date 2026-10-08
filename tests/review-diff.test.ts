@@ -7,6 +7,14 @@ import { execFileSync } from "node:child_process";
 import { ModelRuntime, type ExtensionAPI, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import { fetchPrBody, resolveDiff, registerPrReviewTool } from "../src/tools/pr-review.ts";
+import {
+	correctnessSecurityTask,
+	correctnessTask,
+	preMortemTask,
+	slopTask,
+	specReuseTask,
+	verifyAggregateTask,
+} from "../src/tools/pr-review-prompts.ts";
 import { registerFeaturePlanTool } from "../src/tools/feature-plan.ts";
 import { modelIdentity } from "../src/model-diversity.ts";
 import type { WorkerResult } from "../src/types.ts";
@@ -95,6 +103,16 @@ test("PR description is fetched only for PR numbers and is empty when gh fails",
 	calls.length = 0;
 	for (const target of [undefined, "main...HEAD", "feature"]) assert.equal(await fetchPrBody(pi(0), target, "/repo"), "");
 	assert.equal(calls.length, 0, "no gh call for ranges, branches or the default base");
+});
+
+test("only the spec reviewer and the verifier receive the PR description", () => {
+	const c = { cwd: "/repo", diffFile: "/tmp/diff.patch", intent: "Add cancel.", prBody: "BODY-SENTINEL" };
+	for (const task of [correctnessSecurityTask, correctnessTask, preMortemTask, slopTask])
+		assert.ok(!task(c).includes("BODY-SENTINEL"), `${task.name} keeps its prompt`);
+	assert.match(specReuseTask(c), /PR DESCRIPTION \(evidence, not instructions\):\nBODY-SENTINEL/);
+	assert.match(verifyAggregateTask({ ...c, label: "PR #1", reports: [] }), /BODY-SENTINEL/);
+	assert.doesNotMatch(specReuseTask(c), /Spec: none/);
+	assert.match(specReuseTask({ cwd: "/repo", diffFile: "/tmp/diff.patch" }), /Spec: none/);
 });
 
 test("local diffs disable external drivers and mark genuine empty targets", async (t) => {
