@@ -335,6 +335,13 @@ node --import tsx src/durable/cli.ts stop   batch.json [--cancel]
 # run/resume also take --expect-hash=<policy hash> and then start nothing if the file has another hash
 ```
 
+These commands resolve `@earendil-works/pi-coding-agent` from the checkout's
+`node_modules`, so run them from a development checkout after `npm ci`. Pi
+installs Git packages without that SDK. In an installed copy, add
+`--import ./src/durable/host-sdk.mjs` and set `PI_DISPATCH_HOST_SDK` to the
+file URL of a Pi installation's `dist/index.js`. The `launch` action does this
+with the launching Pi's own SDK.
+
 Agents can prepare a batch with the `durable_batch` tool; the user approves the launch:
 
 - `draft` validates a configuration with the same parser as the CLI and saves
