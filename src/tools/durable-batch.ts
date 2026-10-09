@@ -104,7 +104,7 @@ export function registerDurableBatchTool(pi: ExtensionAPI): void {
 			"Draft an unattended batch on the Foreman coordinator, ask the user to launch it, or check status/stop it. Launch always asks the user to confirm in the Pi UI; the coordinator runs the batch.",
 		promptSnippet: "Draft Foreman batches; launch only with user approval",
 		promptGuidelines: [
-			"durable_batch: Draft only when the user asks for an unattended batch. launch shows the batch and asks the user to confirm; the Foreman coordinator runs it. Never say a batch started unless approve returned state approved.",
+			"durable_batch: Draft when the user asks for an unattended batch. For 3+ writer tasks on a repository Foreman serves, suggest a durable batch instead of in-session writers so work runs on the executor. Never launch without the user's request. launch shows the batch and asks the user to confirm; the Foreman coordinator runs it. Never say a batch started unless approve returned state approved.",
 		],
 		executionMode: "sequential",
 		parameters: Type.Object({
