@@ -4,7 +4,12 @@ import { readFile, stat, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { createReadTool } from "@earendil-works/pi-coding-agent";
 import { savePlanReport } from "../src/tools/plan-report.ts";
-import { architectDraftTask, architectFinalTask } from "../src/tools/feature-plan-prompts.ts";
+import {
+	architectDraftTask, architectFinalTask,
+	HETZNER_DRAFT_GUIDANCE, HETZNER_MODEL_GUIDANCE, HETZNER_TASK_PROMPT_TEMPLATE,
+} from "../src/tools/feature-plan-prompts.ts";
+import { registerDurableBatchTool } from "../src/tools/durable-batch.ts";
+import { isTaskThinking } from "../src/thinking.ts";
 import { isolateAgentDir } from "./isolated-agent-dir.ts";
 
 isolateAgentDir();
@@ -64,4 +69,35 @@ test("planning prompts scale contracts to scope without repeating loaded writer 
 	assert.match(final, /not separate workers/);
 	assert.match(final, /Read applicable AGENTS.md instructions first/, "in-process planners disable context loading");
 	assert.doesNotMatch(final, /contract alone|under 10 KB|## Architecture|- Read first:/);
+});
+
+test("tool and architect prompts share the exact self-contained Hetzner drafting guide", () => {
+	let tool: any;
+	registerDurableBatchTool({ registerTool: (value: unknown) => { tool = value; }, on: () => {} } as any);
+	const context = { cwd: "/repo", idea: "A graph", focus: "" };
+	const draft = architectDraftTask(context);
+	const final = architectFinalTask(context, "draft", "risk", "challenge");
+	const headings = ["Goal", "Context", "Change", "Contracts", "Do not", "Checks", "Commit", "Report"];
+	assert.deepEqual([...HETZNER_TASK_PROMPT_TEMPLATE.matchAll(/^## (.+)$/gm)].map((match) => match[1]), headings);
+	assert.ok(HETZNER_DRAFT_GUIDANCE.includes("not for your own output):\n```markdown\n" + HETZNER_TASK_PROMPT_TEMPLATE + "\n```"));
+	for (const text of [tool.description, draft, final]) {
+		assert.ok(text.includes(HETZNER_DRAFT_GUIDANCE));
+		assert.doesNotMatch(text, /synthetic\/hf:zai-org\/GLM/);
+	}
+	assert.ok(!tool.promptGuidelines.join("\n").includes(HETZNER_DRAFT_GUIDANCE));
+	const thinking = HETZNER_MODEL_GUIDANCE.split("\n").find((line) => line.startsWith("Writer and reviewer thinking"));
+	assert.match(thinking ?? "", /must be `high` or above/);
+	const levels = [...(thinking ?? "").matchAll(/`([a-z]+)`/g)].map((match) => match[1]);
+	assert.deepEqual(levels, ["high", "high", "xhigh", "max"]);
+	assert.ok(levels.every(isTaskThinking), "drafted efforts pass the below-high guard");
+	assert.match(draft, /```\nReturn a concise draft design \(Markdown; omit empty sections\):\n## Goal\n## Scope/);
+	assert.match(final, /# Feature plan: <short title>\n## Goal\n## Decisions for you/);
+});
+
+test("README documents the shared prompt template and literal model table", async () => {
+	const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+	assert.ok(readme.includes(HETZNER_TASK_PROMPT_TEMPLATE));
+	const table = HETZNER_MODEL_GUIDANCE.split("\n").filter((line) => line.startsWith("|"));
+	for (const row of table) assert.ok(readme.includes(row), row);
+	assert.match(readme, /Writer and reviewer thinking\s+must be `high` or above/);
 });

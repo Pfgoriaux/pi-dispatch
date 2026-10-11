@@ -96,6 +96,44 @@ test("draft forwards config unchanged and returns the server summary, ID, and ha
 	for (const value of [created.id, HASH, ...summary]) assert.ok(output.includes(value));
 });
 
+test("object and JSON-string drafts send identical HTTP object bodies", async (t) => {
+	const calls = await fixture(t, normal);
+	const tool = batchTool();
+	const input = {
+		...config,
+		batch: { ...config.batch, tasks: [{ ...config.batch.tasks[0], model: "task/writer", thinking: "xhigh", reviewModel: "task/reviewer", modelFallbacks: ["task/fallback"] }] },
+	};
+	for (const value of [input, JSON.stringify(input)]) {
+		const result = await tool.result({ action: "draft", config: value });
+		assert.notEqual(result.isError, true);
+	}
+	assert.equal(calls.length, 2);
+	assert.deepEqual(calls[0].body, input);
+	assert.deepEqual(calls[1], calls[0]);
+});
+
+for (const configured of [false, true]) {
+	test(`invalid drafts fail before client setup or HTTP (configured: ${configured})`, async (t) => {
+		const calls = configured ? await fixture(t, normal) : [];
+		if (!configured) delete process.env.FOREMAN_TOKEN;
+		const tool = batchTool();
+		const invalid = [
+			undefined, null, [], [config], true, false, 0, 42,
+			"", "secret-malformed-input", '{"secret":', "null", "[]", "[{}]", "true", "false", "42",
+			'"secret-string"', JSON.stringify(JSON.stringify(config)),
+		];
+		for (const value of invalid) {
+			const result = await tool.result({ action: "draft", config: value });
+			assert.equal(result.isError, true);
+			assert.equal(result.content[0].text, "durable_batch: draft.config must be an object or a JSON string encoding an object.");
+		}
+		const missing = await tool.result({ action: "draft" });
+		assert.equal(missing.isError, true);
+		assert.match(missing.content[0].text, /draft.config must be an object/);
+		assert.equal(calls.length, 0);
+	});
+}
+
 test("launch confirms the cached server summary and posts exactly the displayed hash", async (t) => {
 	const calls = await fixture(t, normal);
 	const { call, asked } = batchTool();
@@ -132,8 +170,28 @@ test("launch without a cached draft uses GET config and accepts stopped batches"
 	const { call, asked } = batchTool();
 	await call({ action: "launch", id: created.id });
 	for (const value of ["(resume)", HASH, "/repo", "test/writer", "test/reviewer", "$20", "2026-12-01", "src/", '"npm" "test"', "Fix the API", "/store.sqlite", "owner/repo"]) assert.ok(asked[0].includes(value), value);
+	assert.doesNotMatch(asked[0], /Base SHA|Base source|Stacked follow-ups|fresh base/);
 	assert.equal(calls.length, 2, "never re-create a batch to obtain its summary");
 	assert.equal(calls[1].route, "/batches/night-1/approve");
+});
+
+test("resume launch shows the recorded base only when the report carries it", async (t) => {
+	let report: unknown = null;
+	await fixture(t, (call, res) => {
+		if (call.method === "GET") return json(res, { ...batchStatus("stopped"), report });
+		json(res, { state: "approved" });
+	});
+	const base = { phase: "stopped", deadline: config.limits.deadline, spentUsd: 0, allowanceUsd: 20, halted: [], tasks: [] };
+	for (report of [null, base, { ...base, baseSha: null, baseSource: null }]) {
+		const { call, asked } = batchTool();
+		await call({ action: "launch", id: created.id });
+		assert.doesNotMatch(asked[0], /Base SHA|Base source/);
+	}
+	report = { ...base, baseSha: "0123456789abcdef", baseSource: "refs/remotes/origin/feat/api" };
+	const { call, asked } = batchTool();
+	await call({ action: "launch", id: created.id });
+	assert.match(asked[0], /\(resume\)/);
+	assert.match(asked[0], /Base SHA: 0123456789abcdef\nBase source: refs\/remotes\/origin\/feat\/api\nPolicy hash: sha256:server-owned-hash/);
 });
 
 test("session changes clear cached summaries", async (t) => {
@@ -151,13 +209,18 @@ test("a changed server hash does not reuse a stale summary", async (t) => {
 		if (call.route === "/batches") return json(res, created, 201);
 		const status = batchStatus();
 		status.batch.policyHash = "sha256:new-server-hash";
-		json(res, status);
+		json(res, { ...status, batch: { ...status.batch, config: {
+			...config, batch: { ...config.batch, tasks: [{ ...config.batch.tasks[0], model: "changed/writer", reviewModel: "changed/reviewer", modelFallbacks: ["changed/fallback"] }] },
+		} } });
 	});
 	const tool = batchTool(false);
 	await tool.call({ action: "draft", config });
 	await tool.call({ action: "launch", id: created.id });
 	assert.doesNotMatch(tool.asked[0], /Server approval summary/);
 	assert.match(tool.asked[0], /sha256:new-server-hash/);
+	assert.match(tool.asked[0], /Writer: changed\/writer \(high\)/);
+	assert.match(tool.asked[0], /Reviewer: changed\/reviewer \(high\)/);
+	assert.match(tool.asked[0], /Writer fallbacks \(ordered\): changed\/fallback/);
 });
 
 test("no UI and worker launches refuse without network requests or confirmation", async () => {
@@ -296,11 +359,105 @@ test("client bounds the entire request to 60 seconds", async (t) => {
 	await pending;
 });
 
+const modelCases = [
+	{
+		name: "task overrides and ordered fallbacks",
+		task: { model: "task/writer", thinking: "xhigh", reviewModel: "task/reviewer", reviewThinking: "max", modelFallbacks: ["fallback/first", "fallback/second"] },
+		worker: config.worker,
+		facts: ["Writer: task/writer (xhigh)", "Reviewer: task/reviewer (max)", "Writer fallbacks (ordered): fallback/first -> fallback/second"],
+	},
+	{
+		name: "worker model, thinking, and review settings",
+		task: {}, worker: { ...config.worker, reviewThinking: "xhigh" },
+		facts: ["Writer: test/writer (high)", "Reviewer: test/reviewer (xhigh)", "Writer fallbacks (ordered): none"],
+	},
+	{
+		name: "legacy reviewer inherits worker model and thinking",
+		task: {}, worker: { ...config.worker, reviewModel: undefined, reviewThinking: undefined },
+		facts: ["Writer: test/writer (high)", "Reviewer: test/writer (high)", "Writer fallbacks (ordered): none"],
+	},
+	{
+		name: "task writer model never becomes the reviewer default; review effort follows the task writer",
+		task: { model: "task/writer", thinking: "xhigh", modelFallbacks: [] },
+		worker: { ...config.worker, reviewModel: undefined, reviewThinking: undefined },
+		facts: ["Writer: task/writer (xhigh)", "Reviewer: test/writer (xhigh)", "Writer fallbacks (ordered): none"],
+	},
+	{
+		name: "task writer with inherited thinking and worker reviewer",
+		task: { model: "task/writer" }, worker: { ...config.worker, reviewThinking: undefined },
+		facts: ["Writer: task/writer (high)", "Reviewer: test/reviewer (high)", "Writer fallbacks (ordered): none"],
+	},
+	{
+		name: "task reviewer with inherited writer model",
+		task: { thinking: "max", reviewModel: "task/reviewer" },
+		worker: { ...config.worker, reviewThinking: undefined },
+		facts: ["Writer: test/writer (max)", "Reviewer: task/reviewer (max)", "Writer fallbacks (ordered): none"],
+	},
+	{
+		name: "worker review thinking precedes task writer thinking",
+		task: { thinking: "max" }, worker: config.worker,
+		facts: ["Writer: test/writer (max)", "Reviewer: test/reviewer (high)", "Writer fallbacks (ordered): none"],
+	},
+];
+
+for (const { name, task, worker, facts } of modelCases) {
+	test(`cached and reconstructed approvals expose effective facts: ${name}`, async (t) => {
+		const input = { ...config, worker, batch: { ...config.batch, tasks: [{ ...config.batch.tasks[0], ...task }] } };
+		const serverSummary = ["Authoritative server facts", ...facts];
+		await fixture(t, (call, res) => {
+			if (call.route === "/batches") return json(res, { ...created, summary: serverSummary });
+			const status = batchStatus();
+			json(res, { ...status, batch: { ...status.batch, config: input } });
+		});
+		const tool = batchTool(false);
+		await tool.call({ action: "draft", config: input });
+		await tool.call({ action: "launch", id: created.id });
+		assert.ok(tool.asked[0].includes(serverSummary.join("\n")));
+		assert.doesNotMatch(tool.asked[0], /Repository:/, "matching server summary is not supplemented or reconstructed");
+		tool.sessionStart();
+		await tool.call({ action: "launch", id: created.id });
+		assert.doesNotMatch(tool.asked[1], /Authoritative server facts/);
+		for (const fact of facts) assert.ok(tool.asked[1].includes(`  ${fact}\n`), fact);
+	});
+}
+
+test("reconstructed approval does not use the standalone pilot reviewer branch", async (t) => {
+	await fixture(t, (_call, res) => {
+		const status = batchStatus();
+		json(res, { ...status, batch: { ...status.batch, config: { ...config, reviewer: { model: "obsolete/reviewer", fallbacks: ["obsolete/fallback"] } } } });
+	});
+	const tool = batchTool(false);
+	await tool.call({ action: "launch", id: created.id });
+	assert.doesNotMatch(tool.asked[0], /obsolete\//);
+	assert.match(tool.asked[0], /Reviewer: test\/reviewer \(high\)/);
+});
+
+test("status renders optional base SHA and source and tolerates old or null fields", async (t) => {
+	let base: { baseSha?: string | null; baseSource?: string | null } = {};
+	await fixture(t, (_call, res) => json(res, {
+		...batchStatus("approved"),
+		report: { phase: "running", deadline: config.limits.deadline, spentUsd: 0, allowanceUsd: 20, halted: [], tasks: [], ...base },
+	}));
+	const tool = batchTool();
+	for (base of [{}, { baseSha: null, baseSource: null }]) {
+		assert.doesNotMatch(await tool.call({ action: "status", id: created.id }), /Base SHA:|Base source:|undefined|null/);
+	}
+	base = { baseSha: "0123456789abcdef", baseSource: "refs/remotes/origin/feat/api" };
+	const output = await tool.call({ action: "status", id: created.id });
+	assert.match(output, /Base SHA: 0123456789abcdef/);
+	assert.match(output, /Base source: refs\/remotes\/origin\/feat\/api/);
+	base = { baseSha: "0123456789abcdef" };
+	assert.match(await tool.call({ action: "status", id: created.id }), /Base SHA: 0123456789abcdef/);
+	base = { baseSource: "local" };
+	assert.match(await tool.call({ action: "status", id: created.id }), /Base source: local/);
+});
+
 test("new drafts reject below-high worker/task efforts before posting and preserve explicit fields", async t => {
  const calls = await fixture(t, normal);
  const { call, result } = batchTool();
  for (const low of [
   { ...config, worker: { ...config.worker, thinking: "off" } },
+  JSON.stringify({ ...config, worker: { ...config.worker, thinking: "off" } }),
   { ...config, worker: { ...config.worker, reviewThinking: "medium" } },
   { ...config, batch: { ...config.batch, tasks: [{ ...config.batch.tasks[0], thinking: "low" }] } },
   { ...config, batch: { ...config.batch, tasks: [{ ...config.batch.tasks[0], reviewThinking: "off" }] } },

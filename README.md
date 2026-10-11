@@ -415,24 +415,96 @@ use `pi -ne -e ./src/index.ts` for an explicit isolated load.
 principal needs Foreman approval permission to launch a batch. Requests time
 out after 60 seconds and responses are capped at 4 MiB.
 
-- `draft` rejects below-high effort, then sends `config` unchanged to Foreman for validation and storage. It returns the
-  server's batch ID, policy hash, and approval summary. No local draft is saved.
+- `draft` accepts `config` as an object or a JSON string encoding an object.
+  Strings are parsed once. Missing values, malformed JSON, primitives, arrays,
+  null, and double-encoded strings fail locally before client setup or requests.
+  Below-high effort also fails locally. The object goes to Foreman unchanged for
+  validation and storage. The reply contains the server's batch ID, policy hash,
+  and approval summary. No local draft is saved.
 - `launch` takes `id`, reads the batch, and accepts only `pending` or `stopped`.
   Below-high configurations require redrafting and reapproval before launch.
-  It shows the cached server summary from this Pi session, or builds one from
-  the stored config after a session change. The user confirms that summary
-  and policy hash in the Pi UI before the tool sends approval with that exact
-  hash. No UI/print mode and dispatch workers cannot launch. Only a reply with
+  It shows the cached server summary when its policy hash matches, or builds
+  one from the GET config when the cache is absent or the hash changed.
+  The confirmation adds each task's effort, and the base SHA/source when Foreman
+  reports them. The user confirms that summary and policy hash in the Pi UI
+  before the tool sends approval with that exact hash. No UI/print mode and
+  dispatch workers cannot launch. Only a reply with
   `state: "approved"` confirms launch; Foreman runs the batch, not Pi.
 - `status` takes `id` and reports the batch state, error, and each task's state,
-  attempts, accounted spend, and PR from Foreman. Text reports are capped at 12 KB.
+  attempts, accounted spend, and PR from Foreman, plus base SHA/source when
+  supplied. Older responses without base fields still work. Text reports are
+  capped at 12 KB.
 - `stop` takes `id` and optionally `cancel: true`. Foreman drains active work;
   cancellation also stops running workers. Without a live owner, Foreman cancels
   a pending or stopped batch. The tool returns the server's reply.
 
-Calls run sequentially. Foreman defines and validates the configuration schema;
-its worker review settings use `worker.reviewModel` and `worker.reviewThinking`.
+Calls run sequentially. Foreman defines and validates the configuration schema.
+Tasks can set `model`, `thinking`, `reviewModel`, `reviewThinking`, and ordered
+`modelFallbacks`.
+Reconstructed approvals show these effective settings for each task:
+
+- Writer: `task.model ?? worker.model`
+- Thinking: `task.thinking ?? worker.thinking`
+- Reviewer: `task.reviewModel ?? worker.reviewModel ?? worker.model`
+- Review thinking: `task.reviewThinking ?? worker.reviewThinking ?? (task.thinking ?? worker.thinking)`
+- Writer fallbacks: `task.modelFallbacks`, in order; none when omitted or empty.
+
+When Foreman reports `baseSha` and `baseSource` (Foreman PR Pfgoriaux/foreman#7),
+they are the base it resolved on first start and reuses on resume. This client
+only displays those fields. For stacked follow-ups, use the prior task branch as
+`baseBranch` and a new `branchPrefix`. The prefix must not overlap the base
+branch or other batch prefixes: neither equal, ancestor, nor descendant.
 The standalone pilot CLI below retains its own configuration and owner lifecycle.
+
+### Drafting Hetzner tasks
+
+The tool and architect draft/final prompts share this literal model mapping.
+Profile environment overrides do not change it.
+
+| Executor contract | Task model | Task reviewModel | Task modelFallbacks |
+|---|---|---|---|
+| `long` | `aperture/neuralwatt/kimi-k3` | `aperture/neuralwatt/glm-5.3` | `["aperture/synthetic/hf:moonshotai/Kimi-K3"]` |
+| Small/bounded GLM | `aperture/neuralwatt/glm-5.3` | `aperture/neuralwatt/kimi-k3` | None |
+| `precise` | Keep local; do not draft for Hetzner | — | — |
+
+Set `limits.maxAttemptsPerTask: 2` for the Kimi fallback. GLM has no equivalent
+Synthetic route on Aperture; do not propose one. Writer and reviewer thinking
+must be `high` or above: set `worker.thinking`, and any `worker.reviewThinking`,
+task `thinking`, or task `reviewThinking`, to `high` (default), `xhigh`, or
+`max`. This guidance does not rewrite configuration, validate providers, or
+route tasks automatically.
+
+Give each task one concern and small, bounded `ownedFiles`: exact files or narrow
+directories. Independent tasks use `dependencies: []` to run in parallel. Express
+real ordering only through `dependencies`. Resolve product and design decisions
+in planning with the user; no executable task may require one. Precise-tier work
+stays local.
+
+Hetzner workers see only their task prompt, not the plan or conversation. Each
+prompt is self-contained, uses plain, literal language and exact identifiers and
+paths, and includes required shared contracts. Do not refer to the plan, other
+tasks' internals, the conversation, or “as discussed”. Use this template in order;
+replace placeholders with concrete task facts:
+
+```markdown
+## Goal
+<One or two sentences stating the outcome.>
+## Context
+<What exists today; exact file paths and symbols to read first.>
+## Change
+1. <Concrete change with exact identifiers and paths.>
+2. <Next concrete change; omit if unnecessary.>
+## Contracts
+<Exact names, signatures, types, and data shapes to produce or keep.>
+## Do not
+<Explicit non-goals and files not to touch.>
+## Checks
+<Exact commands matching this task's checks argv; commands run without a shell.>
+## Commit
+<The exact Conventional Commit message.>
+## Report
+<Output files changed, commands run with results, and anything left undone.>
+```
 
 ## Durable pilot batches
 

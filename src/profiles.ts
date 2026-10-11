@@ -42,6 +42,11 @@ function envModel(name: string): string | undefined {
 	return v || undefined;
 }
 
+/** Literal defaults; Hetzner drafting guidance must not inherit profile overrides. */
+export const KIMI_MODEL = "aperture/neuralwatt/kimi-k3";
+export const GLM_MODEL = "aperture/neuralwatt/glm-5.3";
+export const KIMI_FALLBACK_MODEL = "aperture/synthetic/hf:moonshotai/Kimi-K3";
+
 export const PROFILES: Record<ProfileTier, ModelProfile> = {
 	// CHEAP: Simple tasks, file discovery, grep-and-report, boilerplate.
 	// DeepSeek V4.1 Flash (Aperture has no plain v4-flash route).
@@ -64,7 +69,7 @@ export const PROFILES: Record<ProfileTier, ModelProfile> = {
 	// LONG: Default writer model, multi-file refactors, codebase research.
 	// Kimi K3
 	long: {
-		model: envModel("DISPATCH_PROFILE_LONG_MODEL") ?? "aperture/neuralwatt/kimi-k3",
+		model: envModel("DISPATCH_PROFILE_LONG_MODEL") ?? KIMI_MODEL,
 	},
 };
 
@@ -77,7 +82,7 @@ export const REVIEW_MODELS = {
 	opus: envModel("DISPATCH_REVIEW_OPUS_MODEL") ?? "anthropic/claude-opus-5-5",
 	astra: envModel("DISPATCH_REVIEW_ASTRA_MODEL") ?? "openai-codex/gpt-6-astra",
 	preMortem: envModel("DISPATCH_REVIEW_PREMORTEM_MODEL") ?? "aperture/neuralwatt/deepseek-v4.1-flash",
-	specReuse: envModel("DISPATCH_REVIEW_SPEC_MODEL") ?? "aperture/neuralwatt/glm-5.3",
+	specReuse: envModel("DISPATCH_REVIEW_SPEC_MODEL") ?? GLM_MODEL,
 } as const;
 
 /**
@@ -86,7 +91,7 @@ export const REVIEW_MODELS = {
  * Aperture has no Synthetic GLM 5.3 route, so the second spec is direct.
  */
 export const WORKFLOW_FALLBACK_MODELS: readonly string[] = [
-	"aperture/neuralwatt/glm-5.3",
+	GLM_MODEL,
 	"synthetic/hf:zai-org/GLM-5.3",
 ];
 

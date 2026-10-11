@@ -38,3 +38,20 @@ test("bundled roles resolve to Kimi for writing and precise for planning", t => 
 		{ name: "planner", model: "anthropic/claude-opus-5-5" },
 	]);
 });
+
+test("profile and review overrides still apply but cannot rewrite Hetzner guidance", () => {
+	const env = { ...process.env };
+	for (const tier of ["CHEAP", "BALANCED", "PRECISE", "LONG"]) env[`DISPATCH_PROFILE_${tier}_MODEL`] = `override/${tier.toLowerCase()}`;
+	for (const role of ["OPUS", "ASTRA", "PREMORTEM", "SPEC"]) env[`DISPATCH_REVIEW_${role}_MODEL`] = `override/${role.toLowerCase()}`;
+	const profilesUrl = new URL("../src/profiles.ts", import.meta.url).href;
+	const promptsUrl = new URL("../src/tools/feature-plan-prompts.ts", import.meta.url).href;
+	const { profiles, reviews, guidance } = JSON.parse(execFileSync(process.execPath, [
+		"--import", "tsx", "--input-type=module", "-e",
+		`import { PROFILES, REVIEW_MODELS } from ${JSON.stringify(profilesUrl)};
+		import { HETZNER_DRAFT_GUIDANCE } from ${JSON.stringify(promptsUrl)};
+		console.log(JSON.stringify({ profiles: PROFILES, reviews: REVIEW_MODELS, guidance: HETZNER_DRAFT_GUIDANCE }));`,
+	], { env, encoding: "utf8" }));
+	for (const tier of ["cheap", "balanced", "precise", "long"]) assert.equal(profiles[tier].model, `override/${tier}`);
+	assert.deepEqual(reviews, { opus: "override/opus", astra: "override/astra", preMortem: "override/premortem", specReuse: "override/spec" });
+	assert.doesNotMatch(guidance, /override\//);
+});
