@@ -259,7 +259,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 			"Multi-model PR review with optional fixes",
 		promptGuidelines: [
 			"pr_review: Use for requested reviews or PRs you opened with 100+ changed lines, auth, data, migrations, or infrastructure. Self-review smaller PRs. Always pass intent; pass cwd when the repo is not the session cwd.",
-			"pr_review: fix:true requires authorization to edit/commit and a session started at a trusted, clean feature repo root; it uses the default writer. For high-risk fixes, review only, then dispatch an authorized worktree writer with model:'precise'.",
+			"pr_review: fix:true requires authorization to edit/commit and a session started at a trusted, clean feature repo root; it uses the default writer. For high-risk fixes, review only, then dispatch an authorized worktree writer with model:'precise'. Fix only Findings and Slop; leave Decisions, [decision] findings in any section, Spec gaps, Overlaps and Reuse for the user. Recommendations are not authorization.",
 		],
 		parameters: Type.Object({
 			thinking: Type.Optional(TaskThinkingSchema),
@@ -526,7 +526,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 							"\n\n" + formatHandoff(repoRoot, worktrees);
 					} else if (!wantFix) {
 						fixReport =
-							"\n\n(Fix skipped: fix=false. For authorized fixes, use dispatch tasks:[{agent:'writer', task:<findings>, worktree:true, model:<chosen model>}].)";
+							"\n\n(Fix skipped: fix=false. For authorized fixes, use dispatch tasks:[{agent:'writer', task:<validated Findings and Slop only>, worktree:true, model:<chosen model>}]. Leave Decisions, [decision] findings in any section, Spec gaps, Overlaps and Reuse for the user. Recommendations are not authorization.)";
 					} else if (!fixRequested) {
 						fixReport = truncated
 							? "\n\n(Fix skipped: review material was truncated. Rerun a narrower review before applying fixes.)"

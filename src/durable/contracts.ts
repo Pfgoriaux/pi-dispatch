@@ -62,10 +62,12 @@ export type ReviewState = {
 	/** `null` means unknown spend; recovery treats it as a halt. */
 	spentUsd: number | null;
 	worker: WorkerIdentity | null;
-	/** Validated `[blocker]` findings. */
+	/** Validated `[blocker]` findings without a `[decision]` tag. */
 	blocking: number;
-	/** Other reported findings. */
+	/** Other reported findings, excluding decisions. */
 	other: number;
+	/** User choices counted before the findings cap. Absent in older stores. */
+	decisions?: number;
 	/** Bounded reviewer report for the pull-request body and a fix attempt. */
 	findings: string | null;
 	reason: string | null;

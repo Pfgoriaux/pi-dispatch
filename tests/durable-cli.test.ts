@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { ConfigError, main, parseConfig, request, reviewerAgent, socketPath, writerAgent } from '../src/durable/cli.ts';
 import { formatReport, openBatch, policyHash, type BatchOwner, type PilotConfig } from '../src/durable/scheduler.ts';
 import { processStartIdentity } from '../src/durable/store.ts';
-import { parseReview, pilotSessionId, Supervisor } from '../src/durable/supervisor.ts';
+import { parseReview, reviewDecisions, pilotSessionId, Supervisor } from '../src/durable/supervisor.ts';
 import { discoverAgents } from '../src/agents.ts';
 
 // Every repository, remote, store, fake Pi, and fake gh lives in this disposable workspace.
@@ -43,7 +43,7 @@ function script(name: string, body: string): string {
 /**
  * Fake Pi. Writes JSON events to stdout and a Pi 1.0.4-format session file to --session-dir.
  * Worker behaviour per task id: ok, slow, outside (commits outside owned paths), hang, stubborn (hangs, ignores SIGTERM), gate (waits for release()).
- * Reviewer behaviour per `<id>:review`: clean (default), runaway (streams thinking forever), blank, blank-once, block, block-once, unpriced, gate.
+ * Reviewer behaviour per `<id>:review`: clean (default), runaway (streams thinking forever), blank, blank-once, block, block-once, decision, mixed-once, unpriced, gate.
  * Logs start and end of each spawn for concurrency checks.
  */
 function fakePi(behaviour: Record<string, string>) {
@@ -70,11 +70,12 @@ const finish=(text='done',usage=${JSON.stringify(usage)})=>{const message={role:
 const partial=()=>{const message={role:'assistant',content:[{type:'text',text:'still reviewing'}],stopReason:'stop',usage:{...${JSON.stringify(usage)},cost:{total:3}}};out({type:'message_end',message});entry({type:'message',id:'a1',parentId:'u1',timestamp:now(),message});log('partial');setInterval(()=>{},1000);};
 const commit=(f)=>{fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSync(f,id+' '+Date.now()+'\\n');cp.execFileSync('git',['add','--',f]);cp.execFileSync('git',['commit','-q','-m','worker '+id]);};
 const blocker='## [blocker] Broken '+id+'\\n- File: src/'+id+'.txt:1\\n- Problem: wrong value\\n- Fix: correct it\\n';
+const decision='## [blocker][decision] Choose storage '+id+'\\n- File: src/'+id+'.txt:1\\n- Fix: Options: A) local B) remote; Recommended: A\\n';
 const gate=(then)=>{const f=path.join(${JSON.stringify(gates)},kind+'-'+id);const t=setInterval(()=>{if(fs.existsSync(f)){clearInterval(t);then();}},50);};
 const runaway=()=>setInterval(()=>out({type:'message_update',assistantMessageEvent:{type:'thinking_delta',contentIndex:0,delta:'!'}}),20);
 const refuse=()=>{out({type:'dispatch_thinking_error',preInference:true,error:'unsupported fixture thinking'});process.exit(1);};
 const refuseOnStop=()=>{process.on('SIGTERM',refuse);log('ready-to-refuse');setInterval(()=>{},1000);};
-const reviewer={'refuse-stop-once':()=>earlier===0?refuseOnStop():finish('No findings.'),'refuse-once':()=>earlier===0?refuse():finish('No findings.'),'refuse-gate-once':()=>earlier===0?gate(refuse):finish('No findings.'),runaway,partial,'runaway-once':()=>earlier===0?runaway():finish('No findings.'),stubborn:()=>{process.on('SIGTERM',()=>log('stopped'));setInterval(()=>{},1000);},blank:()=>finish(''),'blank-once':()=>finish(earlier===0?'':'No findings.'),clean:()=>finish('No findings.'),block:()=>finish(blocker),'block-once':()=>finish(earlier===0?blocker:'No findings.'),unpriced:()=>finish('No findings.',{...${JSON.stringify(usage)},cost:undefined}),gate:()=>gate(()=>finish('No findings.'))};
+const reviewer={'refuse-stop-once':()=>earlier===0?refuseOnStop():finish('No findings.'),'refuse-once':()=>earlier===0?refuse():finish('No findings.'),'refuse-gate-once':()=>earlier===0?gate(refuse):finish('No findings.'),runaway,partial,'runaway-once':()=>earlier===0?runaway():finish('No findings.'),stubborn:()=>{process.on('SIGTERM',()=>log('stopped'));setInterval(()=>{},1000);},blank:()=>finish(''),'blank-once':()=>finish(earlier===0?'':'No findings.'),clean:()=>finish('No findings.'),decision:()=>finish(decision),'mixed-once':()=>finish(earlier===0?blocker+decision:decision),block:()=>finish(blocker),'block-once':()=>finish(earlier===0?blocker:'No findings.'),unpriced:()=>finish('No findings.',{...${JSON.stringify(usage)},cost:undefined}),gate:()=>gate(()=>finish('No findings.'))};
 const work={ok:()=>{commit('src/'+id+'.txt');finish();},linger:()=>{commit('src/'+id+'.txt');finish();setInterval(()=>{},1000);},slow:()=>setTimeout(()=>{commit('src/'+id+'.txt');finish();},700),outside:()=>{commit('docs/'+id+'.md');finish();},hang:()=>setInterval(()=>{},1000),stubborn:()=>{process.on('SIGTERM',()=>{});setInterval(()=>{},1000);},gate:()=>gate(()=>{commit('src/'+id+'.txt');finish();})};
 setTimeout(()=>(review?reviewer:work)[mode](),300);
 `);
@@ -265,7 +266,7 @@ test('scheduler: stacked dependencies, worker cap, PR-ready report, no merges', 
  // Reviews read the task diff from its base: b's review covers only b's commit.
  assert.match(pi.reviews('b')[0].prompt, /task\.diff/);
  const bodies = gh.calls().filter((c) => c[1] === 'create').map((c) => c[c.indexOf('--body') + 1]);
- assert.ok(bodies.every((body) => /Automatic read-only review of the diff from the base to this head: 0 validated blocking, 0 other findings\./.test(body)));
+ assert.ok(bodies.every((body) => /Automatic read-only review of the diff from the base to this head: 0 validated blocking, 0 other findings, decisions for the user: 0\./.test(body)));
  // Workers get constraints only; the report carries no prompts or transcripts.
  assert.match(pi.starts('b')[0].prompt, /starts from the verified work of task a at [0-9a-f]{40}/);
  assert.doesNotMatch(formatReport(report), /do a|done/);
@@ -419,19 +420,54 @@ test('cli: status and stop over the owner socket', async () => {
 
 test('review: validated blocking findings get one fix attempt from the reviewed head', async () => {
  const w = workspace();
- const pi = fakePi({ 'a:review': 'block-once' });
+ const pi = fakePi({ 'a:review': 'mixed-once' });
  const gh = fakeGh(w.bare);
  const { report, attempts } = await runBatch(config(w, [{ id: 'a' }], pi.bin, gh.bin));
  const a = byId(report).a;
  assert.equal(a.state, 'pr-ready'); assert.equal(a.attempts, 2);
- assert.deepEqual(a.review, { status: 'done', blocking: 0, other: 0 });
+ assert.deepEqual(a.review, { status: 'done', blocking: 0, other: 0, decisions: 1 });
  assert.deepEqual([pi.starts('a').length, pi.reviews('a').length], [2, 2]);
  const [first, fix] = attempts.filter((x) => x.taskKey === 'a');
  assert.deepEqual([first.review?.blocking, fix.baseSha], [1, first.headSha], 'the fix starts from the reviewed head');
  assert.equal(a.headSha, fix.headSha); assert.equal(a.baseSha, first.baseSha);
  assert.match(pi.starts('a')[1].prompt, /starts from your previous verified commit [0-9a-f]{40}[\s\S]*## \[blocker\] Broken a/);
+ assert.match(pi.starts('a')[1].prompt, /Fix only the untagged blockers\. Skip \[decision\] findings regardless of severity/);
+ assert.match(pi.starts('a')[1].prompt, /Recommendations are not authorization/);
+ assert.equal(first.review?.decisions, 1);
  assert.equal(report.spentUsd, 1);
  assert.equal(gh.prs().length, 1);
+});
+
+test('scheduler: decision-only review launches no fix and keeps high effort and legacy decision counts', async () => {
+ const w = workspace();
+ const pi = fakePi({ 'a:review': 'decision' });
+ const gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin);
+ const { report, attempts } = await runBatch(cfg);
+ assert.equal(byId(report).a.state, 'pr-ready', formatReport(report));
+ assert.deepEqual(byId(report).a.review, { status: 'done', blocking: 0, other: 0, decisions: 1 });
+ assert.deepEqual([pi.starts('a').length, pi.reviews('a').length], [1, 1]);
+ for (const child of [pi.starts('a')[0], pi.reviews('a')[0]]) {
+  assert.equal(child.thinking, 'high'); assert.equal(child.guard, 'high');
+ }
+ assert.equal(attempts[0].effort?.effective, 'high');
+ assert.equal(attempts[0].review?.effort?.effective, 'high');
+ assert.equal(report.spentUsd, 0.5);
+ assert.match(formatReport(report), /review 0 blocking, 0 other, decisions for the user: 1/);
+ const bodyArgs = gh.calls().find(c => c[1] === 'create')!;
+ assert.match(bodyArgs[bodyArgs.indexOf('--body') + 1], /0 validated blocking, 0 other findings, decisions for the user: 1/);
+ // Stored reviews from before the field was added still load and derive the count from findings.
+ const reopened = await openBatch(cfg, agents);
+ try {
+  await reopened.attach();
+  await reopened.store.harness.commit(async tx => {
+   delete (await tx.doc(reopened.store.contracts.AttemptDoc, attempts[0].key, attempts[0])).review!.decisions;
+  }, reopened.store.context);
+  assert.deepEqual(byId(await reopened.report()).a.review, byId(report).a.review);
+ } finally { await reopened.close(); }
+ const resumed = await runBatch(cfg, 'resume');
+ assert.equal(byId(resumed.report).a.review.decisions, 1);
+ assert.deepEqual([pi.starts('a').length, pi.reviews('a').length, gh.prs().length], [1, 1, 1]);
 });
 
 test('review: findings that survive the fix stay on the verified task and in the PR body', async () => {
@@ -464,7 +500,7 @@ test('review: unknown review spend halts publication; a tight budget skips the r
  for (const mode of ['run', 'resume'] as const) {
   const { report: skipped } = await runBatch(capped, mode);
   assert.equal(skipped.phase, 'running', formatReport(skipped));
-  assert.deepEqual(byId(skipped).a.review, { status: 'skipped', blocking: 0, other: 0 });
+  assert.deepEqual(byId(skipped).a.review, { status: 'skipped', blocking: 0, other: 0, decisions: 0 });
   assert.equal(byId(skipped).a.state, 'verified'); assert.match(byId(skipped).a.reason, /^review pending: review would exceed the budget/);
  }
  assert.deepEqual([pi.starts('a').length, pi.reviews('a').length], [2, 1], 'one worker per batch; only the first batch\'s unpriced review spawned');
@@ -501,8 +537,37 @@ test('review: a budget-skipped review pauses the batch; resume reviews the same 
 
 test('review: a blocker counts only when it cites a changed file', () => {
  const text = '## [blocker] A\n- File: `src/a.ts:3`\n## [blocker] B\n- File: docs/x.md:1\n## [minor] C\n- File: src/a.ts:9\n';
- assert.deepEqual(parseReview(text, ['src/a.ts']), { blocking: 1, other: 2, findings: text.trim() });
- assert.deepEqual(parseReview('No findings.', ['src/a.ts']), { blocking: 0, other: 0, findings: null });
+ assert.deepEqual(parseReview(text, ['src/a.ts']), { blocking: 1, other: 2, decisions: 0, findings: text.trim() });
+ assert.deepEqual(parseReview('No findings.', ['src/a.ts']), { blocking: 0, other: 0, decisions: 0, findings: null });
+});
+
+test('review: tagged decisions never block, tolerate spacing, and ignore fenced examples', () => {
+ for (const space of ['', ' ', '   ', '\t']) {
+  const decision = `## [blocker]${space}[decision] Choose\n- File: src/a.ts:1`;
+  assert.deepEqual(parseReview(decision, ['src/a.ts']), { blocking: 0, other: 0, decisions: 1, findings: decision });
+  const mixed = `${decision}\n## [blocker] Broken\n- File: src/a.ts:2\n## [major] Improve\n- File: src/a.ts:3`;
+  assert.deepEqual(parseReview(mixed, ['src/a.ts']), { blocking: 1, other: 1, decisions: 1, findings: mixed });
+  assert.equal(reviewDecisions({ findings: decision }), 1, 'legacy fallback uses the same matcher');
+  for (const fence of ['```', '~~~~']) {
+   const example = `${fence}markdown\n${mixed}\n${fence}\n`;
+   assert.deepEqual(parseReview(example, ['src/a.ts']), { blocking: 0, other: 0, decisions: 0, findings: null });
+   assert.deepEqual(parseReview(example + mixed, ['src/a.ts']), { blocking: 1, other: 1, decisions: 1, findings: example + mixed });
+   assert.equal(reviewDecisions({ findings: example }), 0);
+  }
+ }
+ assert.equal(parseReview('```md\n## [blocker][decision] Unclosed example', []).decisions, 0);
+});
+
+test('review: full-text counts survive the 6000-character findings cap; only legacy stores fall back', () => {
+ const text = `## [minor] First\n${'x'.repeat(6100)}\n## [blocker][decision] Late choice\n- File: src/a.ts:1\n## [major]  [decision] Another choice`;
+ const parsed = parseReview(text, ['src/a.ts']);
+ assert.deepEqual([parsed.blocking, parsed.other, parsed.decisions], [0, 1, 2]);
+ assert.equal(parsed.findings!.length, 6000);
+ assert.doesNotMatch(parsed.findings!, /\[decision\]/);
+ assert.equal(reviewDecisions(parsed), 2, 'the new count is not recomputed from capped findings');
+ assert.equal(reviewDecisions({ findings: parsed.findings }), 0, 'legacy fallback has only the saved evidence');
+ assert.equal(reviewDecisions({ decisions: 0, findings: '## [major][decision] Example' }), 0, 'an explicit zero is authoritative');
+ assert.equal(reviewDecisions({ findings: null }), 0);
 });
 
 /** Resolves once `run` answers status with a report `ready` accepts; fails at once, with its stderr, if it exits. */

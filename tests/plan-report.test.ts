@@ -59,6 +59,7 @@ test("planning prompts scale contracts to scope without repeating loaded writer 
 	const final = architectFinalTask(context, "draft", "risk", "challenge");
 	assert.match(draft, /small feature usually needs one or two/);
 	assert.match(final, /not a fixed word limit/);
+	assert.match(final, /^## Decisions for you\nWrite "None" if empty;[^\n]*Options: A\) … B\) …, Recommended: <letter> — <why>, and the tasks it changes\.$/m);
 	assert.match(final, /Do not repeat AGENTS.md instructions or reminders/);
 	assert.match(final, /not separate workers/);
 	assert.match(final, /Read applicable AGENTS.md instructions first/, "in-process planners disable context loading");

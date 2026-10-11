@@ -147,9 +147,10 @@ export function verifyAggregateTask(c: {
 		"Keep a spec gap only when it quotes the intent or PR description; reject invented requirements. " +
 			"Keep a reuse finding only after opening the existing equivalent it names.",
 		"",
+		"Keep spec gaps, overlaps and reuse in their original sections, even when they need a decision; do not promote them to Findings or Slop for automatic fixes.",
 		"Return ONE report as your FINAL ANSWER in Markdown:",
 		"## Findings (confirmed bugs and security issues whose fix needs no design choice, by severity, with file:line)",
-		"## Decisions (confirmed findings whose fix is a choice between valid designs, tagged [decision] or not; for each: the problem with file:line, Options: A) … B) …, Recommended: <letter> — <why>)",
+		"## Decisions (confirmed bugs, security or slop findings whose fix is a choice between valid designs, tagged [decision] or not; for each: severity, the problem with file:line, Options: A) … B) …, Recommended: <letter> — <why>)",
 		"## Spec gaps (missing, unrequested or ambiguous behaviour, quoting the requirement; at most 5, one line each)",
 		"## Overlaps (other readers or writers whose behaviour the change alters, with file:line; at most 5, one line each)",
 		"## Reuse (new code duplicating an existing equivalent, naming both paths; at most 5, one line each)",
@@ -170,7 +171,7 @@ export function fixTask(c: { cwd: string; label: string; findings: string }): st
 		`Review target: ${c.label}`,
 		"",
 		"VALIDATED FINDINGS REPORT (fix these; skip findings you can prove are false positives — say which and why):",
-		"Fix only the Findings and Slop sections. Decisions, Spec gaps, Overlaps and Reuse are for the user: do not implement them. If a fix turns out to need a design choice, skip it and name the choice.",
+		"Fix only the Findings and Slop sections. Decisions, Spec gaps, Overlaps and Reuse are for the user: do not implement them. Skip [decision] findings in any section; recommendations are not authorization. If a fix turns out to need a design choice, skip it and name the choice.",
 		c.findings,
 		"",
 		"For each fix: implement it, and where a project check script exists, run it before finishing. " +

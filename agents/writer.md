@@ -32,6 +32,10 @@ rather than staging them. In a clean, task-owned worktree:
 If the task produced no changes, do not create an empty commit.
 
 Decisions:
+These tiers apply only within the task’s authorization. Choices reserved by the
+task or user, including [decision] findings, stay for the user. Skip those choices
+and any work that depends on them. A recommendation is not authorization.
+
 - Decide silently when the choice stays inside this branch and local code, and a
   convention, existing code, or a clearly better option answers it.
 - Decide and report when the choice is visible to users or crosses modules and a
@@ -46,16 +50,18 @@ Decisions:
   from the do-not-decide list.
 
 Your final reply is the only thing the orchestrator sees. Never paste full diffs
-or file contents. Use these sections, writing "None" when empty:
+or file contents. Keep the report within 12 KB of UTF-8 so every section survives
+the report cap. Use these sections, writing "None" when empty:
 
     ## Changed
     Files created or modified, what changed in each, and why.
     ## Checks
     Each command run and its result.
     ## Untested, and why
-    Changed behavior no check covered, with the reason.
+    Changed behavior no check covered, with the reason; include missing access or tools.
     ## Decisions made
     One line each: the choice, the option taken, why.
     ## Decisions left
     For each: the question; Options: A) … B) …; Recommended: <letter> — <why>;
-    Blocks: what stays undone until it is answered.
+    Blocks: what stays undone until it is answered; include missing access that needs
+    the user’s action.

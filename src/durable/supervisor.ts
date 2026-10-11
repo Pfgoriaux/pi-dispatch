@@ -262,12 +262,45 @@ const REVIEW_RULES = [
 	"If nothing qualifies, answer exactly: No findings.",
 ];
 
-/** Count findings in the shared pr_review format. A blocker counts only when it cites a changed file. */
-export function parseReview(text: string, changed: readonly string[]): Pick<ReviewState, "blocking" | "other" | "findings"> {
-	const sections = text.split(/^(?=## \[(?:blocker|major|minor)\])/m).filter((s) => /^## \[/.test(s));
+/** Ignore fenced examples, including an unclosed fence at the end of a report. */
+function withoutFencedCode(text: string): string {
+	let fence: string | undefined;
+	return text.split("\n").map((line) => {
+		const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+		if (!fence) {
+			fence = marker?.[1];
+			return fence ? "" : line;
+		}
+		if (marker?.[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = undefined;
+		return "";
+	}).join("\n");
+}
+
+/** One heading matcher for new reviews and legacy decision-count recovery. */
+function reviewFindings(text: string) {
+	const prose = withoutFencedCode(text);
+	const headings = [...prose.matchAll(/^##[ \t]+\[(blocker|major|minor)\][ \t]*(\[decision\])?[^\n]*/gm)];
+	return headings.map((heading, index) => ({
+		severity: heading[1], decision: Boolean(heading[2]),
+		section: prose.slice(heading.index, headings[index + 1]?.index),
+	}));
+}
+
+/** Only old stores lack the full-text count; their bounded findings are the available evidence. */
+export function reviewDecisions(review: Pick<ReviewState, "decisions" | "findings">): number {
+	return review.decisions ?? reviewFindings(review.findings ?? "").filter((f) => f.decision).length;
+}
+
+/** Count the full review before bounding its text. Decisions never trigger fixes. */
+export function parseReview(text: string, changed: readonly string[]): Pick<ReviewState, "blocking" | "other" | "decisions" | "findings"> {
+	const sections = reviewFindings(text);
+	const automatic = sections.filter((s) => !s.decision);
 	const cited = (section: string) => /^- File:\s*`?([^\s`:]+)/m.exec(section)?.[1];
-	const blocking = sections.filter((s) => s.startsWith("## [blocker]") && changed.includes(cited(s) ?? "")).length;
-	return { blocking, other: sections.length - blocking, findings: sections.length > 0 ? Array.from(text.trim()).slice(0, 6000).join("") : null };
+	const blocking = automatic.filter((s) => s.severity === "blocker" && changed.includes(cited(s.section) ?? "")).length;
+	return {
+		blocking, other: automatic.length - blocking, decisions: sections.length - automatic.length,
+		findings: sections.length > 0 ? Array.from(text.trim()).slice(0, 6000).join("") : null,
+	};
 }
 
 /** Session run name of a review try: `<key>/review`, then `<key>/review-<n>` for retries. */
@@ -596,7 +629,7 @@ export class Supervisor {
 		const before = attempt.review;
 		const review: ReviewState = {
 			headSha: attempt.headSha!, status: skip ? "skipped" : "running", reservedUsd: "reserveUsd" in plan ? plan.reserveUsd : 0,
-			spentUsd: 0, worker: null, blocking: 0, other: 0, findings: null, reason: skip,
+			spentUsd: 0, worker: null, blocking: 0, other: 0, decisions: 0, findings: null, reason: skip,
 			tries: before ? (before.tries ?? 1) + 1 : 1, earlierUsd: before ? (before.earlierUsd ?? 0) + before.spentUsd! : 0,
 			startedAt: Date.now(), model: request.model, effort: { requested: request.thinking, effective: "unknown" }, failures: reviewFailures(before),
 		};

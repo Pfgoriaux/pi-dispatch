@@ -162,9 +162,12 @@ duplicates an existing equivalent. With neither `intent` nor a PR description,
 it skips the spec check.
 
 Reviewers tag a finding `[decision]` when its fix is a choice between valid
-designs. The verifier lists those under Decisions, with options and a
-recommended one. The fix writer acts only on the Findings and Slop sections;
-decisions, spec gaps, overlaps and reuse stay for the user to decide.
+designs. The verifier keeps severity, options and a recommendation under
+Decisions for bugs, security and slop findings. Spec gaps, overlaps and reuse
+stay in their own sections. Fix writers act only on Findings and Slop and skip
+`[decision]` findings in any section. Decisions, spec gaps, overlaps and reuse
+stay for the user, including when fixes are dispatched manually. Recommendations
+do not authorize those choices.
 
 The two code reviewers cannot share a model after fallback. If both fail, review
 stops; failed verification returns unverified reports. Configure the models with
@@ -573,11 +576,14 @@ Review:
   cap. The stop intent is recorded before signalling the child; recovery
   confirms its process group exited before charging it once.
 - A `[blocker]` finding counts as validated only when it cites a file the
-  diff changes. A validated blocker starts one fix attempt from the reviewed
-  head, inside `maxAttemptsPerTask`. A blocker that survives, or a failed fix,
+  diff changes and has no `[decision]` tag. Tagged findings stay for the user
+  and never trigger a fix attempt. Fenced examples do not count as findings.
+  A validated blocker starts one fix attempt from the reviewed head, inside
+  `maxAttemptsPerTask`. A blocker that survives, or a failed fix,
   leaves the task verified at the reviewed head.
-- The draft PR body gives the review counts and the reviewer's findings
-  (up to 6000 characters).
+- The draft PR body gives blocking, other and decision counts, followed by the
+  reviewer's findings (up to 6000 characters). Counts use the full review before
+  that cap. Older stores without a decision count derive it from saved findings.
 
 Ownership and stopping:
 

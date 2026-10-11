@@ -117,6 +117,30 @@ test("only the spec reviewer and the verifier receive the PR description, and th
 	assert.match(fixTask({ cwd: "/repo", label: "PR #1", findings: "" }), /Fix only the Findings and Slop sections/);
 });
 
+test("review prompts reserve tagged choices without moving spec, overlap or reuse work into automatic fixes", () => {
+	const c = { cwd: "/repo", diffFile: "/tmp/diff", label: "PR #1" };
+	for (const task of [correctnessSecurityTask, correctnessTask, specReuseTask]) {
+		assert.match(task(c), /add \[decision\] after the severity/);
+		assert.match(task(c), /options and your recommended one under Fix/);
+	}
+	const aggregate = verifyAggregateTask({ ...c, reports: [] });
+	assert.match(aggregate, /Decisions \(confirmed bugs, security or slop findings[^\n]*tagged \[decision\] or not; for each: severity,/);
+	assert.match(aggregate, /Keep spec gaps, overlaps and reuse in their original sections/);
+	assert.match(aggregate, /do not promote them to Findings or Slop for automatic fixes/);
+	assert.deepEqual([...aggregate.matchAll(/^## ([^(\n]+)/gm)].map(m => m[1].trim()), [
+		"Findings", "Decisions", "Spec gaps", "Overlaps", "Reuse", "Slop", "3-month risk", "Rejected", "Unverifiable", "Verdict",
+	]);
+	const fix = fixTask({ ...c, findings: "## Findings\n## [blocker][decision] Choose storage" });
+	assert.match(fix, /Fix only the Findings and Slop sections/);
+	assert.match(fix, /Decisions, Spec gaps, Overlaps and Reuse are for the user: do not implement them/);
+	assert.match(fix, /Skip \[decision\] findings in any section; recommendations are not authorization/);
+	assert.match(fix, /If a fix turns out to need a design choice, skip it/);
+	let tool: any;
+	registerPrReviewTool({ registerTool: (value: unknown) => { tool = value; } } as unknown as ExtensionAPI);
+	assert.match(tool.promptGuidelines.join("\n"), /Fix only Findings and Slop; leave Decisions, \[decision\] findings in any section, Spec gaps, Overlaps and Reuse for the user/);
+	assert.match(tool.promptGuidelines.join("\n"), /Recommendations are not authorization/);
+});
+
 test("a PR number sends its saved description to the spec reviewer and verifier only", async (t) => {
 	const previousHerdr = process.env.HERDR_ENV;
 	delete process.env.HERDR_ENV;
