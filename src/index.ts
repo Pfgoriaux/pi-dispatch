@@ -416,7 +416,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 							: { onBoundary: emitProgress }),
 						persist: params.persist || !!params.resume,
 						resumeFile,
-						modelSpec: modelOverride?.modelSpec ?? (params.resume ? findWorkerSession(params.resume)?.model : undefined),
+						modelSpec: modelOverride?.modelSpec,
 						steerByQuota: modelOverride?.steerByQuota,
 						thinking: modelOverride?.thinking ?? params.thinking,
 						savedResumeThinking: params.resume ? findWorkerSession(params.resume)?.requestedThinking : undefined,

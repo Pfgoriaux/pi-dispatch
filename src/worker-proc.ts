@@ -261,6 +261,8 @@ export interface PilotProcResult extends WorkerResult {
 	launched: boolean;
 	/** True when the child reported `agent_settled`; usage is complete only then. */
 	settled: boolean;
+	/** Verified refusal before any provider request, checked against the event and session files. */
+	preInferenceRefusal?: boolean;
 	/** Every assistant completion supplied usable priced usage. */
 	spendKnown: boolean;
 }
@@ -338,6 +340,9 @@ export async function runPilotProc(agent: AgentConfig, task: string, options: Pi
 			}
 		},
 	});
+	const preInferenceRefusal = seen.thinkingRefusal
+		? (await import("./durable/evidence.ts")).readEvidence(options.sessionDir, options.sessionId).state === "refused"
+		: false;
 	const mismatch = result.status === "ok" && seen.sessionId !== options.sessionId;
 	return {
 		...result,
@@ -347,6 +352,7 @@ export async function runPilotProc(agent: AgentConfig, task: string, options: Pi
 		spawned,
 		launched: seen.launched,
 		settled: seen.settled,
+		preInferenceRefusal,
 		spendKnown: seen.completions > 0 && seen.spendKnown,
 	};
 }
@@ -359,7 +365,7 @@ export function pricedUsage(usage: Usage | undefined): boolean {
 	return usage.totalTokens === 0 || cost > 0;
 }
 
-interface PilotSeen { sessionId?: string; launched: boolean; settled: boolean; completions: number; spendKnown: boolean }
+interface PilotSeen { thinkingRefusal?: boolean; sessionId?: string; launched: boolean; settled: boolean; completions: number; spendKnown: boolean }
 interface PilotSpawn {
 	command: string;
 	prefixArgs: readonly string[];
@@ -463,6 +469,7 @@ async function runOneProc(
 		if (["agent_start", "message_start", "message_update", "tool_execution_start"].includes(event.type ?? "")) clearTimeout(timer);
 		switch (event.type) {
 			case "dispatch_thinking_error":
+				if (pilot) { pilot.seen.thinkingRefusal = true; pilot.seen.spendKnown = false; }
 				if (typeof event.error === "string") lastError = { stopReason: "error", errorMessage: event.error };
 				break;
 			case "session":

@@ -178,7 +178,7 @@ export function renderDispatchResult(
 				(row.status === "queued" ? "model pending" : "resolving model");
 			lines.push(
 				`  ${icon} ${row.index + 1}. ${theme.fg("accent", row.agent)} · ${model}` +
-					` · ${effortLabel(row)}` +
+					(row.status === "queued" ? "" : ` · ${effortLabel(row)}`) +
 					` · ${row.status} · ${formatSeconds(row.ms)}` +
 					(row.attempts > 1 ? ` · attempt ${row.attempts}` : ""),
 			);

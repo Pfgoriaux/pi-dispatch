@@ -557,3 +557,77 @@ test('publication crash windows reconcile from remote and PR identities', async 
   assert.equal((await store.recover()).halted, false);
  } finally { await store.close(); }
 });
+
+test('evidence: only an explicit, uncontradicted pre-inference refusal proves zero spend', () => {
+ const dir = fs.mkdtempSync(path.join(W, 'refusal-')), sid = 'pd-refusal';
+ const header = { type: 'session', version: 3, id: sid };
+ const refusal = { type: 'dispatch_thinking_error', preInference: true, error: 'unsupported thinking' };
+ const file = `fixture_${sid}.jsonl`;
+ const write = (name: string, lines: object[], tail = '') => fs.writeFileSync(path.join(dir, name), lines.map(l => JSON.stringify(l)).join('\n') + '\n' + tail);
+ write('events.log', [header, refusal]);
+ assert.deepEqual(readEvidence(dir, sid), { state: 'refused', reason: refusal.error });
+ write(file, [header, { type: 'message', message: { role: 'user' } }]);
+ assert.equal(readEvidence(dir, sid).state, 'refused');
+ for (const activity of [
+  { type: 'message_start', message: { role: 'assistant' } },
+  { type: 'message_end', message: { role: 'assistant', usage } },
+  { type: 'message_update' }, { type: 'tool_execution_start' }, { type: 'tool_execution_end' },
+  { type: 'agent_end', messages: [{ role: 'assistant' }] },
+ ]) {
+  write('events.log', [header, activity, refusal]);
+  assert.equal(readEvidence(dir, sid).state, 'ambiguous', activity.type);
+ }
+ write('events.log', [header, refusal]);
+ for (const role of ['assistant', 'toolResult']) {
+  write(file, [header, { type: 'message', message: { role } }]);
+  assert.equal(readEvidence(dir, sid).state, 'ambiguous');
+ }
+ write(file, [header]);
+ for (const preInference of [false, undefined]) {
+  write('events.log', [header, { ...refusal, preInference }]);
+  assert.equal(readEvidence(dir, sid).state, 'unsettled');
+ }
+ write('events.log', [header, refusal, refusal]);
+ assert.notEqual(readEvidence(dir, sid).state, 'refused');
+ write('events.log', [header, refusal], '{"type":');
+ assert.equal(readEvidence(dir, sid).state, 'ambiguous');
+ write('events.log', [header, refusal]);
+ write(file, [header], '{"type":');
+ assert.equal(readEvidence(dir, sid).state, 'ambiguous');
+ assert.equal(readEvidence(dir, 'other-session').state, 'ambiguous');
+});
+
+test('live pilot: zero-spend refusal requires clean event and session evidence; late refusal stays unknown', async () => {
+ for (const mode of ['early', 'late', 'message', 'tool', 'session']) {
+  const dir = fs.mkdtempSync(path.join(W, 'live-refusal-'));
+  const pi = fakePi(`
+const mode=${JSON.stringify(mode)};
+if(mode==='message')finish();
+if(mode==='tool')out({type:'tool_execution_start',toolName:'read'});
+if(mode==='session'){
+ const dir=args[args.indexOf('--session-dir')+1];
+ fs.writeFileSync(require('path').join(dir,'fixture_'+sid+'.jsonl'),[ {type:'session',version:3,id:sid}, {type:'message',message:{role:'assistant'}} ].map(e=>JSON.stringify(e)).join('\\n')+'\\n');
+}
+out({type:'dispatch_thinking_error',preInference:mode!=='late',error:'refused'});
+process.exit(1);`);
+  const result = await runPilotProc(agent, 'fixture', { cwd: dir, piExecutable: pi.bin, model: 'fake/model', thinking: 'high', sessionId: 'pd-refusal', sessionDir: path.join(dir, 'session'), onSpawn: () => {} });
+  assert.equal(result.status, 'error');
+  assert.equal(result.preInferenceRefusal, mode === 'early', mode);
+  assert.equal(result.spendKnown, false);
+ }
+});
+
+test('supervisor: verified writer refusal records zero without replay; late refusal halts on unknown spend', async () => {
+ for (const preInference of [true, false]) {
+  const s = await setup();
+  try {
+   const pi = fakePi(`out({type:'dispatch_thinking_error',preInference:${preInference},error:'refused'});process.exit(1);`);
+   const supervisor = new Supervisor(s.options({ piExecutable: pi.bin }));
+   const result = await supervisor.runAttempt(task('t1'), soon());
+   assert.equal(result.spentUsd, preInference ? 0 : null);
+   await assert.rejects(supervisor.adopt(task('t1'), result.key, soon()), /no recorded worker to adopt/);
+   if (!preInference) await assert.rejects(supervisor.runAttempt(task('t2'), soon()), /unknown spend/);
+   assert.equal(pi.spawns().length, 1);
+  } finally { await s.store.close(); }
+ }
+});

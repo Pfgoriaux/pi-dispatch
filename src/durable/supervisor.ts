@@ -311,14 +311,15 @@ async function judgeOrphan(worker: WorkerIdentity, dir: string, sessionId: strin
 	}
 	const evidence = readEvidence(dir, sessionId);
 	if (evidence.state === "ambiguous") return { status: "blocked", spentUsd: null, reason: evidence.reason };
+	if (evidence.state === "refused") return { status: "failed", spentUsd: 0, reason: evidence.reason };
 	if (evidence.state === "unsettled") return { status: "failed", spentUsd: null, reason: exit.stopped ?? "worker exited before it settled" };
 	if (evidence.problem) return { status: "failed", spentUsd: evidence.spentUsd, reason: evidence.problem, thinking: evidence.thinking, providerThinkingLevel: evidence.providerThinkingLevel };
 	return { status: "settled", spentUsd: evidence.spentUsd, text: evidence.text, thinking: evidence.thinking, providerThinkingLevel: evidence.providerThinkingLevel };
 }
 
-/** Spend is known only when the child never spawned or reported `agent_settled`. */
+/** Spend requires settlement, a verified pre-inference refusal, or no launch. */
 function spendOf(result: PilotProcResult): number | null {
-	if (!result.launched) return 0;
+	if (!result.launched || result.preInferenceRefusal) return 0;
 	if (!result.settled || !result.spendKnown) return null;
 	return result.usage?.cost.total ?? null;
 }

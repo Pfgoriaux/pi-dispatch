@@ -60,7 +60,8 @@ unless overridden and records changes in the session history.
 
 Each candidate must support the exact request according to Pi capability metadata.
 Unsupported effort errors before inference and lists supported levels. Existing
-fallback chains keep the same request; non-reasoning models cannot run at `off`.
+fallback chains keep the same request. Non-reasoning and virtual models are
+rejected before inference.
 Nothing clamps, escalates, or reruns a task to change effort. Child workers also
 load a guard that checks their actual model before provider requests.
 

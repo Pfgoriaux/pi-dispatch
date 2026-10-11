@@ -71,7 +71,7 @@ export interface PilotConfig {
 		readonly piPrefixArgs?: readonly string[];
 		readonly model: string;
 		readonly thinking: ThinkingLevel;
-		readonly reviewThinking?: TaskThinking;
+		readonly reviewThinking?: ThinkingLevel;
 	};
 	readonly reviewer: { readonly model: string; readonly fallbacks: readonly string[] };
 	readonly publication: { readonly remote: string; readonly url: string; readonly repo: string; readonly gh: string };

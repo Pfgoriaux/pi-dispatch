@@ -3,9 +3,9 @@ import test from "node:test";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSessionServices, DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { isTaskThinking, resolveRequest, resolveEffective, effortLabel } from "../src/thinking.ts";
-import { runWorker } from "../src/worker.ts";
+import { runWorker, effortSummary } from "../src/worker.ts";
 import { runWorkerProc } from "../src/worker-proc.ts";
 import type { AgentConfig } from "../src/types.ts";
 import { isolateAgentDir } from "./isolated-agent-dir.ts";
@@ -23,15 +23,16 @@ const agent: AgentConfig = { name: "thinking-fixture", description: "fixture", t
 
 test("request precedence, default and legacy floor do not depend on model tiers", () => {
 	assert.equal(resolveRequest({}), "high");
-	assert.equal(resolveRequest({ task: "max", invocationDefault: "xhigh", savedResume: "high", agentConfig: "off" }), "max");
-	assert.equal(resolveRequest({ invocationDefault: "xhigh", savedResume: "max", agentConfig: "high" }), "xhigh");
+	assert.equal(resolveRequest({ task: "max", savedResume: "high", agentConfig: "off" }), "max");
+	assert.equal(resolveRequest({ task: "xhigh", savedResume: "max", agentConfig: "high" }), "xhigh");
 	assert.equal(resolveRequest({ savedResume: "max", agentConfig: "high" }), "max");
 	assert.equal(resolveRequest({ agentConfig: "xhigh" }), "xhigh");
 	for (const legacy of ["off", "minimal", "low", "medium"]) {
 		const warnings: string[] = [];
 		assert.equal(resolveRequest({ agentConfig: legacy }, "fixture", w => warnings.push(w)), "high");
 		assert.match(warnings[0], /fixture: thinking .* raised to high/);
-		assert.equal(resolveRequest({ savedResume: legacy }), "high");
+		assert.equal(resolveRequest({ savedResume: legacy, resumeSource: "/sessions/old.jsonl" }, "wrong agent", w => warnings.push(w)), "high");
+		assert.match(warnings[1], /Resumed session \/sessions\/old.jsonl: thinking .* raised to high/);
 		assert.throws(() => resolveRequest({ task: legacy }), /choose high, xhigh, max/);
 	}
 	assert.equal(isTaskThinking("max"), true);
@@ -190,5 +191,97 @@ test("roster floors legacy effort once and fallback cannot replace the resolved 
 		assert.equal(result.thinking, thinking ?? "high");
 		assert.ok(calls.every(c => c.thinking === (thinking ?? "high")));
 		assert.equal(warnings.filter(w => w.includes("raised to high")).length, thinking ? 0 : 1);
+	}
+});
+
+test("virtual catalog models are refused before any in-process provider call", async t => {
+	const virtual = () => ({ ...thinkingModel(), api: "pi-virtual" });
+	assert.throws(() => resolveEffective("high", virtual()), /Virtual model.*physical model/);
+	const { calls, registry } = thinkingFixture(t, virtual);
+	const result = await runWorker(agent, "test", { registry, fallbackModel: undefined, thinking: "max" });
+	assert.equal(result.status, "error");
+	assert.equal(calls.length, 0);
+	assert.match(effortSummary([result]), /Virtual model/);
+});
+
+for (const mode of ["high", "virtual", "late", "write-error", "missing-flag"]) {
+	test(`child guard evidence: ${mode}`, () => {
+		const script = `import guard from './src/thinking-guard.ts';
+import fs from 'node:fs';
+const handlers=new Map();
+const mode=${JSON.stringify(mode)};
+guard({registerFlag(){},getFlag:()=>mode==='missing-flag'?undefined:'high',on:(name,fn)=>handlers.set(name,fn)});
+const ctx={model:{provider:'fixture',id:'model',api:'openai-completions',reasoning:true},thinkingLevel:'high'};
+if(mode==='virtual')ctx.model.api='pi-virtual';
+if(mode==='late')handlers.get('before_provider_request')({},ctx);
+if(mode==='late'||mode==='write-error')ctx.thinkingLevel='off';
+if(mode==='write-error')fs.closeSync(1);
+try{handlers.get('before_agent_start')({},ctx);}catch{console.error('SWALLOWED');}
+console.error('PROVIDER_ALLOWED');`;
+		const run = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { encoding: "utf8" });
+		assert.equal(run.status, mode === "high" ? 0 : 1, run.stderr);
+		if (mode === "high") return assert.match(run.stderr, /PROVIDER_ALLOWED/);
+		assert.doesNotMatch(run.stderr, /SWALLOWED|PROVIDER_ALLOWED/);
+		if (mode === "write-error") return;
+		const event = JSON.parse(run.stdout);
+		assert.equal(event.type, "dispatch_thinking_error");
+		assert.equal(event.preInference, mode !== "late");
+	});
+}
+
+test('offline SDK session accepts exact high, but refuses a virtual selection before routing or sending', () => {
+ for (const virtual of [false, true]) {
+  const script = `
+import {createAgentSession, DefaultResourceLoader, SettingsManager, SessionManager, ModelRuntime} from '@earendil-works/pi-coding-agent';
+import {createAssistantMessageEventStream} from '@earendil-works/pi-ai';
+import {thinkingModel} from './tests/thinking-fixture.ts';
+const root=process.env.PI_CODING_AGENT_DIR;
+const loader=new DefaultResourceLoader({cwd:root,agentDir:root,settingsManager:SettingsManager.inMemory(),noExtensions:true,
+ additionalExtensionPaths:[process.cwd()+'/src/thinking-guard.ts'],noSkills:true,noThemes:true,noPromptTemplates:true,noContextFiles:true});
+await loader.reload();
+if(loader.getExtensions().errors.length)throw new Error('guard failed to load');
+if(!loader.getExtensions().extensions[0].flags.has('dispatch-thinking'))throw new Error('flag not registered');
+loader.getExtensions().runtime.flagValues.set('dispatch-thinking','high');
+const model={...thinkingModel(), ...(${virtual}?{api:'pi-virtual'}:{})};
+ModelRuntime.prototype.hasConfiguredAuth=()=>true;
+ModelRuntime.prototype.streamSimple=function(model,context,options){
+ const stream=createAssistantMessageEventStream();
+ (async()=>{
+  await options.onPayload({});
+  console.log('PROVIDER_SENT:'+options.reasoning);
+  const message={role:'assistant',api:model.api,provider:model.provider,model:model.id,content:[{type:'text',text:'done'}],stopReason:'stop',timestamp:Date.now(),
+   usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
+  stream.push({type:'done',reason:'stop',message});
+ })();
+ return stream;
+};
+const {session}=await createAgentSession({cwd:root,model,thinkingLevel:'high',noTools:'all',resourceLoader:loader,
+ settingsManager:SettingsManager.inMemory(),sessionManager:SessionManager.inMemory(root)});
+await session.prompt('fixture');
+session.dispose();`;
+  const run = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { encoding: 'utf8', timeout: 10_000 });
+  assert.equal(run.status, virtual ? 1 : 0, run.stderr);
+  if (virtual) {
+   assert.match(run.stdout, /dispatch_thinking_error.*preInference.*true.*Virtual model/);
+   assert.doesNotMatch(run.stdout, /PROVIDER_SENT/);
+  } else assert.match(run.stdout, /PROVIDER_SENT:high/);
+ }
+});
+
+
+test("SDK startup flag validation rejects an unloaded guard", async () => {
+	const root = process.env.PI_CODING_AGENT_DIR!;
+	for (const loaded of [true, false]) {
+		const services = await createAgentSessionServices({
+			cwd: root, agentDir: root, settingsManager: SettingsManager.inMemory(),
+			modelRuntime: { refresh: async () => undefined } as any,
+			extensionFlagValues: new Map([["dispatch-thinking", "high"]]),
+			resourceLoaderOptions: { noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
+				additionalExtensionPaths: loaded ? [path.resolve("src/thinking-guard.ts")] : [] },
+		});
+		if (loaded) {
+			assert.deepEqual(services.diagnostics, []);
+			assert.equal(services.resourceLoader.getExtensions().runtime.flagValues.get("dispatch-thinking"), "high");
+		} else assert.ok(services.diagnostics.some(d => d.type === "error" && d.message.includes("--dispatch-thinking")));
 	}
 });

@@ -72,7 +72,8 @@ const commit=(f)=>{fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSy
 const blocker='## [blocker] Broken '+id+'\\n- File: src/'+id+'.txt:1\\n- Problem: wrong value\\n- Fix: correct it\\n';
 const gate=(then)=>{const f=path.join(${JSON.stringify(gates)},kind+'-'+id);const t=setInterval(()=>{if(fs.existsSync(f)){clearInterval(t);then();}},50);};
 const runaway=()=>setInterval(()=>out({type:'message_update',assistantMessageEvent:{type:'thinking_delta',contentIndex:0,delta:'!'}}),20);
-const reviewer={runaway,partial,'runaway-once':()=>earlier===0?runaway():finish('No findings.'),stubborn:()=>{process.on('SIGTERM',()=>log('stopped'));setInterval(()=>{},1000);},blank:()=>finish(''),'blank-once':()=>finish(earlier===0?'':'No findings.'),clean:()=>finish('No findings.'),block:()=>finish(blocker),'block-once':()=>finish(earlier===0?blocker:'No findings.'),unpriced:()=>finish('No findings.',{...${JSON.stringify(usage)},cost:undefined}),gate:()=>gate(()=>finish('No findings.'))};
+const refuse=()=>{out({type:'dispatch_thinking_error',preInference:true,error:'unsupported fixture thinking'});process.exit(1);};
+const reviewer={'refuse-once':()=>earlier===0?refuse():finish('No findings.'),'refuse-gate-once':()=>earlier===0?gate(refuse):finish('No findings.'),runaway,partial,'runaway-once':()=>earlier===0?runaway():finish('No findings.'),stubborn:()=>{process.on('SIGTERM',()=>log('stopped'));setInterval(()=>{},1000);},blank:()=>finish(''),'blank-once':()=>finish(earlier===0?'':'No findings.'),clean:()=>finish('No findings.'),block:()=>finish(blocker),'block-once':()=>finish(earlier===0?blocker:'No findings.'),unpriced:()=>finish('No findings.',{...${JSON.stringify(usage)},cost:undefined}),gate:()=>gate(()=>finish('No findings.'))};
 const work={ok:()=>{commit('src/'+id+'.txt');finish();},linger:()=>{commit('src/'+id+'.txt');finish();setInterval(()=>{},1000);},slow:()=>setTimeout(()=>{commit('src/'+id+'.txt');finish();},700),outside:()=>{commit('docs/'+id+'.md');finish();},hang:()=>setInterval(()=>{},1000),stubborn:()=>{process.on('SIGTERM',()=>{});setInterval(()=>{},1000);},gate:()=>gate(()=>{commit('src/'+id+'.txt');finish();})};
 setTimeout(()=>(review?reviewer:work)[mode](),300);
 `);
@@ -907,7 +908,18 @@ test('thinking wire: optional fields preserve old hashes and invalid new efforts
   assert.notEqual(policyHash(parseConfig(explicit)), policyHash(legacy));
   assert.throws(() => parseConfig({ ...explicit, batch: { ...explicit.batch, tasks: [{ ...explicit.batch.tasks[0], [field]: 'medium' }] } }), /must be high, xhigh, or max/);
  }
- assert.throws(() => parseConfig({ ...legacy, worker: { ...legacy.worker, reviewThinking: 'off' } }), /worker.reviewThinking must be high, xhigh, or max/);
+ for (const reviewThinking of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const) {
+  const prior = { ...old, batch: { ...old.batch, id: `old-${reviewThinking}` }, store: path.join(w.ws, `old-${reviewThinking}.sqlite`), worker: { ...old.worker, reviewThinking } };
+  const loaded = parseConfig(JSON.parse(JSON.stringify(prior)));
+  assert.deepEqual(loaded, prior);
+  assert.equal(policyHash(loaded), policyHash(prior));
+  const original = await openBatch(prior, agents);
+  await original.create(); await original.close();
+  const resumed = await openBatch(loaded, agents);
+  try { await resumed.attach(); assert.equal(resumed.store.identity.policyHash, policyHash(prior)); }
+  finally { await resumed.close(); }
+ }
+ assert.throws(() => parseConfig({ ...legacy, worker: { ...legacy.worker, reviewThinking: 'typo' } }), /worker.reviewThinking must be a thinking level/);
 });
 
 test('scheduler: mixed task effort and reviewer precedence reach exact argv and evidence', async () => {
@@ -948,4 +960,36 @@ test('scheduler: approved below-high config keeps its hash but blocks new launch
  assert.equal(result.attempts.length, 1); // admission reservation only
  assert.equal(result.attempts[0].status, 'reserved');
  assert.equal(policyHash(old), approved);
+});
+
+test('review: verified pre-inference refusal spends zero and permits fallback without replaying writer', async () => {
+ const w = workspace(), pi = fakePi({ 'a:review': 'refuse-once' }), gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a', thinking: 'max' }], pi.bin, gh.bin);
+ const first = await runBatch(cfg);
+ assert.deepEqual(first.report.halted, []);
+ assert.equal(first.attempts[0].review?.spentUsd, 0);
+ assert.equal(first.attempts[0].review?.failures, 1);
+ const resumed = await runBatch(cfg, 'resume');
+ assert.equal(byId(resumed.report).a.state, 'pr-ready', formatReport(resumed.report));
+ assert.deepEqual(pi.reviews('a').map(r => [r.model, r.thinking]), [['fake/reviewer', 'max'], ['fake/fallback', 'max']]);
+ assert.equal(pi.starts('a').length, 1);
+ assert.equal(resumed.report.spentUsd, 0.5);
+});
+
+test('recovery: pre-inference reviewer refusal records zero once and allows the next model', async () => {
+ const w = workspace(), pi = fakePi({ 'a:review': 'refuse-gate-once' }), gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin), file = batchFile(w, cfg);
+ const pid = await crashOwner(file, cfg, pi, 'a', 'review');
+ const identity = await processStartIdentity(pid);
+ pi.release('a', 'review');
+ await exitOf(pid, identity);
+ const adopted = await runBatch(cfg, 'resume');
+ assert.equal(adopted.attempts[0].review?.spentUsd, 0);
+ assert.deepEqual(adopted.report.halted, []);
+ assert.equal(pi.reviews('a').length, 1);
+ const next = await runBatch(cfg, 'resume');
+ assert.equal(byId(next.report).a.state, 'pr-ready', formatReport(next.report));
+ assert.equal(next.report.spentUsd, 0.5);
+ assert.deepEqual(pi.reviews('a').map(r => r.model), ['fake/reviewer', 'fake/fallback']);
+ assert.equal(pi.starts('a').length, 1);
 });

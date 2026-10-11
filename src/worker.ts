@@ -39,7 +39,7 @@ import {
 	withoutModels,
 	type RankedCandidate,
 } from "./roster.ts";
-import { resolveRequest, resolveEffective, effortLabel, type TaskThinking } from "./thinking.ts";
+import { resolveRequest, resolveEffective, effortLabel, THINKING_REFUSAL, type TaskThinking } from "./thinking.ts";
 import { exhaustedQuotaReason, quotaCandidates } from "./quota.ts";
 import { ToolHealth } from "./tool-health.ts";
 import { modelIdentity } from "./model-diversity.ts";
@@ -257,7 +257,7 @@ export async function runWorker(
 	const savedResume = options.savedResumeThinking ?? (options.resumeFile ? SessionManager.open(options.resumeFile).buildSessionContext().thinkingLevel : undefined);
 	// Resolve once before routing/fallback: another candidate cannot change the request.
 	const thinking = resolveRequest({
-		task: options.thinking, savedResume, agentConfig: selection?.candidates[0]?.thinking ?? agent.thinking,
+		task: options.thinking, savedResume, resumeSource: options.resumeFile, agentConfig: selection?.candidates[0]?.thinking ?? agent.thinking,
 	}, `Agent/roster ${agent.name}`, options.onWarning);
 	let candidates: RankedCandidate[] = override
 		? override === "inherit"
@@ -669,7 +669,7 @@ export function truncateText(
 /** Bounded effort and unsupported-candidate notes survive aggregation. */
 export function effortSummary(results: readonly WorkerResult[]): string {
 	return "Effort: " + results.map((result, i) => {
-		const unsupported = result.failedAttempts?.filter(error => error.includes("Unsupported thinking")) ?? [];
+		const unsupported = result.failedAttempts?.filter(error => error.includes(THINKING_REFUSAL)) ?? [];
 		const note = unsupported.length ? ` (${truncateText(unsupported.join("; "), 768).text})` : "";
 		return `${i + 1}. ${truncateText(result.agent, 128).text} ${effortLabel(result)}${note}`;
 	}).join("; ");

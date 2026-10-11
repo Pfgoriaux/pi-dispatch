@@ -174,7 +174,7 @@ export function parseConfig(value: unknown): PilotConfig {
 			branchPrefix: r.string(repo, "branchPrefix", "repo", (v) => v.split("/").every((part) => SAFE_ID.test(part)), "safe branch path segments"),
 		},
 		worker: {
-			...readThinking(r, worker, "reviewThinking", "worker"),
+			...(worker.reviewThinking === undefined ? {} : { reviewThinking: r.string(worker, "reviewThinking", "worker", (v) => THINKING_LEVELS.has(v), "a thinking level") as ThinkingLevel }),
 			piExecutable: r.absolute(worker, "piExecutable", "worker"),
 			...(prefixArgs ? { piPrefixArgs: prefixArgs } : {}),
 			model: r.string(worker, "model", "worker", exactModel, "an exact provider/id"),

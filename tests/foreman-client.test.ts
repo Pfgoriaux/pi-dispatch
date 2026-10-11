@@ -229,7 +229,7 @@ test("status handles pending reports and truncates long UTF-8 text", async (t) =
 	const status = batchStatus();
 	await fixture(t, (_call, res) => json(res, status));
 	const { call } = batchTool();
-	assert.equal(await call({ action: "status", id: created.id }), "Batch night-1: pending");
+	assert.equal(await call({ action: "status", id: created.id }), "Batch night-1: pending\n  api effort: writer high; reviewer high");
 	status.batch.error = "界".repeat(10_000);
 	const output = await call({ action: "status", id: created.id });
 	assert.ok(Buffer.byteLength(output) < 13_000);
@@ -327,4 +327,26 @@ test("launch blocks legacy low effort without approval or hash changes; status i
  assert.match(await call({ action: "status", id: created.id }), /stopped/);
  assert.ok(calls.every(c => c.method === "GET"));
  assert.equal(legacy.batch.policyHash, HASH);
+});
+
+test('malformed draft tasks return validation errors without posting', async t => {
+ const calls = await fixture(t, normal);
+ const { result } = batchTool();
+ for (const tasks of [{}, 'tasks', 42, null, undefined, [null]]) {
+  const denied = await result({ action: 'draft', config: { ...config, batch: { ...config.batch, tasks } } });
+  assert.equal(denied.isError, true);
+  assert.match(denied.content[0].text, /batch.tasks.*must be/);
+  assert.doesNotMatch(denied.content[0].text, /entries.*function|Cannot read/);
+ }
+ assert.equal(calls.length, 0);
+});
+
+test('durable status includes requested and observed writer and reviewer effort', async t => {
+ const value = batchStatus('running');
+ value.report = { phase: 'running', deadline: config.limits.deadline, spentUsd: 1, allowanceUsd: 20, halted: [],
+  tasks: [{ id: 'api', state: 'verified', attempts: 1, spentUsd: 1,
+   effort: { writer: 'xhigh', reviewer: 'max', effective: 'xhigh', reviewEffective: 'unknown' } }] };
+ await fixture(t, (_call, res) => json(res, value));
+ const output = await batchTool().call({ action: 'status', id: created.id });
+ assert.match(output, /writer xhigh→xhigh, reviewer max→unknown/);
 });

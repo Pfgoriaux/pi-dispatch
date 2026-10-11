@@ -39,7 +39,10 @@ function assertDraftThinking(value: unknown): void {
 	const worker = config?.worker;
 	const efforts: [string, unknown][] = [["worker.thinking", worker?.thinking]];
 	if (worker?.reviewThinking !== undefined) efforts.push(["worker.reviewThinking", worker.reviewThinking]);
-	for (const [i, task] of (config?.batch?.tasks ?? []).entries()) {
+	const tasks = config?.batch?.tasks;
+	if (!Array.isArray(tasks)) throw new Error("batch.tasks must be an array");
+	for (const [i, task] of tasks.entries()) {
+		if (!task || typeof task !== "object") throw new Error(`batch.tasks[${i}] must be an object`);
 		for (const key of ["thinking", "reviewThinking"] as const) {
 			if (task[key] !== undefined) efforts.push([`batch.tasks[${i}].${key}`, task[key]]);
 		}
@@ -105,7 +108,7 @@ const usd = (value: number | null) => value === null ? "unknown" : `$${value.toF
 function status({ batch, report }: Status): string {
 	const lines = [`Batch ${batch.id}: ${batch.state}`];
 	if (batch.error) lines.push(`Error: ${batch.error}`);
-	if (!report) return lines.join("\n");
+	if (!report) return [...lines, ...taskEfforts(batch.config)].join("\n");
 	lines.push(`Phase: ${report.phase}; deadline ${report.deadline}`,
 		`Accounted spend: ${usd(report.spentUsd)} of ${usd(report.allowanceUsd)} allowance (not a provider spending cap)`);
 	if (report.stopped) lines.push(`Stopped: ${report.stopped}`);
@@ -113,7 +116,8 @@ function status({ batch, report }: Status): string {
 	for (const task of report.tasks) {
 		const pr = task.pr ? ` PR #${task.pr.number}` : "";
 		const reason = task.reason ? ` — ${task.reason}` : "";
-		lines.push(`  ${task.state.padEnd(8)} ${task.id} (${task.attempts} attempt${task.attempts === 1 ? "" : "s"}, ${usd(task.spentUsd)})${pr}${reason}`);
+		const effort = task.effort ? ` effort writer ${task.effort.writer}→${task.effort.effective}, reviewer ${task.effort.reviewer}→${task.effort.reviewEffective}` : "";
+		lines.push(`  ${task.state.padEnd(8)} ${task.id} (${task.attempts} attempt${task.attempts === 1 ? "" : "s"}, ${usd(task.spentUsd)})${pr}${effort}${reason}`);
 	}
 	return lines.join("\n");
 }
