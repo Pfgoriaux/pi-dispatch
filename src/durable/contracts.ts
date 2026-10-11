@@ -36,8 +36,12 @@ export type AttemptStatus = "reserved" | "running" | "succeeded" | "failed" | "i
  * with known spend are retried on resume. `blocked`: its outcome is unknown, which halts the batch.
  */
 export type ReviewStatus = "running" | "done" | "failed" | "skipped" | "blocked";
+/** Requested effort plus message evidence; never inferred from argv. */
+export type EffortEvidence = { requested: string; effective: string; providerThinkingLevel?: string };
+
 /** Read-only review of one succeeded attempt, bound to its head SHA. */
 export type ReviewState = {
+	effort?: EffortEvidence;
 	headSha: string;
 	status: ReviewStatus;
 	/** 1 for the first review of this head; each retry adds one. Absent means 1. */
@@ -67,6 +71,7 @@ export type ReviewState = {
 	reason: string | null;
 };
 export type AttemptState = {
+	effort?: EffortEvidence;
 	key: string;
 	taskKey: string;
 	attempt: number;

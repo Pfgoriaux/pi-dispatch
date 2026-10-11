@@ -58,7 +58,7 @@ for (const scenario of ["short", "review-long", "final-long", "verify-failed", "
 		});
 		const registry = {
 			find: (provider: string, id: string) => ({
-				provider, id, api: "openai-completions", name: id, reasoning: false, input: ["text"],
+				provider, id, api: "openai-completions", name: id, reasoning: true, input: ["text"],
 				contextWindow: 64000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			}),
 			getRegisteredNativeProvider: () => undefined,

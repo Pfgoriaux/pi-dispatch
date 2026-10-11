@@ -15,6 +15,7 @@
  * - Pushes and pull requests go through `runEffect` (reconcile.ts).
  *   Target branches are never merged or removed.
  */
+import { isTaskThinking } from "../thinking.ts";
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -29,7 +30,7 @@ import { runPilotProc, type PilotProcResult } from "../worker-proc.ts";
 import { dirtyLines, gitThrow } from "../worktree.ts";
 import {
 	attemptKey, committedUsd, putAttempt, reviewFailures, reviewRetryable, runningWorkers,
-	type AttemptState, type ReviewState, type WorkerIdentity,
+	type AttemptState, type ReviewState, type WorkerIdentity, type EffortEvidence,
 } from "./contracts.ts";
 import { readEvidence, reportedEvidenceUsd } from "./evidence.ts";
 import {
@@ -125,7 +126,7 @@ export interface ReviewRequest {
 	readonly baseSha: string;
 }
 
-type Outcome = Pick<AttemptState, "status" | "spentUsd" | "reason"> & { headSha?: string | null };
+type Outcome = Pick<AttemptState, "status" | "spentUsd" | "reason"> & { headSha?: string | null; effort?: EffortEvidence };
 
 const MAX_TIMER_MS = 2 ** 31 - 1;
 const SAFE_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -274,11 +275,15 @@ const reviewRun = (key: string, review: Readonly<ReviewState>) =>
 	(review.tries ?? 1) === 1 ? `${key}/review` : `${key}/review-${review.tries}`;
 
 /** A finished child: settled with its answer, or a terminal outcome. */
-type Ran =
+type Ran = { thinking?: string; providerThinkingLevel?: string } & (
 	| { status: "settled"; spentUsd: number | null; text: string }
-	| { status: "blocked" | "failed"; spentUsd: number | null; reason: string; stopped?: boolean; reportedUsd?: number };
+	| { status: "blocked" | "failed"; spentUsd: number | null; reason: string; stopped?: boolean; reportedUsd?: number });
 
 async function judgeRun(result: PilotProcResult, stopped?: string): Promise<Ran> {
+	return { ...await judgeLiveRun(result, stopped), thinking: result.thinking ?? "unknown", providerThinkingLevel: result.providerThinkingLevel };
+}
+
+async function judgeLiveRun(result: PilotProcResult, stopped?: string): Promise<Ran> {
 	const spentUsd = spendOf(result);
 	// runPilotProc waited for its own child's exit; only surviving group members remain uncertain.
 	const group = result.spawned ? await remainingGroup(result.spawned.pid) : null;
@@ -307,8 +312,8 @@ async function judgeOrphan(worker: WorkerIdentity, dir: string, sessionId: strin
 	const evidence = readEvidence(dir, sessionId);
 	if (evidence.state === "ambiguous") return { status: "blocked", spentUsd: null, reason: evidence.reason };
 	if (evidence.state === "unsettled") return { status: "failed", spentUsd: null, reason: exit.stopped ?? "worker exited before it settled" };
-	if (evidence.problem) return { status: "failed", spentUsd: evidence.spentUsd, reason: evidence.problem };
-	return { status: "settled", spentUsd: evidence.spentUsd, text: evidence.text };
+	if (evidence.problem) return { status: "failed", spentUsd: evidence.spentUsd, reason: evidence.problem, thinking: evidence.thinking, providerThinkingLevel: evidence.providerThinkingLevel };
+	return { status: "settled", spentUsd: evidence.spentUsd, text: evidence.text, thinking: evidence.thinking, providerThinkingLevel: evidence.providerThinkingLevel };
 }
 
 /** Spend is known only when the child never spawned or reported `agent_settled`. */
@@ -316,6 +321,16 @@ function spendOf(result: PilotProcResult): number | null {
 	if (!result.launched) return 0;
 	if (!result.settled || !result.spendKnown) return null;
 	return result.usage?.cost.total ?? null;
+}
+
+function effortEvidence(requested: string, observed: { thinking?: string; providerThinkingLevel?: string }): EffortEvidence {
+	return { requested, effective: observed.thinking ?? "unknown",
+		...(observed.providerThinkingLevel !== undefined ? { providerThinkingLevel: observed.providerThinkingLevel } : {}),
+	};
+}
+
+function assertLaunchThinking(thinking: string): void {
+	if (!isTaskThinking(thinking)) throw new SupervisorBlockedError("New launches require high, xhigh, or max thinking; redraft and reapprove the batch. Existing workers are not changed.");
 }
 
 export class Supervisor {
@@ -344,6 +359,7 @@ export class Supervisor {
 		const remaining = limits.deadlineAt - Date.now();
 		if (!(remaining > 0 && remaining <= MAX_TIMER_MS)) throw new SupervisorBlockedError("Deadline must be in the future and within 24 days.");
 		if (limits.signal?.aborted) throw new SupervisorBlockedError("Cancelled before start.");
+		assertLaunchThinking(task.thinking);
 		const attempt = await this.#queue(() => this.#claim(task, limits));
 		let spawned = false;
 		try {
@@ -364,6 +380,7 @@ export class Supervisor {
 			key: attemptKey(task.key, plan.attempt), taskKey: task.key, attempt: plan.attempt, status: "running",
 			reservedUsd: plan.reserveUsd, spentUsd: 0, worker: null, worktree: await taskWorktreePath(worktreesRoot, featureRoot, branch),
 			branch, baseSha, headSha: null, pr: null, reason: null,
+			effort: { requested: task.thinking, effective: "unknown" },
 		};
 		await store.harness.commit((tx) => {
 			if (limits.signal?.aborted || limits.canStart?.() === false) throw new AttemptNotStartedError("Stopped before admission.");
@@ -425,6 +442,7 @@ export class Supervisor {
 			});
 			if (result.launched) markSpawned();
 			const outcome = await this.#judge(task, attempt, result, signal, stopped());
+			outcome.effort = effortEvidence(task.thinking, result);
 			return await this.#finish(attempt, outcome);
 		});
 	}
@@ -453,7 +471,7 @@ export class Supervisor {
 
 	async #judge(task: PilotTask, attempt: AttemptState, result: PilotProcResult, signal: AbortSignal, stopped?: string): Promise<Outcome> {
 		const ran = await judgeRun(result, stopped);
-		if (ran.status !== "settled") return ran;
+		if (ran.status !== "settled") return { status: ran.status, spentUsd: ran.spentUsd, reason: ran.reason };
 		return this.#verified(task, attempt, ran.spentUsd, signal);
 	}
 
@@ -510,11 +528,12 @@ export class Supervisor {
 	async #judgeAdopted(task: PilotTask, attempt: AttemptState, limits: RunLimits): Promise<Outcome> {
 		const { sessionId, dir } = this.#session(attempt.key);
 		const ran = await judgeOrphan(attempt.worker!, dir, sessionId, limits);
-		if (ran.status !== "settled") return ran;
+		const effort = effortEvidence(attempt.effort?.requested ?? "unknown", ran);
+		if (ran.status !== "settled") return { status: ran.status, spentUsd: ran.spentUsd, reason: ran.reason, effort };
 		if ((await dirtyLines(attempt.worktree!)).length > 0) {
-			return { status: "failed", spentUsd: ran.spentUsd, reason: `Worker left uncommitted edits; worktree retained at ${attempt.worktree}` };
+			return { status: "failed", spentUsd: ran.spentUsd, reason: `Worker left uncommitted edits; worktree retained at ${attempt.worktree}`, effort };
 		}
-		return this.#verified(task, attempt, ran.spentUsd, checkSignal(limits));
+		return { ...await this.#verified(task, attempt, ran.spentUsd, checkSignal(limits)), effort };
 	}
 
 	/**
@@ -530,7 +549,8 @@ export class Supervisor {
 		if (recorded && recorded.headSha !== attempt.headSha) throw new SupervisorBlockedError(`${key} has a review of another head.`);
 		if (recorded?.status === "running") return this.#adoptReview(attempt, recorded, request, limits);
 		if (recorded && !reviewRetryable(recorded)) return recorded;
-		const review = await this.#queue(() => this.#claimReview(attempt, request.model, limits));
+		assertLaunchThinking(request.thinking);
+		const review = await this.#queue(() => this.#claimReview(attempt, request, limits));
 		if (review.status !== "running") return review;
 		let spawned = false;
 		const ran = await this.#bounded(this.#reviewLimits(attempt, review, limits), async (signal, stopped) => {
@@ -567,7 +587,7 @@ export class Supervisor {
 		};
 	}
 
-	async #claimReview(attempt: AttemptState, model: string, limits: RunLimits): Promise<ReviewState> {
+	async #claimReview(attempt: AttemptState, request: ReviewRequest, limits: RunLimits): Promise<ReviewState> {
 		const { store } = this.options;
 		const plan = planReview(await store.read(), attempt.key, limits.deadlineAt);
 		const skip = "skip" in plan ? plan.skip : null;
@@ -576,7 +596,7 @@ export class Supervisor {
 			headSha: attempt.headSha!, status: skip ? "skipped" : "running", reservedUsd: "reserveUsd" in plan ? plan.reserveUsd : 0,
 			spentUsd: 0, worker: null, blocking: 0, other: 0, findings: null, reason: skip,
 			tries: before ? (before.tries ?? 1) + 1 : 1, earlierUsd: before ? (before.earlierUsd ?? 0) + before.spentUsd! : 0,
-			startedAt: Date.now(), model, failures: reviewFailures(before),
+			startedAt: Date.now(), model: request.model, effort: { requested: request.thinking, effective: "unknown" }, failures: reviewFailures(before),
 		};
 		await store.harness.commit(async (tx) => {
 			if (!skip && (limits.signal?.aborted || limits.canStart?.() === false)) throw new AttemptNotStartedError("Stopped before review.");
@@ -611,6 +631,7 @@ export class Supervisor {
 			const review = (await tx.doc(store.contracts.AttemptDoc, attempt.key, attempt)).review;
 			if (review?.status !== "running") throw new Error(`Review of ${attempt.key} is not running.`);
 			Object.assign(review, patch);
+			review.effort = effortEvidence(review.effort?.requested ?? "unknown", ran);
 			if (ran.status === "failed" && ran.stopped) {
 				review.spentUsd = Math.max(review.reservedUsd, ran.spentUsd ?? 0, ran.reportedUsd ?? 0);
 				review.reservationCharged = true;

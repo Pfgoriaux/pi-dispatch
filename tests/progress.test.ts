@@ -92,7 +92,7 @@ test("thrown worker failures preserve the last selected model and retry count", 
 		});
 		assert.equal(failed.status, "error");
 		assert.equal(failed.model, "provider/model-b");
-		assert.equal(failed.thinking, "high");
+		assert.equal(failed.thinking, "unknown");
 		assert.equal(failed.attempts, 2);
 	} finally { await progress.end(); }
 });

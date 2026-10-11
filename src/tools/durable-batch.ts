@@ -1,4 +1,5 @@
 /** durable_batch asks for user approval; Foreman owns validation and execution. */
+import { isTaskThinking } from "../thinking.ts";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ForemanClient } from "../foreman-client.ts";
@@ -8,7 +9,7 @@ import { truncateText } from "../worker.ts";
 type ForemanConfig = Omit<PilotConfig, "reviewer"> & {
 	executor?: string;
 	reviewer?: PilotConfig["reviewer"];
-	worker: PilotConfig["worker"] & { reviewModel?: string; reviewThinking?: string };
+	worker: PilotConfig["worker"] & { reviewModel?: string };
 };
 interface Draft { id: string; policyHash: string; summary: string[] }
 interface Status {
@@ -31,6 +32,28 @@ function batchRoute(id: string | undefined): string {
 
 const argv = (parts: readonly string[]) => parts.map((part) => JSON.stringify(part)).join(" ");
 const PROMPT_CHARS = 200;
+
+/** Validate effort locally without normalizing the server-owned config or hash. */
+function assertDraftThinking(value: unknown): void {
+	const config = value as Partial<ForemanConfig> | undefined;
+	const worker = config?.worker;
+	const efforts: [string, unknown][] = [["worker.thinking", worker?.thinking]];
+	if (worker?.reviewThinking !== undefined) efforts.push(["worker.reviewThinking", worker.reviewThinking]);
+	for (const [i, task] of (config?.batch?.tasks ?? []).entries()) {
+		for (const key of ["thinking", "reviewThinking"] as const) {
+			if (task[key] !== undefined) efforts.push([`batch.tasks[${i}].${key}`, task[key]]);
+		}
+	}
+	for (const [field, effort] of efforts) {
+		if (!isTaskThinking(effort)) throw new Error(`${field} must be high, xhigh, or max; redraft and reapprove the batch. Existing workers are not changed.`);
+	}
+}
+
+const taskEfforts = (config: ForemanConfig): string[] => config.batch.tasks.map((task) => {
+	const writer = task.thinking ?? config.worker.thinking;
+	const reviewer = task.reviewThinking ?? config.worker.reviewThinking ?? writer;
+	return `  ${task.id} effort: writer ${writer}; reviewer ${reviewer}`;
+});
 
 /** Everything the user approves: targets, limits, and every command and prompt the batch runs. */
 function summary(config: ForemanConfig, mode: "run" | "resume"): string[] {
@@ -67,10 +90,11 @@ function launchRefusal(ctx: ExtensionContext): string | undefined {
 async function launch(client: ForemanClient, route: string, drafts: Map<string, Draft>, ctx: ExtensionContext): Promise<string> {
 	const { batch } = await client.request<Status>("GET", route);
 	if (!["pending", "stopped"].includes(batch.state)) return `Launch refused: batch ${batch.id} is ${batch.state}.`;
+	assertDraftThinking(batch.config);
 	const cached = drafts.get(batch.id);
 	const facts = cached?.policyHash === batch.policyHash ? cached.summary : summary(batch.config, batch.state === "stopped" ? "resume" : "run");
 	const approved = await ctx.ui.confirm("Launch durable batch?", [
-		...facts, `Policy hash: ${batch.policyHash}`, "", "Workers run unattended and spend money. Approve?",
+		...facts, ...taskEfforts(batch.config), `Policy hash: ${batch.policyHash}`, "", "Workers run unattended and spend money. Approve?",
 	].join("\n"));
 	if (!approved) return `Launch declined by the user; nothing started for ${batch.id}.`;
 	return JSON.stringify(await client.request("POST", `${route}/approve`, { policyHash: batch.policyHash }));
@@ -119,9 +143,10 @@ export function registerDurableBatchTool(pi: ExtensionAPI): void {
 			try {
 				const client = new ForemanClient();
 				if (params.action === "draft") {
+					assertDraftThinking(params.config);
 					const draft = await client.request<Draft>("POST", "/batches", params.config);
 					drafts.set(draft.id, draft);
-					return text([`Batch: ${draft.id}`, `Policy hash: ${draft.policyHash}`, ...draft.summary].join("\n"));
+					return text([`Batch: ${draft.id}`, `Policy hash: ${draft.policyHash}`, ...draft.summary, ...taskEfforts(params.config as ForemanConfig)].join("\n"));
 				}
 				const route = batchRoute(params.id);
 				if (params.action === "launch") return text(await launch(client, route, drafts, ctx));

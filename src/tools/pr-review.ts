@@ -4,7 +4,7 @@
  * Five in-process workers run in parallel:
  *   1. Opus 5.5: correctness + security
  *   2. Codex Astra: correctness
- *   3. DeepSeek 4.1 Flash (medium thinking): pre-mortem, "why did this break 3 months later?"
+ *   3. DeepSeek 4.1 Flash: pre-mortem, "why did this break 3 months later?"
  *   4. slop-reviewer (balanced tier): doc rules and unneeded additions
  *   5. GLM 5.3: spec gaps, reachable edge cases, overlaps and reuse
  * A reviewer on the balanced tier then checks each finding against the code
@@ -13,6 +13,7 @@
  * Diff resolution: GitHub PR number (gh), a git rev-range, a branch compared
  * against HEAD, or the default origin base...HEAD.
  */
+import { TaskThinkingSchema, resolveRequest, effortLabel } from "../thinking.ts";
 
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -25,7 +26,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { agentRosterHelp, discoverAgents } from "../agents.ts";
 import { REVIEW_MODELS, WORKFLOW_EXCLUDED_MODELS, WORKFLOW_FALLBACK_MODELS } from "../profiles.ts";
-import { runWorker, sumWorkerUsage, truncateText } from "../worker.ts";
+import { runWorker, sumWorkerUsage, effortSummary, truncateText } from "../worker.ts";
 import { ModelDiversity } from "../model-diversity.ts";
 import { runWorkerProc } from "../worker-proc.ts";
 import { notifyDispatchDone } from "../herdr.ts";
@@ -235,7 +236,7 @@ const FIX_STEP = { agent: "writer", task: "Fix explicitly authorized findings" }
 function report(r: WorkerResult, name: string, cap: (text: string, maxBytes?: number) => string) {
 	const oneLine = (text: string) => cap(text, 300).replace(/\s+/g, " ");
 	return {
-		label: `${name} [actual model: ${r.model ?? "unavailable"}] — ${r.status}` +
+		label: `${name} [actual model: ${r.model ?? "unavailable"}; effort: ${effortLabel(r)}] — ${r.status}` +
 			(r.failedAttempts ? ` (failed attempts: ${r.failedAttempts.map(oneLine).join("; ")})` : ""),
 		text: r.status === "ok"
 			? cap(r.text || "(no output)")
@@ -261,6 +262,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 			"pr_review: fix:true requires authorization to edit/commit and a session started at a trusted, clean feature repo root; it uses the default writer. For high-risk fixes, review only, then dispatch an authorized worktree writer with model:'precise'.",
 		],
 		parameters: Type.Object({
+			thinking: Type.Optional(TaskThinkingSchema),
 			herdr: Type.Optional(
 				Type.Boolean({
 					description: "false disables Herdr viewer tabs",
@@ -292,6 +294,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 			),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const thinking = resolveRequest({ task: params.thinking });
 			const started = Date.now();
 			let truncated = false;
 			const cap = (text: string, maxBytes?: number) => {
@@ -385,7 +388,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					const runStep = (
 						index: number,
 						task: string,
-						model: { spec?: string; excludeModels?: string[]; steerByQuota?: boolean; claim?: boolean; thinking?: string },
+						model: { spec?: string; excludeModels?: string[]; steerByQuota?: boolean; claim?: boolean },
 					) =>
 						progress.run(
 							index,
@@ -395,7 +398,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 									fallbackModel: ctx.model,
 									cwd,
 									signal,
-									thinking: model.thinking ?? "high",
+									thinking,
 									modelSpec: model.spec,
 									excludeModels: [...WORKFLOW_EXCLUDED_MODELS, ...(model.excludeModels ?? [])],
 									fallbackModels: WORKFLOW_FALLBACK_MODELS,
@@ -423,7 +426,6 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 						runStep(2, preMortemTask(reviewerCtx), {
 							spec: REVIEW_MODELS.preMortem,
 							steerByQuota: true,
-							thinking: "medium",
 						}),
 						runStep(3, slopTask(reviewerCtx), {}),
 						// Outside the reviewer pool, like pre-mortem and slop.
@@ -433,7 +435,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 
 					if (signal?.aborted) {
 						return {
-							content: [{ type: "text", text: "pr_review: aborted during review." }],
+							content: [{ type: "text", text: `pr_review: aborted during review.\n\n${effortSummary(reviews)}` }],
 							details: undefined,
 							usage: sumWorkerUsage(reviews),
 						};
@@ -441,7 +443,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 
 					if (opus.status !== "ok" && astra.status !== "ok") {
 						const errors = reviews
-							.map((r, i) => `- ${STEPS[i].task}: ${cap(r.error ?? r.status)}`)
+							.map((r, i) => `- ${STEPS[i].task} (${effortLabel(r)}): ${cap(r.error ?? r.status)}`)
 							.join("\n");
 						return {
 							content: [{ type: "text", text: `pr_review: both code reviewers failed.\n${errors}` }],
@@ -503,6 +505,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 										cwd: worktree.path,
 										registry: ctx.modelRegistry,
 										requireCleanWorktree: true,
+										thinking,
 										signal,
 										model: ctx.model
 											? `${ctx.model.provider}/${ctx.model.id}`
@@ -548,7 +551,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 						content: [
 							{
 								type: "text",
-								text: `# PR review — ${label}\n\n${findings}${fixReport}`,
+								text: `# PR review — ${label}\n\n${effortSummary(items)}\n\n${findings}${fixReport}`,
 							},
 						],
 						usage: sumWorkerUsage(items),

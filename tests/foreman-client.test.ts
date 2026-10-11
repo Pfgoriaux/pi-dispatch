@@ -26,7 +26,7 @@ afterEach(() => {
 const config = {
 	batch: { id: "night-1", tasks: [{ id: "api", dependencies: [], ownedFiles: ["src/"], checks: [["npm", "test"]], prompt: "Fix the API" }] },
 	repo: { root: "/repo", baseBranch: "feat/api", branchPrefix: "batch/night-1", worktreesRoot: "/worktrees", sessionsRoot: "/sessions" },
-	worker: { piExecutable: "/bin/pi", model: "test/writer", thinking: "high", reviewModel: "test/reviewer", reviewThinking: "medium" },
+	worker: { piExecutable: "/bin/pi", model: "test/writer", thinking: "high", reviewModel: "test/reviewer", reviewThinking: "high" },
 	spend: { allowanceUsd: 20, reservations: { api: 5 } },
 	limits: { maxWorkers: 1, maxAttemptsPerTask: 2, deadline: "2026-12-01T06:00:00Z" },
 	publication: { repo: "owner/repo", remote: "origin", url: "git@example.invalid:owner/repo.git", gh: "/bin/gh" },
@@ -89,7 +89,7 @@ const normal: Handler = (call, res) => {
 test("draft forwards config unchanged and returns the server summary, ID, and hash", async (t) => {
 	const calls = await fixture(t, normal);
 	const { call, tool } = batchTool();
-	const input = { arbitrary: "server validates this, not Pi" };
+	const input = { ...config, arbitrary: "server validates other fields, not Pi" };
 	const output = await call({ action: "draft", config: input });
 	assert.equal(tool.executionMode, "sequential");
 	assert.deepEqual(calls, [{ method: "POST", route: "/batches", body: input, authorization: `Bearer ${TOKEN}` }]);
@@ -294,4 +294,37 @@ test("client bounds the entire request to 60 seconds", async (t) => {
 	await ready;
 	t.mock.timers.tick(60_000);
 	await pending;
+});
+
+test("new drafts reject below-high worker/task efforts before posting and preserve explicit fields", async t => {
+ const calls = await fixture(t, normal);
+ const { call, result } = batchTool();
+ for (const low of [
+  { ...config, worker: { ...config.worker, thinking: "off" } },
+  { ...config, worker: { ...config.worker, reviewThinking: "medium" } },
+  { ...config, batch: { ...config.batch, tasks: [{ ...config.batch.tasks[0], thinking: "low" }] } },
+  { ...config, batch: { ...config.batch, tasks: [{ ...config.batch.tasks[0], reviewThinking: "off" }] } },
+ ]) {
+  const denied = await result({ action: "draft", config: low });
+  assert.equal(denied.isError, true);
+  assert.match(denied.content[0].text, /redraft and reapprove/);
+ }
+ assert.equal(calls.length, 0);
+ const mixed = { ...config, batch: { ...config.batch, tasks: [{ ...config.batch.tasks[0], thinking: "xhigh", reviewThinking: "max" }] } };
+ assert.match(await call({ action: "draft", config: mixed }), /api effort: writer xhigh; reviewer max/);
+ assert.deepEqual(calls[0].body, mixed);
+});
+
+test("launch blocks legacy low effort without approval or hash changes; status is still available", async t => {
+ const legacy = batchStatus("stopped");
+ legacy.batch.config = { ...config, worker: { ...config.worker, thinking: "off" } };
+ const calls = await fixture(t, (_call, res) => json(res, legacy));
+ const { result, call, asked } = batchTool();
+ const denied = await result({ action: "launch", id: created.id });
+ assert.equal(denied.isError, true);
+ assert.match(denied.content[0].text, /redraft and reapprove/);
+ assert.equal(asked.length, 0);
+ assert.match(await call({ action: "status", id: created.id }), /stopped/);
+ assert.ok(calls.every(c => c.method === "GET"));
+ assert.equal(legacy.batch.policyHash, HASH);
 });

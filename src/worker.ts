@@ -39,7 +39,7 @@ import {
 	withoutModels,
 	type RankedCandidate,
 } from "./roster.ts";
-import { THINKING_LEVELS } from "./types.ts";
+import { resolveRequest, resolveEffective, effortLabel, type TaskThinking } from "./thinking.ts";
 import { exhaustedQuotaReason, quotaCandidates } from "./quota.ts";
 import { ToolHealth } from "./tool-health.ts";
 import { modelIdentity } from "./model-diversity.ts";
@@ -54,7 +54,7 @@ export interface RunWorkerOptions {
 	/** Called at message/tool boundaries so the TUI can update (never per-delta). */
 	onBoundary?: () => void;
 	/** Actual resolved model for each attempt, UI-only. */
-	onAttempt?: (model: string, thinking: string, attempt: number) => void;
+	onAttempt?: (model: string, thinking: string, attempt: number, requestedThinking?: string) => void;
 	/** Bounded activity metadata; no tool arguments/results or thinking text. */
 	onStream?: (line: string) => void;
 	/** Non-fatal capability setup warnings, UI-only. */
@@ -75,8 +75,9 @@ export interface RunWorkerOptions {
 	fallbackModels?: readonly string[];
 	/** Synchronous phase-wide claim, checked against the resolved model on every attempt. */
 	claimModel?: (spec: string) => boolean;
-	/** Thinking level forced alongside modelSpec (defaults to "high"). */
+	/** Exact requested effort, independent of model selection. */
 	thinking?: string;
+	savedResumeThinking?: string;
 }
 
 /** Where persisted worker sessions live: <agentDir>/pi-dispatch/sessions. */
@@ -88,6 +89,8 @@ export interface WorkerSessionRecord {
 	file: string;
 	agent: string;
 	savedAt: number;
+	requestedThinking?: TaskThinking;
+	model?: string;
 }
 
 function workerIndex(): {
@@ -113,13 +116,15 @@ export function recordWorkerSession(
 	sessionId: string,
 	file: string,
 	agent: string,
+	requestedThinking?: TaskThinking,
+	model?: string,
 ): void {
 	if (!file) return;
 	try {
 		const index = workerIndex();
 		fs.mkdirSync(workerSessionsDir(), { recursive: true });
 		const map = index.read();
-		map[sessionId] = { file, agent, savedAt: Date.now() };
+		map[sessionId] = { file, agent, savedAt: Date.now(), requestedThinking, model };
 		fs.writeFileSync(index.path, JSON.stringify(map, null, 2));
 	} catch {
 		// Persistence is best-effort; the dispatch itself must not fail.
@@ -221,10 +226,7 @@ export async function runWorker(
 ): Promise<WorkerResult> {
 	const started = Date.now();
 	const base = {
-		agent: agent.name,
-		task,
-		attempts: 0,
-		ms: 0,
+		agent: agent.name, task, attempts: 0, ms: 0, thinking: "unknown",
 	};
 
 	const fail = (
@@ -250,23 +252,24 @@ export async function runWorker(
 	};
 
 	const override = options.modelSpec?.trim();
-	const thinking =
-		options.thinking && THINKING_LEVELS.has(options.thinking)
-			? (options.thinking as AgentConfig["thinking"])
-			: (agent.thinking ?? "high");
-	// Explicit choices bypass rosters, including explicit parent inheritance.
+	// Explicit model choices bypass rosters, including explicit parent inheritance.
 	const selection = override ? undefined : resolveCandidates(agent, await loadRosterConfig());
+	const savedResume = options.savedResumeThinking ?? (options.resumeFile ? SessionManager.open(options.resumeFile).buildSessionContext().thinkingLevel : undefined);
+	// Resolve once before routing/fallback: another candidate cannot change the request.
+	const thinking = resolveRequest({
+		task: options.thinking, savedResume, agentConfig: selection?.candidates[0]?.thinking ?? agent.thinking,
+	}, `Agent/roster ${agent.name}`, options.onWarning);
 	let candidates: RankedCandidate[] = override
 		? override === "inherit"
 			? []
 			: withProviderFallbacks([
 					{
 						modelSpec: override,
-						thinking: thinking!,
+						thinking,
 						entry: {
 							provider: "",
 							model: override,
-							thinking: thinking!,
+							thinking,
 							weight: 1,
 						},
 					},
@@ -287,16 +290,16 @@ export async function runWorker(
 		}
 		candidates.push(...withProviderFallbacks([{
 			modelSpec: `${options.fallbackModel.provider}/${options.fallbackModel.id}`,
-			thinking: "off",
+			thinking,
 			entry: {
 				provider: options.fallbackModel.provider,
 				model: options.fallbackModel.id,
-				thinking: "off",
+				thinking,
 				weight: 1,
 			},
 		}]));
 	}
-	candidates = withLastResorts(candidates, options.fallbackModels, thinking!);
+	candidates = withLastResorts(candidates, options.fallbackModels, thinking);
 	// Last, so quota routing and parent inheritance cannot reintroduce an excluded model.
 	candidates = withoutModels(candidates, options.excludeModels);
 	if (candidates.length === 0) {
@@ -311,7 +314,7 @@ export async function runWorker(
 	const allowed = options.allowedModels?.map(modelIdentity);
 
 	for (let i = 0; i < candidates.length; i++) {
-		const candidate = candidates[i];
+		const candidate = { ...candidates[i], thinking };
 		if (options.signal?.aborted) {
 			return { ...fail("aborted", "Aborted before next attempt"), attempts, usage: aggregatedUsage };
 		}
@@ -323,6 +326,16 @@ export async function runWorker(
 			// Config error (typo'd model id), not a model-health failure: fail the
 			// candidate without poisoning cooldowns.
 			lastError ??= `No model available for candidate "${candidate.modelSpec}"`;
+			continue;
+		}
+
+		try {
+			resolveEffective(candidate.thinking, model);
+		} catch (error) {
+			lastError = (error as Error).message;
+			lastAttempt = { ...fail("error", lastError), model: `${model.provider}/${model.id}`, requestedThinking: candidate.thinking, thinking: "unknown" };
+			failedAttempts.push(lastError);
+			options.onWarning?.(lastError);
 			continue;
 		}
 
@@ -347,8 +360,9 @@ export async function runWorker(
 		attempts++;
 		options.onAttempt?.(
 			`${model.provider}/${model.id}`,
-			candidate.thinking,
+			"unknown",
 			attempts,
+			candidate.thinking,
 		);
 		let attempt: WorkerResult;
 		try {
@@ -364,14 +378,14 @@ export async function runWorker(
 			if (error instanceof LinkupSetupError) {
 				return {
 					...fail(options.signal?.aborted ? "aborted" : "error", error.message),
-					model: `${model.provider}/${model.id}`, thinking: candidate.thinking,
+					model: `${model.provider}/${model.id}`, requestedThinking: candidate.thinking, thinking: "unknown",
 					attempts, usage: aggregatedUsage,
 				};
 			}
 			attempt = {
 				...fail(options.signal?.aborted ? "aborted" : "error", String(error)),
 				model: `${model.provider}/${model.id}`,
-				thinking: candidate.thinking,
+				requestedThinking: candidate.thinking, thinking: "unknown",
 			};
 		}
 		lastAttempt = attempt;
@@ -412,7 +426,8 @@ export async function runWorker(
 			`All ${candidates.length} model candidate(s) failed for agent "${agent.name}"`,
 		usage: aggregatedUsage,
 		model: lastAttempt?.model,
-		thinking: lastAttempt?.thinking,
+		thinking: lastAttempt?.thinking ?? "unknown",
+		requestedThinking: lastAttempt?.requestedThinking ?? thinking,
 		attempts,
 		failedAttempts: failedAttempts.length > 0 ? failedAttempts : undefined,
 		ms: Date.now() - started,
@@ -437,6 +452,7 @@ async function runOneCandidate(
 		ms: 0,
 	};
 
+	let effectiveThinking = "unknown";
 	const fail = (
 		status: WorkerResult["status"],
 		error: string,
@@ -446,7 +462,7 @@ async function runOneCandidate(
 		text: "",
 		error,
 		model: candidate.modelSpec,
-		thinking: candidate.thinking,
+		requestedThinking: candidate.thinking, thinking: effectiveThinking,
 		ms: Date.now() - started,
 	});
 
@@ -505,6 +521,8 @@ async function runOneCandidate(
 		modelRuntime,
 	});
 
+	effectiveThinking = session.thinkingLevel;
+
 	// Abort propagation: parent signal -> worker session.
 	const onAbort = () => session.abort();
 	options.signal?.addEventListener("abort", onAbort, { once: true });
@@ -543,6 +561,14 @@ async function runOneCandidate(
 		options.signal?.throwIfAborted();
 		const quotaReason = exhaustedQuotaReason(`${model.provider}/${model.id}`);
 		if (quotaReason) throw new ExhaustedQuotaError(quotaReason);
+		if (session.thinkingLevel !== candidate.thinking) throw new Error(`Thinking changed before inference: requested ${candidate.thinking}, actual ${session.thinkingLevel}`);
+		// SDK construction does not append a changed explicit effort on a resumed session.
+		if (sessionManager.buildSessionContext().thinkingLevel !== session.thinkingLevel) {
+			sessionManager.appendThinkingLevelChange(session.thinkingLevel);
+		}
+		if (options.persist || options.resumeFile) {
+			recordWorkerSession(session.sessionId, session.sessionFile ?? "", agent.name, candidate.thinking as TaskThinking, `${model.provider}/${model.id}`);
+		}
 		const budget = startupTimeoutMs();
 		startupTimer = setTimeout(() => {
 			startupFailure = `worker produced no model output within ${budget / 1000}s`;
@@ -554,6 +580,7 @@ async function runOneCandidate(
 		// usage), not as a candidate error — otherwise the failover loop would
 		// retry a dead signal and stamp a bogus cooldown.
 		const abortedMidPrompt = options.signal?.aborted === true;
+		effectiveThinking = session.thinkingLevel;
 		const partialUsage = sumUsage(session.agent.state.messages);
 		const partialText = session.getLastAssistantText() ?? "";
 		clearTimeout(startupTimer);
@@ -596,16 +623,11 @@ async function runOneCandidate(
 		sessionId: session.sessionId,
 		model: `${model.provider}/${model.id}`,
 		thinking: session.thinkingLevel,
+		requestedThinking: candidate.thinking,
+		providerThinkingLevel: lastMessage?.role === "assistant" ? lastMessage.providerThinkingLevel : undefined,
 		usage: sumUsage(session.agent.state.messages),
 		ms: Date.now() - started,
 	};
-	if (options.persist) {
-		recordWorkerSession(
-			session.sessionId,
-			session.sessionFile ?? "",
-			agent.name,
-		);
-	}
 	unsubscribe();
 	options.signal?.removeEventListener("abort", onAbort);
 	session.dispose();
@@ -642,4 +664,13 @@ export function truncateText(
 		text: `${buf.subarray(0, end).toString("utf8")}\n\n[output truncated: ${buf.length - end} bytes dropped]`,
 		truncated: true,
 	};
+}
+
+/** Bounded effort and unsupported-candidate notes survive aggregation. */
+export function effortSummary(results: readonly WorkerResult[]): string {
+	return "Effort: " + results.map((result, i) => {
+		const unsupported = result.failedAttempts?.filter(error => error.includes("Unsupported thinking")) ?? [];
+		const note = unsupported.length ? ` (${truncateText(unsupported.join("; "), 768).text})` : "";
+		return `${i + 1}. ${truncateText(result.agent, 128).text} ${effortLabel(result)}${note}`;
+	}).join("; ");
 }

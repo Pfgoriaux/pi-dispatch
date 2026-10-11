@@ -10,7 +10,10 @@ export async function resolve(specifier, context, next) {
 	try {
 		return await next(specifier, context);
 	} catch (error) {
-		if (specifier !== SDK || error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
-		return { url: entry, shortCircuit: true };
+		if (error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
+		if (specifier === SDK) return { url: entry, shortCircuit: true };
+		// Thinking capability metadata must come from the same Pi installation.
+		if (specifier === "@earendil-works/pi-ai") return next(specifier, { ...context, parentURL: entry });
+		throw error;
 	}
 }

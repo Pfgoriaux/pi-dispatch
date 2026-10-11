@@ -33,7 +33,7 @@ function setup(t: TestContext, answer: (context: string) => string | undefined) 
 	});
 	const registry = {
 		find: (provider: string, id: string) => ({
-			provider, id, api: "openai-completions", name: id, reasoning: false, input: ["text"],
+			provider, id, api: "openai-completions", name: id, reasoning: true, input: ["text"],
 			contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}),
 		getRegisteredNativeProvider: () => undefined,
@@ -119,12 +119,12 @@ for (const scenario of ["success", "failure", "truncated"] as const) {
 			return;
 		}
 		if (scenario === "success") {
-			assert.equal(result.text, "combined findings");
+			assert.match(result.text, /Effort:.*high[\s\S]*combined findings$/);
 			return;
 		}
 		assert.equal(result.details.truncated, true);
 		assert.match(result.text, /\[output truncated: \d+ bytes dropped\]$/);
-		assert.equal(Buffer.byteLength(result.text.split("\n\n[output truncated:")[0]), 12 * 1024 - 2);
+		assert.equal(Buffer.byteLength(result.text.split("\n\n").slice(1).join("\n\n").split("\n\n[output truncated:")[0]), 12 * 1024 - 2);
 		assert.ok(!result.text.includes("\ufffd"), "UTF-8 code points stay intact");
 	});
 }

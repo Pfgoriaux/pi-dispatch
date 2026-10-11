@@ -144,7 +144,7 @@ test("a PR number sends its saved description to the spec reviewer and verifier 
 	});
 	const registry = {
 		find: (provider: string, id: string) => ({
-			provider, id, api: "openai-completions", name: id, reasoning: false, input: ["text"],
+			provider, id, api: "openai-completions", name: id, reasoning: true, input: ["text"],
 			contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}),
 		getRegisteredNativeProvider: () => undefined,
@@ -242,7 +242,7 @@ test("workflow credit fallbacks never duplicate models within parallel phases", 
 	});
 	const registry = {
 		find: (provider: string, id: string) => ({
-			provider, id, api: "openai-completions", name: id, reasoning: false, input: ["text"],
+			provider, id, api: "openai-completions", name: id, reasoning: true, input: ["text"],
 			contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}),
 		getRegisteredNativeProvider: () => undefined,
@@ -314,7 +314,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 	});
 	const registry = {
 		find: (provider: string, id: string) => ({
-			provider, id, api: "openai-completions", name: id, reasoning: false, input: ["text"],
+			provider, id, api: "openai-completions", name: id, reasoning: true, input: ["text"],
 			contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}),
 		getRegisteredNativeProvider: () => undefined,
@@ -345,7 +345,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 	assert.match(promptOf("PREMORTEM-TEXT"), /preventive design change or check/);
 	assert.match(promptOf("CHALLENGE-TEXT"), /DRAFT-TEXT[\s\S]*PREMORTEM-TEXT/);
 	assert.match(promptOf("FINAL-TEXT"), /DRAFT-TEXT[\s\S]*PREMORTEM-TEXT[\s\S]*CHALLENGE-TEXT/);
-	assert.match(plan.content[0].text, /^FINAL-TEXT\n\nFull report saved to: /);
+	assert.match(plan.content[0].text, /FINAL-TEXT\n\nFull report saved to: /);
 	assert.equal(plan.details.aggregated, true);
 	assert.equal(plan.usage.totalTokens, 8);
 
@@ -366,7 +366,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 
 	fail = (_provider, step) => step === "CHALLENGE-TEXT";
 	const noChallenge = await runPlan();
-	assert.match(noChallenge.content[0].text, /^FINAL-TEXT\n\nFull report saved to: /, "final plan still runs without a challenge");
+	assert.match(noChallenge.content[0].text, /FINAL-TEXT\n\nFull report saved to: /, "final plan still runs without a challenge");
 	assert.match(promptOf("FINAL-TEXT"), /DESIGN CHALLENGE:\\n\(unavailable:/);
 
 	// Anthropic and OpenAI out of credits: GLM drafts and finalizes; the challenger cannot reuse it.
@@ -413,7 +413,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 		assert.equal(unsaved.details.truncated, true);
 		assert.equal(unsaved.details.items[index].text, report(target));
 		assert.equal(unsaved.details.items[index].status, "ok", "storage failure does not rewrite model status");
-		assert.ok(unsaved.content[0].text.startsWith(target), "retain the completed report preview");
+		assert.ok(unsaved.content[0].text.split("\n\n")[1].startsWith(target), "retain the completed report preview");
 		assert.match(unsaved.content[0].text, /Report could not be saved/);
 		assert.match(unsaved.content[0].text, /\/sessions\/plan-recovery.jsonl/);
 	}

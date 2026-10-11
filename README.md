@@ -29,10 +29,10 @@ and deliverable because workers do not see the coordinator's conversation.
 ### Dispatch modes
 
 - `{ agent, task }`: one in-process worker.
-- `{ tasks: [{ agent, task, cwd?, model?, worktree? }] }`: up to 8 tasks,
+- `{ tasks: [{ agent, task, cwd?, model?, thinking?, worktree? }] }`: up to 8 tasks,
   concurrency 4. An aggregator normally combines reports; `aggregate:false`
   returns them separately.
-- `{ chain: [{ agent, task, cwd?, model? }] }`: up to 8 sequential steps;
+- `{ chain: [{ agent, task, cwd?, model?, thinking? }] }`: up to 8 sequential steps;
   `{previous}` inserts the preceding report. Chain worktrees are rejected.
 - `persist:true` retains in-process sessions under
   `<agentDir>/pi-dispatch/sessions`, with lookup records in `pi-dispatch/index.json`.
@@ -43,6 +43,30 @@ and deliverable because workers do not see the coordinator's conversation.
 Per-task `cwd` must resolve inside the session directory. A `writer` requires
 `tasks` with `worktree:true`; single/resume and non-worktree writer calls fail.
 Other roles' shell permissions remain instructions, not a filesystem sandbox.
+
+### Thinking effort
+
+All workers require at least `high`, including cheap scouts and aggregation.
+`thinking: "high" | "xhigh" | "max"` is independent of model tiers.
+Dispatch accepts it at the top level and on each `tasks[]` or `chain[]` item;
+item choices override the invocation default. The aggregator uses the invocation
+choice or `high`. `feature_plan`, `pr_review` (including its fix writer), and
+`council` apply one choice throughout the workflow.
+
+For dispatch workers, precedence is task choice → invocation choice → saved
+resume request → agent/roster configuration → `high`. Legacy below-high
+agent/roster settings are raised with a warning. Resume retains the last request
+unless overridden and records changes in the session history.
+
+Each candidate must support the exact request according to Pi capability metadata.
+Unsupported effort errors before inference and lists supported levels. Existing
+fallback chains keep the same request; non-reasoning models cannot run at `off`.
+Nothing clamps, escalates, or reruns a task to change effort. Child workers also
+load a guard that checks their actual model before provider requests.
+
+Reports show requested and effective effort. Child effective effort comes from
+assistant-message metadata, or `unknown` when it is absent; argv is not evidence
+that the requested effort ran.
 
 ### Writer handoffs
 
@@ -85,7 +109,7 @@ such as `node_modules`; install them only when authorized.
 ### Feature planning
 
 ```text
-feature_plan({ idea, focus? })
+feature_plan({ idea, focus?, thinking? })
 └─ Architect (Astra): discover and draft
    └─ Pre-mortem (DeepSeek): inspect likely failure
       └─ Challenger (Opus): independently check the design
@@ -95,7 +119,7 @@ feature_plan({ idea, focus? })
 The draft and final architect use the same model; the challenger cannot use it.
 Prompts scale detail to scope and put unresolved product decisions before tasks.
 The tool does not implement its plan. After approval, execute contracts verbatim
-with the named Executor, one repository per dispatch call.
+with the named Executor and Thinking, one repository per dispatch call.
 
 Full successful reports are saved privately under `<agentDir>/pi-dispatch/plans`.
 Previews are capped at 12 KB and include paths; later steps read full reports
@@ -111,7 +135,7 @@ a failed final step returns earlier reports. Configure defaults with
 
 ### PR review
 
-`pr_review({ pr?, intent, cwd?, fix?, herdr? })` accepts a GitHub PR number (via `gh`),
+`pr_review({ pr?, intent, cwd?, fix?, herdr?, thinking? })` accepts a GitHub PR number (via `gh`),
 revision range, branch compared with HEAD, or the default origin-base comparison.
 Invalid diffs fail before models start; empty diffs skip model calls.
 `cwd` selects the checkout to review and defaults to the session cwd. It must
@@ -122,7 +146,7 @@ review any of them.
 parallel
 ├─ Opus reviewer: correctness/security
 ├─ Astra reviewer: correctness
-├─ DeepSeek scout (medium thinking): pre-mortem
+├─ DeepSeek scout: pre-mortem
 ├─ slop-reviewer: unnecessary code/docs
 └─ GLM reviewer: spec gaps, reachable edge cases, overlaps, reuse
 reviewer → verify findings against diff and code → report
@@ -151,8 +175,8 @@ interfaces, review only, then dispatch an authorized `precise` writer.
 
 ### Council
 
-`council({ question, context?, third?, herdr? })` runs Opus, Astra and GLM 5.3
-by default; `third:"kimi-k3"` replaces GLM. All use high thinking and the advisor
+`council({ question, context?, third?, herdr?, thinking? })` runs Opus, Astra and GLM 5.3
+by default; `third:"kimi-k3"` replaces GLM. All use the invocation’s thinking (default high) and the advisor
 role, restricted to local read/search tools even when custom roles grant more.
 Configured Linkup tools remain available.
 
@@ -179,12 +203,12 @@ receives current role names and tools before each turn, not all role prompts.
 | aggregator | none | balanced |
 | writer | read, edit, write, bash | long |
 
-| Tier | Default model | Thinking |
-|---|---|---|
-| cheap | Aperture Neuralwatt DeepSeek V4.1 Flash | off |
-| balanced | Anthropic Sonnet 5.5 | high |
-| precise | Anthropic Opus 5.5 | high |
-| long | Aperture Neuralwatt Kimi K3 | high |
+| Tier | Default model |
+|---|---|
+| cheap | Aperture Neuralwatt DeepSeek V4.1 Flash |
+| balanced | Anthropic Sonnet 5.5 |
+| precise | Anthropic Opus 5.5 |
+| long | Aperture Neuralwatt Kimi K3 |
 
 Use Kimi for default coding, explicit `aperture/neuralwatt/glm-5.3` for small,
 well-bounded tasks, and `precise` for high-risk coding. Override a tier with
@@ -383,9 +407,10 @@ use `pi -ne -e ./src/index.ts` for an explicit isolated load.
 principal needs Foreman approval permission to launch a batch. Requests time
 out after 60 seconds and responses are capped at 4 MiB.
 
-- `draft` sends `config` to Foreman for validation and storage. It returns the
+- `draft` rejects below-high effort, then sends `config` unchanged to Foreman for validation and storage. It returns the
   server's batch ID, policy hash, and approval summary. No local draft is saved.
 - `launch` takes `id`, reads the batch, and accepts only `pending` or `stopped`.
+  Below-high configurations require redrafting and reapproval before launch.
   It shows the cached server summary from this Pi session, or builds one from
   the stored config after a session change. The user confirms that summary
   and policy hash in the Pi UI before the tool sends approval with that exact
@@ -421,7 +446,8 @@ installs Git packages without that SDK. In an installed copy, add
 `--import ./src/durable/host-sdk.mjs` and set `PI_DISPATCH_HOST_SDK` to the
 file URL of a Pi installation's `dist/index.js`.
 
-Every field is required, except `worker.piPrefixArgs`:
+Every field is required, except `worker.piPrefixArgs`, `worker.reviewThinking`,
+and each task’s `thinking` and `reviewThinking`:
 
 ```json
 {
@@ -444,6 +470,17 @@ Every field is required, except `worker.piPrefixArgs`:
 }
 ```
 
+- Task `thinking`, task `reviewThinking`, and `worker.reviewThinking` accept
+  `high`, `xhigh`, or `max`. Writer effort is `task.thinking ?? worker.thinking`;
+  reviewer effort is `task.reviewThinking ?? worker.reviewThinking ?? writer`.
+  Summaries show each task’s effort. The child guard enforces exact capability
+  support even when the owner has no model registry.
+- Optional effort fields stay absent unless supplied. Legacy config hashes do
+  not change; explicit effort changes require reapproval. Legacy below-high
+  `worker.thinking` still parses for recovery, but new launches fail with a
+  redraft/reapproval error. Running and recovered workers are not raised or
+  respawned. Attempt/review records retain requested effort and observed
+  assistant-message effort; missing evidence is `unknown`.
 - Validation lists every missing or invalid field and starts nothing. `maxWorkers`
   is 1–3 and `maxAttemptsPerTask` is 1–2. Every task needs a positive
   reservation, and reservations must fit the allowance. The deadline needs a
@@ -500,7 +537,7 @@ The report gives each task a state:
 | `running` / `pending` | Not settled yet |
 
 It also shows accounted spend (reported usage plus stopped-review charges), halt reasons, review
-counts, the recorded worker PID of running tasks, and short reasons. It never shows prompts, worker output, or reviewer
+counts, requested/observed effort, the recorded worker PID of running tasks, and short reasons. It never shows prompts, worker output, or reviewer
 text. Reasons are cut to one line of 240 characters.
 
 Review:

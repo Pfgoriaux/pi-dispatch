@@ -78,7 +78,7 @@ for (const first of [synthetic, neuralwatt]) {
 			});
 			const registry = {
 				find: (provider: string, id: string) => ({
-					provider, id, api: "openai-completions", name: id, reasoning: false, input: ["text"],
+					provider, id, api: "openai-completions", name: id, reasoning: true, input: ["text"],
 					contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				}),
 				getRegisteredNativeProvider: () => undefined,
@@ -124,9 +124,10 @@ process.exitCode = failed ? 1 : 0;
 		const controller = new AbortController();
 		const result = await runWorkerProc(agent, "test", {
 			cwd: dir, signal: controller.signal,
-			onAttempt: (model, thinking, attempt) => {
+			onAttempt: (model, thinking, attempt, requested) => {
 				calls.push(model);
-				assert.equal(thinking, "high");
+				assert.equal(thinking, "unknown");
+				assert.equal(requested, "high");
 				assert.equal(attempt, calls.length);
 				if (scenario === "abort") controller.abort();
 			},
@@ -216,7 +217,7 @@ function mockModels(t: { mock: typeof test.mock }, failing: string[], calls: str
 	});
 	return {
 		find: (provider: string, id: string) => ({
-			provider, id, api: "openai-completions", name: id, reasoning: false, input: ["text"],
+			provider, id, api: "openai-completions", name: id, reasoning: true, input: ["text"],
 			contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}),
 		getRegisteredNativeProvider: () => undefined,

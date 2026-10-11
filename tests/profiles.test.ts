@@ -34,7 +34,7 @@ test("bundled roles resolve to Kimi for writing and precise for planning", t => 
 		})));`,
 	], { env, encoding: "utf8" }));
 	assert.deepEqual(roles, [
-		{ name: "writer", model: "aperture/neuralwatt/kimi-k3", thinking: "high" },
-		{ name: "planner", model: "anthropic/claude-opus-5-5", thinking: "high" },
+		{ name: "writer", model: "aperture/neuralwatt/kimi-k3" },
+		{ name: "planner", model: "anthropic/claude-opus-5-5" },
 	]);
 });

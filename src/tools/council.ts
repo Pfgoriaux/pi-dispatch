@@ -1,3 +1,4 @@
+import { TaskThinkingSchema, resolveRequest, effortLabel } from "../thinking.ts";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discoverAgents } from "../agents.ts";
@@ -16,7 +17,7 @@ const THIRD = {
 function report(result: WorkerResult, requested: string) {
 	const failures = (result.failedAttempts ?? []).map(error => truncateText(error, 512));
 	const output = truncateText([
-		`## ${requested} — ${result.status} (actual: ${result.model ?? "not run"})`,
+		`## ${requested} — ${result.status} (actual: ${result.model ?? "not run"}; effort: ${effortLabel(result)})`,
 		result.status === "ok" ? result.text : `Unavailable: ${result.error ?? result.status}`,
 		failures.length ? `Failed attempts:\n${failures.map(error => error.text).join("\n")}` : "",
 	].filter(Boolean).join("\n\n"));
@@ -37,6 +38,7 @@ export function registerCouncilTool(pi: ExtensionAPI): void {
 			"council: Summarize agreement, dissent, your recommendation, and the smallest next check. Name missing voices; fewer than three successful opinions is not a full council. Do not vote by majority or repeat without new evidence.",
 		],
 		parameters: Type.Object({
+			thinking: Type.Optional(TaskThinkingSchema),
 			question: Type.String({ minLength: 1, description: "The decision or question to assess" }),
 			context: Type.Optional(Type.String({ description: "Evidence, options, paths, constraints, and applicable instructions" })),
 			third: Type.Optional(Type.Union([Type.Literal("glm-5.3"), Type.Literal("kimi-k3")], {
@@ -45,6 +47,7 @@ export function registerCouncilTool(pi: ExtensionAPI): void {
 			herdr: Type.Optional(Type.Boolean({ description: "false disables Herdr viewer tabs" })),
 		}),
 		async execute(_id, params, signal, onUpdate, ctx) {
+			const thinking = resolveRequest({ task: params.thinking });
 			if (!params.question.trim()) throw new Error("council: question must not be blank");
 			const advisor = discoverAgents(ctx).byName.get("advisor");
 			if (!advisor) throw new Error("council: advisor agent is unavailable");
@@ -74,7 +77,7 @@ export function registerCouncilTool(pi: ExtensionAPI): void {
 						fallbackModels: routes.slice(1),
 						allowedModels: routes,
 						steerByQuota: false,
-						thinking: "high",
+						thinking,
 						...progress.options(index),
 					}), signal)));
 				const successful = results.filter(result => result.status === "ok").length;

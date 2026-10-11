@@ -89,7 +89,7 @@ async function setup(admitted = { maxWorkers: 2, maxAttemptsPerTask: 2, budgetUs
  return { ...w, storePath, store, options };
 }
 
-const task = (key: string, extra: object = {}) => ({ key, prompt: 'fixture', agent, model: 'fake/model', thinking: 'off', ownedPaths: ['src/'], ...extra });
+const task = (key: string, extra: object = {}) => ({ key, prompt: 'fixture', agent, model: 'fake/model', thinking: 'high', ownedPaths: ['src/'], ...extra });
 // Ordinary adapter tests need a hang guard, not a timing assertion around Git/process startup.
 // Deadline/cancellation tests below pass their own short limits explicitly.
 const soon = (ms = 120_000) => ({ deadlineAt: Date.now() + ms });
@@ -97,7 +97,7 @@ const alive = async (pid: number, startedAt: string) => await processStartIdenti
 
 test('pilot child: explicit executable, documented session flags, stripped coordinator env, one spawn', async () => {
  const dir = fs.mkdtempSync(path.join(W, 'child-'));
- const base = { cwd: dir, model: 'fake/model', thinking: 'off', sessionId: 'pd-test-1', sessionDir: path.join(dir, 's'), onSpawn: () => {} };
+ const base = { cwd: dir, model: 'fake/model', thinking: 'high', sessionId: 'pd-test-1', sessionDir: path.join(dir, 's'), onSpawn: () => {} };
  const noFallback = fakePi(`process.exit(1);`);
  process.env.PI_DISPATCH_PI_BIN = noFallback.bin;
  for (const piExecutable of ['fake-pi', 'relative/pi', path.join(W, 'missing')]) {
@@ -141,7 +141,7 @@ test('pilot child: an unrecorded identity stops the child', async () => {
  const dir = fs.mkdtempSync(path.join(W, 'child-'));
  const hang = fakePi('setInterval(()=>{},1000);');
  const result = await runPilotProc(agent, 'x', {
-  cwd: dir, model: 'fake/model', thinking: 'off', sessionId: 'pd-test-2', sessionDir: path.join(dir, 's'), piExecutable: hang.bin,
+  cwd: dir, model: 'fake/model', thinking: 'high', sessionId: 'pd-test-2', sessionDir: path.join(dir, 's'), piExecutable: hang.bin,
   onSpawn: async () => { throw new Error('store unavailable'); },
  });
  assert.equal(result.status, 'error'); assert.match(result.error!, /not recorded: store unavailable/);
@@ -163,12 +163,12 @@ test('evidence: completion needs agent_settled and a session file that agrees wi
  write(`2026-01-01T00-00-00-000Z_${sid}.jsonl`, [header, { type: 'message', id: 'u', message: { role: 'user', content: 'x' } }]);
  assert.match((readEvidence(dir, sid) as any).reason, /0 assistant messages, event log 1/);
  write(`2026-01-01T00-00-00-000Z_${sid}.jsonl`, [header, { type: 'message', id: 'a', message: message('done') }]);
- assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: 0.25, text: 'done', problem: null });
+ assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: 0.25, text: 'done', problem: null, thinking: 'unknown', providerThinkingLevel: undefined });
  write('events.log', [header, { type: 'message_end', message: message('done') }, { type: 'agent_settled', aborted: true }]);
- assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: 0.25, text: 'done', problem: 'worker run was aborted' });
+ assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: 0.25, text: 'done', problem: 'worker run was aborted', thinking: 'unknown', providerThinkingLevel: undefined });
  write('events.log', [header, { type: 'message_end', message: message('done') }, { type: 'agent_settled', aborted: false }]);
  write(`2026-01-01T00-00-00-000Z_${sid}.jsonl`, [header, { type: 'message', id: 'a', message: message('', { ...usage, cost: undefined }) }]);
- assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: null, text: '', problem: 'blank response from child pi' });
+ assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: null, text: '', problem: 'blank response from child pi', thinking: 'unknown', providerThinkingLevel: undefined });
  write(`2026-01-01T00-00-00-000Z_${sid}.jsonl`, [{ ...header, id: 'other' }]);
  assert.match((readEvidence(dir, sid) as any).reason, /another header/);
 });

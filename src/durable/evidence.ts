@@ -20,10 +20,10 @@ import { PILOT_EVENTS_FILE, pricedUsage } from "../worker-proc.ts";
 export type Evidence =
 	| { readonly state: "ambiguous"; readonly reason: string }
 	| { readonly state: "unsettled" }
-	| { readonly state: "settled"; readonly spentUsd: number | null; readonly text: string; readonly problem: string | null };
+	| { readonly state: "settled"; readonly spentUsd: number | null; readonly text: string; readonly problem: string | null; readonly thinking: string; readonly providerThinkingLevel?: string };
 
 type Part = { type?: string; text?: string };
-type Message = { role?: string; content?: Part[] | string; usage?: Usage; stopReason?: string; errorMessage?: string };
+type Message = { role?: string; content?: Part[] | string; usage?: Usage; stopReason?: string; errorMessage?: string; thinkingLevel?: string; providerThinkingLevel?: string };
 type Line = Record<string, unknown> & { type?: string; id?: unknown; message?: Message };
 
 /** JSON lines of a file; a torn final line is dropped, any other bad line makes the file unreadable. */
@@ -93,5 +93,6 @@ export function readEvidence(dir: string, sessionId: string): Evidence {
 	const priced = assistant.length > 0 && assistant.every((m) => pricedUsage(m.usage));
 	const spentUsd = priced ? assistant.reduce((sum, m) => sum + m.usage!.cost.total, 0) : null;
 	const last = assistant.at(-1);
-	return { state: "settled", spentUsd, text: last ? textOf(last) : "", problem: settled.aborted === true ? "worker run was aborted" : finalProblem(last) };
+	const observed = events.filter((e) => e.type === "message_end" && e.message?.role === "assistant").at(-1)?.message;
+	return { state: "settled", thinking: observed?.thinkingLevel ?? "unknown", providerThinkingLevel: observed?.providerThinkingLevel, spentUsd, text: last ? textOf(last) : "", problem: settled.aborted === true ? "worker run was aborted" : finalProblem(last) };
 }

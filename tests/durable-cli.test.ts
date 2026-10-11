@@ -57,7 +57,7 @@ const id=review?/INTENT[^\\n]*\\ndo (\\S+)/.exec(prompt)[1]:/task ([^ ]+)\\. You
 const mode=${JSON.stringify(behaviour)}[review?id+':review':id]??(review?'clean':'ok');
 const read=()=>fs.existsSync(${JSON.stringify(log)})?fs.readFileSync(${JSON.stringify(log)},'utf8').split('\\n').slice(0,-1).map(l=>JSON.parse(l)):[];
 const earlier=read().filter(e=>e.event==='start'&&e.id===id&&e.kind===kind).length;
-const log=(event)=>fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({event,id,kind,pid:process.pid,at:Date.now(),prompt,model:args[args.indexOf('--model')+1]})+'\\n');
+const log=(event)=>fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({event,id,kind,pid:process.pid,at:Date.now(),prompt,thinking:args[args.indexOf('--thinking')+1],guard:args[args.indexOf('--dispatch-thinking')+1],model:args[args.indexOf('--model')+1]})+'\\n');
 log('start');
 const now=()=>new Date().toISOString();
 const file=path.join(dir,now().replace(/[:.]/g,'-')+'_'+sid+'.jsonl');
@@ -66,7 +66,7 @@ const out=(o)=>process.stdout.write(JSON.stringify(o)+'\\n');
 out({type:'session',version:3,id:sid,timestamp:now(),cwd:process.cwd()});
 entry({type:'session',version:3,id:sid,timestamp:now(),cwd:process.cwd()});
 entry({type:'message',id:'u1',parentId:null,timestamp:now(),message:{role:'user',content:[{type:'text',text:'task'}]}});
-const finish=(text='done',usage=${JSON.stringify(usage)})=>{const message={role:'assistant',content:[{type:'text',text}],stopReason:'stop',model:'fake',usage};out({type:'message_end',message});entry({type:'message',id:'a1',parentId:'u1',timestamp:now(),message});log('end');out({type:'agent_end',messages:[]});out({type:'agent_settled'});};
+const finish=(text='done',usage=${JSON.stringify(usage)})=>{const message={role:'assistant',content:[{type:'text',text}],stopReason:'stop',model:'fake',thinkingLevel:args[args.indexOf('--thinking')+1],providerThinkingLevel:'native-'+args[args.indexOf('--thinking')+1],usage};out({type:'message_end',message});entry({type:'message',id:'a1',parentId:'u1',timestamp:now(),message});log('end');out({type:'agent_end',messages:[]});out({type:'agent_settled'});};
 const partial=()=>{const message={role:'assistant',content:[{type:'text',text:'still reviewing'}],stopReason:'stop',usage:{...${JSON.stringify(usage)},cost:{total:3}}};out({type:'message_end',message});entry({type:'message',id:'a1',parentId:'u1',timestamp:now(),message});log('partial');setInterval(()=>{},1000);};
 const commit=(f)=>{fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSync(f,id+' '+Date.now()+'\\n');cp.execFileSync('git',['add','--',f]);cp.execFileSync('git',['commit','-q','-m','worker '+id]);};
 const blocker='## [blocker] Broken '+id+'\\n- File: src/'+id+'.txt:1\\n- Problem: wrong value\\n- Fix: correct it\\n';
@@ -134,15 +134,15 @@ function workspace() {
  return { ws, repo, bare };
 }
 
-type Spec = { id: string; dependencies?: string[] };
+type Spec = { id: string; dependencies?: string[]; thinking?: "high" | "xhigh" | "max"; reviewThinking?: "high" | "xhigh" | "max" };
 function config(w: ReturnType<typeof workspace>, tasks: Spec[], pi: string, gh: string, extra: { maxWorkers?: number; deadlineMs?: number; url?: string } = {}): PilotConfig {
  return {
-  batch: { id: 'b1', tasks: tasks.map((t) => ({ id: t.id, dependencies: t.dependencies ?? [], ownedFiles: ['src/'], checks: ok, prompt: `do ${t.id}` })) },
+  batch: { id: 'b1', tasks: tasks.map((t) => ({ ...t, dependencies: t.dependencies ?? [], ownedFiles: ['src/'], checks: ok, prompt: `do ${t.id}` })) },
   spend: { allowanceUsd: 10, reservations: Object.fromEntries(tasks.map((t) => [t.id, 1])) },
   limits: { maxWorkers: extra.maxWorkers ?? 3, maxAttemptsPerTask: 2, deadline: new Date(Date.now() + (extra.deadlineMs ?? 120_000)).toISOString() },
   store: path.join(w.ws, 'store.sqlite'),
   repo: { root: w.repo, baseBranch: 'feat/pilot', worktreesRoot: path.join(w.ws, '.worktrees'), sessionsRoot: path.join(w.ws, 'sessions'), branchPrefix: 'pilot/b1' },
-  worker: { piExecutable: pi, model: 'fake/model', thinking: 'off' },
+  worker: { piExecutable: pi, model: 'fake/model', thinking: 'high' },
   reviewer: { model: 'fake/reviewer', fallbacks: ['fake/fallback'] },
   publication: { remote: 'origin', url: extra.url ?? w.bare, repo: 'owner/proj', gh },
  };
@@ -550,7 +550,7 @@ test('recovery: SIGKILL while the worker runs; resume waits for it and publishes
  const w = workspace();
  const pi = fakePi({ a: 'gate' });
  const gh = fakeGh(w.bare);
- const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin);
+ const cfg = config(w, [{ id: 'a', thinking: 'xhigh', reviewThinking: 'max' }], pi.bin, gh.bin);
  const file = batchFile(w, cfg);
  const worker = await crashOwner(file, cfg, pi, 'a');
  assert.ok(await processStartIdentity(worker), 'the worker outlives its owner');
@@ -560,6 +560,13 @@ test('recovery: SIGKILL while the worker runs; resume waits for it and publishes
  pi.release('a');
  assert.equal(await resumed.exited, 0, resumed.output().stderr);
  assert.match(resumed.output().stdout, /pr-ready +a \(1 attempt, \$0\.50\)/);
+ assert.match(resumed.output().stdout, /effort writer xhigh→xhigh, reviewer max→max/);
+ const recovered = await openBatch(cfg, agents);
+ try {
+  const attempt = (await recovered.store.read()).attempts[0];
+  assert.deepEqual(attempt.effort, { requested: 'xhigh', effective: 'xhigh', providerThinkingLevel: 'native-xhigh' });
+  assert.deepEqual(attempt.review!.effort, { requested: 'max', effective: 'max', providerThinkingLevel: 'native-max' });
+ } finally { await recovered.close(); }
  assert.deepEqual([pi.starts('a').length, pi.reviews('a').length, gh.prs().length], [1, 1, 1]);
 });
 
@@ -697,11 +704,16 @@ test('cli: a configuration changed after approval starts nothing', async () => {
  const cfg = config(w, [{ id: 'a' }], pi.bin, fakeGh(w.bare).bin);
  const file = batchFile(w, cfg);
  const approved = policyHash(cfg);
- fs.writeFileSync(file, JSON.stringify({ ...cfg, spend: { ...cfg.spend, allowanceUsd: 9 } }));
- const errors: string[] = [];
- const code = await main(['run', file, `--expect-hash=${approved}`], { out: () => undefined, err: (t) => errors.push(t), json: false });
- assert.equal(code, 1); assert.match(errors.join('\n'), /changed after approval; nothing started/);
- assert.equal(fs.existsSync(cfg.store), false); assert.equal(pi.starts().length, 0);
+ for (const changed of [
+  { ...cfg, spend: { ...cfg.spend, allowanceUsd: 9 } },
+  { ...cfg, batch: { ...cfg.batch, tasks: cfg.batch.tasks.map(t => ({ ...t, thinking: 'max' })) } },
+ ]) {
+  fs.writeFileSync(file, JSON.stringify(changed));
+  const errors: string[] = [];
+  const code = await main(['run', file, `--expect-hash=${approved}`], { out: () => undefined, err: (t) => errors.push(t), json: false });
+  assert.equal(code, 1); assert.match(errors.join('\n'), /changed after approval; nothing started/);
+  assert.equal(fs.existsSync(cfg.store), false); assert.equal(pi.starts().length, 0);
+ }
 });
 
 test('review: a runaway reviewer charges its reservation, pauses unpublished, and retries on the fallback', async () => {
@@ -872,4 +884,68 @@ test('recovery: cancelling an adopted writer does not discard complete spend evi
   assert.deepEqual((await reopened.report()).halted, []);
  } finally { await reopened.close(); }
  assert.equal(pi.starts('a').length, 1);
+});
+
+test('thinking wire: optional fields preserve old hashes and invalid new efforts are rejected', async () => {
+ const w = workspace();
+ const legacy = config(w, [{ id: 'a' }], '/bin/pi', '/bin/gh');
+ const old = { ...legacy, worker: { ...legacy.worker, thinking: 'off' as const } };
+ const parsed = parseConfig(JSON.parse(JSON.stringify(old)));
+ assert.deepEqual(parsed, old);
+ assert.equal(policyHash(parsed), policyHash(old));
+ assert.equal('thinking' in parsed.batch.tasks[0], false);
+ assert.equal('reviewThinking' in parsed.worker, false);
+ const owner = await openBatch(old, agents);
+ await owner.create();
+ await owner.close();
+ const reopened = await openBatch(parsed, agents);
+ try { await reopened.attach(); assert.equal(reopened.store.identity.policyHash, policyHash(old)); }
+ finally { await reopened.close(); }
+ for (const field of ['thinking', 'reviewThinking']) {
+  const explicit = { ...legacy, batch: { ...legacy.batch, tasks: [{ ...legacy.batch.tasks[0], [field]: 'max' }] } };
+  assert.deepEqual(parseConfig(explicit), explicit);
+  assert.notEqual(policyHash(parseConfig(explicit)), policyHash(legacy));
+  assert.throws(() => parseConfig({ ...explicit, batch: { ...explicit.batch, tasks: [{ ...explicit.batch.tasks[0], [field]: 'medium' }] } }), /must be high, xhigh, or max/);
+ }
+ assert.throws(() => parseConfig({ ...legacy, worker: { ...legacy.worker, reviewThinking: 'off' } }), /worker.reviewThinking must be high, xhigh, or max/);
+});
+
+test('scheduler: mixed task effort and reviewer precedence reach exact argv and evidence', async () => {
+ const w = workspace(), pi = fakePi({}), gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a', thinking: 'xhigh', reviewThinking: 'max' }, { id: 'b', thinking: 'max' }, { id: 'c' }], pi.bin, gh.bin);
+ const withReview: PilotConfig = { ...cfg, worker: { ...cfg.worker, reviewThinking: 'xhigh' } };
+ const { report, attempts } = await runBatch(withReview);
+ assert.ok(report.tasks.every(t => t.state === 'pr-ready'), formatReport(report));
+ for (const [id, writer, reviewer] of [['a', 'xhigh', 'max'], ['b', 'max', 'xhigh'], ['c', 'high', 'xhigh']]) {
+  assert.equal(pi.starts(id)[0].thinking, writer);
+  assert.equal(pi.reviews(id)[0].thinking, reviewer);
+  const attempt = attempts.find(a => a.taskKey === id)!;
+  assert.deepEqual(attempt.effort, { requested: writer, effective: writer, providerThinkingLevel: `native-${writer}` });
+  assert.deepEqual(attempt.review!.effort, { requested: reviewer, effective: reviewer, providerThinkingLevel: `native-${reviewer}` });
+ }
+ assert.ok(pi.events().every(e => e.thinking === e.guard));
+});
+
+test('scheduler: review defaults to writer effort and retains it on reviewer fallback', async () => {
+ const w = workspace(), pi = fakePi({ 'a:review': 'blank-once' }), gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a', thinking: 'max' }], pi.bin, gh.bin);
+ const first = await runBatch(cfg);
+ assert.equal(first.attempts[0].review!.effort!.requested, 'max');
+ const resumed = await runBatch(cfg, 'resume');
+ assert.equal(resumed.report.tasks[0].state, 'pr-ready', formatReport(resumed.report));
+ assert.deepEqual(pi.reviews('a').map(r => [r.model, r.thinking]), [[cfg.reviewer.model, 'max'], [cfg.reviewer.fallbacks[0], 'max']]);
+ assert.equal(pi.starts('a').length, 1);
+});
+
+test('scheduler: approved below-high config keeps its hash but blocks new launches', async () => {
+ const w = workspace(), pi = fakePi({}), gh = fakeGh(w.bare);
+ const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin);
+ const old: PilotConfig = { ...cfg, worker: { ...cfg.worker, thinking: 'off' } };
+ const approved = policyHash(old);
+ const result = await runBatch(old);
+ assert.match(result.report.tasks[0].reason!, /redraft and reapprove/);
+ assert.equal(pi.starts().length, 0);
+ assert.equal(result.attempts.length, 1); // admission reservation only
+ assert.equal(result.attempts[0].status, 'reserved');
+ assert.equal(policyHash(old), approved);
 });

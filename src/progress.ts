@@ -1,4 +1,5 @@
 /** Shared UI-only worker lifecycle for dispatch and its workflow tools. */
+import { effortLabel } from "./thinking.ts";
 import { DispatchPanes } from "./panes.ts";
 import { DispatchSpaces, type SpaceWorker } from "./spaces.ts";
 import type { DispatchDetails, WorkerActivity, WorkerResult } from "./types.ts";
@@ -77,16 +78,17 @@ export class DispatchProgress {
 			},
 			onBoundary: () => this.emit(),
 			onStream: this.panes?.streamer(index),
-			onAttempt: (model: string, thinking: string, attempt: number) => {
+			onAttempt: (model: string, thinking: string, attempt: number, requestedThinking?: string) => {
 				const row = this.activity[index];
 				if (!row) return;
 				Object.assign(row, {
 					model,
 					thinking,
+					requestedThinking,
 					attempts: attempt,
 					status: "running",
 				});
-				this.panes?.start(index, `${model} · ${thinking} · attempt ${attempt}`);
+				this.panes?.start(index, `${model} · ${effortLabel(row)} · attempt ${attempt}`);
 				void this.spaces?.update(this.spaceWorkers());
 				this.emit(true);
 			},
@@ -111,7 +113,8 @@ export class DispatchProgress {
 				text: "",
 				error: String(error),
 				model: row?.model,
-				thinking: row?.thinking,
+				thinking: "unknown",
+				requestedThinking: row?.requestedThinking,
 				attempts: row?.attempts ?? 0,
 				ms: Date.now() - (this.starts.get(index) ?? Date.now()),
 			};
