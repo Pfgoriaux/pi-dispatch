@@ -32,8 +32,8 @@ export const HETZNER_DRAFT_GUIDANCE = [
 	"Partition by one concern per task. Keep ownedFiles small and bounded: exact files or narrow directories. Independent tasks use dependencies: [] so they run in parallel. Express real ordering only through dependencies.",
 	"No task may require a product or design decision. Keep unresolved decisions in planning and take them to the user before drafting executable tasks. Precise-tier work stays local; never draft it for Hetzner.",
 	"Hetzner workers see only their task prompt, not the plan or this conversation. Make each prompt fully self-contained. Use plain, literal language, exact identifiers and paths. Do not refer to the plan, other tasks' internals, or the conversation; never use 'as discussed'. Include required shared contracts directly.",
-	"Each task prompt must use this fixed template with these headings in this order. Replace all placeholders with concrete task facts; Checks must match that task's checks argv:",
-	HETZNER_TASK_PROMPT_TEMPLATE,
+	"Keep the template headings in order and replace all placeholders with concrete task facts; Checks must match that task's checks argv. Each Hetzner task `prompt` must use this template (these headings are for the task prompt, not for your own output):\n```markdown\n" +
+		HETZNER_TASK_PROMPT_TEMPLATE + "\n```",
 ].join("\n\n");
 
 export interface PlanContext {
@@ -115,7 +115,7 @@ export function challengerTask(c: PlanContext, draft: string, preMortem: string)
 
 const TASK_CONTRACT = [
 	"### Task N: <title>",
-	"- Executor: exactly one of `long` (default), `aperture/neuralwatt/glm-5.3` (small, well-bounded), or `precise` (auth, migrations, concurrency, shared interfaces)",
+	`- Executor: exactly one of \`long\` (default), \`${GLM_MODEL}\` (small, well-bounded), or \`precise\` (auth, migrations, concurrency, shared interfaces)`,
 	"- Executor reason: <only required for `precise`>",
 	"- Repository: <repo root the task runs in>",
 	"- Source pointers: <only essential paths the worker would otherwise miss; omit if none>",

@@ -391,6 +391,7 @@ out after 60 seconds and responses are capped at 4 MiB.
 - `launch` takes `id`, reads the batch, and accepts only `pending` or `stopped`.
   It shows the cached server summary when its policy hash matches, or builds
   one from the GET config when the cache is absent or the hash changed.
+  The confirmation adds the base SHA/source when Foreman reports them.
   The user confirms that summary and policy hash in the Pi UI before the tool
   sends approval with that exact hash. No UI/print mode and dispatch workers cannot launch. Only a reply with
   `state: "approved"` confirms launch; Foreman runs the batch, not Pi.
@@ -412,10 +413,11 @@ Reconstructed approvals show these effective settings for each task:
 - Review thinking: `worker.reviewThinking ?? worker.thinking`
 - Writer fallbacks: `task.modelFallbacks`, in order; none when omitted or empty.
 
-Foreman resolves a fresh base on first start and records its SHA/source.
-Resumes reuse that immutable base. For stacked follow-ups, use the prior task
-branch as `baseBranch` and a new `branchPrefix`. The prefix must not overlap the
-base branch or other batch prefixes: neither equal, ancestor, nor descendant.
+When Foreman reports `baseSha` and `baseSource` (Foreman PR Pfgoriaux/foreman#7),
+they are the base it resolved on first start and reuses on resume. This client
+only displays those fields. For stacked follow-ups, use the prior task branch as
+`baseBranch` and a new `branchPrefix`. The prefix must not overlap the base
+branch or other batch prefixes: neither equal, ancestor, nor descendant.
 The standalone pilot CLI below retains its own configuration and owner lifecycle.
 
 ### Drafting Hetzner tasks

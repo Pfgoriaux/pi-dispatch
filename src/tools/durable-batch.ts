@@ -69,8 +69,6 @@ function summary(config: ForemanConfig, mode: "run" | "resume"): string[] {
 		`Batch: ${config.batch.id} (${mode})`,
 		`Executor: ${config.executor ?? "local"}`,
 		`Repository: ${repo.root}, base branch ${repo.baseBranch}, branches ${repo.branchPrefix}/…`,
-		"Base: Foreman resolves a fresh base on first start and records its SHA/source; resumes reuse that immutable base.",
-		"Stacked follow-ups: use the prior task branch as baseBranch and a new branchPrefix that does not overlap the base branch or other batch prefixes (equal, ancestor, or descendant).",
 		`Worker: ${argv([worker.piExecutable, ...(worker.piPrefixArgs ?? [])])}, model ${worker.model} (${worker.thinking})`,
 		`Reviewer: ${worker.reviewModel ?? worker.model} (${worker.reviewThinking ?? worker.thinking})`,
 		`Spend allowance: $${config.spend.allowanceUsd} (stopped reviews charge reservations; not a provider cap)`,
@@ -82,6 +80,11 @@ function summary(config: ForemanConfig, mode: "run" | "resume"): string[] {
 	];
 }
 
+/** Base SHA/source lines for whichever fields the server report carries. */
+const baseFacts = (report: Status["report"]): string[] =>
+	([["Base SHA", report?.baseSha], ["Base source", report?.baseSource]] as const)
+		.flatMap(([label, value]) => value ? [`${label}: ${value}`] : []);
+
 /** Why this session may not ask for a launch, or undefined when it may. */
 function launchRefusal(ctx: ExtensionContext): string | undefined {
 	if ((Number.parseInt(process.env.PI_DISPATCH_DEPTH ?? "0", 10) || 0) > 0) return "workers cannot launch batches";
@@ -90,12 +93,12 @@ function launchRefusal(ctx: ExtensionContext): string | undefined {
 }
 
 async function launch(client: ForemanClient, route: string, drafts: Map<string, Draft>, ctx: ExtensionContext): Promise<string> {
-	const { batch } = await client.request<Status>("GET", route);
+	const { batch, report } = await client.request<Status>("GET", route);
 	if (!["pending", "stopped"].includes(batch.state)) return `Launch refused: batch ${batch.id} is ${batch.state}.`;
 	const cached = drafts.get(batch.id);
 	const facts = cached?.policyHash === batch.policyHash ? cached.summary : summary(batch.config, batch.state === "stopped" ? "resume" : "run");
 	const approved = await ctx.ui.confirm("Launch durable batch?", [
-		...facts, `Policy hash: ${batch.policyHash}`, "", "Workers run unattended and spend money. Approve?",
+		...facts, ...baseFacts(report), `Policy hash: ${batch.policyHash}`, "", "Workers run unattended and spend money. Approve?",
 	].join("\n"));
 	if (!approved) return `Launch declined by the user; nothing started for ${batch.id}.`;
 	return JSON.stringify(await client.request("POST", `${route}/approve`, { policyHash: batch.policyHash }));
@@ -109,8 +112,7 @@ function status({ batch, report }: Status): string {
 	if (!report) return lines.join("\n");
 	lines.push(`Phase: ${report.phase}; deadline ${report.deadline}`,
 		`Accounted spend: ${usd(report.spentUsd)} of ${usd(report.allowanceUsd)} allowance (not a provider spending cap)`);
-	if (report.baseSha) lines.push(`Base SHA: ${report.baseSha}`);
-	if (report.baseSource) lines.push(`Base source: ${report.baseSource}`);
+	lines.push(...baseFacts(report));
 	if (report.stopped) lines.push(`Stopped: ${report.stopped}`);
 	lines.push(...report.halted.map((reason) => `Halted: ${reason}`));
 	for (const task of report.tasks) {
@@ -132,7 +134,7 @@ export function registerDurableBatchTool(pi: ExtensionAPI): void {
 		promptSnippet: "Draft Foreman batches; launch only with user approval",
 		promptGuidelines: [
 			"durable_batch: Draft when the user asks for an unattended batch. For 3+ writer tasks on a repository Foreman serves, suggest a durable batch instead of in-session writers so work runs on the executor. Never launch without the user's request. launch shows the batch and asks the user to confirm; the Foreman coordinator runs it. Never say a batch started unless approve returned state approved.",
-			HETZNER_DRAFT_GUIDANCE,
+			"durable_batch: When drafting Foreman tasks for Hetzner, follow the drafting guidance in the durable_batch tool description.",
 		],
 		executionMode: "sequential",
 		parameters: Type.Object({

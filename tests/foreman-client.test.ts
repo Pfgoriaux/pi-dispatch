@@ -170,10 +170,28 @@ test("launch without a cached draft uses GET config and accepts stopped batches"
 	const { call, asked } = batchTool();
 	await call({ action: "launch", id: created.id });
 	for (const value of ["(resume)", HASH, "/repo", "test/writer", "test/reviewer", "$20", "2026-12-01", "src/", '"npm" "test"', "Fix the API", "/store.sqlite", "owner/repo"]) assert.ok(asked[0].includes(value), value);
-	assert.match(asked[0], /fresh base on first start.*SHA\/source; resumes reuse that immutable base/);
-	assert.match(asked[0], /prior task branch as baseBranch.*new branchPrefix.*does not overlap.*equal, ancestor, or descendant/);
+	assert.doesNotMatch(asked[0], /Base SHA|Base source|Stacked follow-ups|fresh base/);
 	assert.equal(calls.length, 2, "never re-create a batch to obtain its summary");
 	assert.equal(calls[1].route, "/batches/night-1/approve");
+});
+
+test("resume launch shows the recorded base only when the report carries it", async (t) => {
+	let report: unknown = null;
+	await fixture(t, (call, res) => {
+		if (call.method === "GET") return json(res, { ...batchStatus("stopped"), report });
+		json(res, { state: "approved" });
+	});
+	const base = { phase: "stopped", deadline: config.limits.deadline, spentUsd: 0, allowanceUsd: 20, halted: [], tasks: [] };
+	for (report of [null, base, { ...base, baseSha: null, baseSource: null }]) {
+		const { call, asked } = batchTool();
+		await call({ action: "launch", id: created.id });
+		assert.doesNotMatch(asked[0], /Base SHA|Base source/);
+	}
+	report = { ...base, baseSha: "0123456789abcdef", baseSource: "refs/remotes/origin/feat/api" };
+	const { call, asked } = batchTool();
+	await call({ action: "launch", id: created.id });
+	assert.match(asked[0], /\(resume\)/);
+	assert.match(asked[0], /Base SHA: 0123456789abcdef\nBase source: refs\/remotes\/origin\/feat\/api\nPolicy hash: sha256:server-owned-hash/);
 });
 
 test("session changes clear cached summaries", async (t) => {
