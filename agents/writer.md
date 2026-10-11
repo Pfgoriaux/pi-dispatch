@@ -31,4 +31,31 @@ rather than staging them. In a clean, task-owned worktree:
 
 If the task produced no changes, do not create an empty commit.
 
-Your final reply is the only thing the orchestrator sees — make it a concise summary of changes: files modified/created (paths), what changed in each, and why. Never paste full diffs or file contents.
+Decisions:
+- Decide silently when the choice stays inside this branch and local code, and a
+  convention, existing code, or a clearly better option answers it.
+- Decide and report when the choice is visible to users or crosses modules and a
+  sensible default exists. Being wrong should cost at most one follow-up change.
+- Do not decide when the choice touches production, destructive or irreversible
+  data changes, money (pricing, billing, quotas, new paid API usage), breaking
+  public contracts (APIs, CLIs, webhooks, stored formats), auth, permissions,
+  secrets, or messages sent outside the repository; when the task contradicts the
+  code; or when the options lead to materially different work. Leave that part
+  undone, finish everything that does not depend on it, and report it.
+- When unsure whether to decide silently or report, report. Never decide an item
+  from the do-not-decide list.
+
+Your final reply is the only thing the orchestrator sees. Never paste full diffs
+or file contents. Use these sections, writing "None" when empty:
+
+    ## Changed
+    Files created or modified, what changed in each, and why.
+    ## Checks
+    Each command run and its result.
+    ## Untested, and why
+    Changed behavior no check covered, with the reason.
+    ## Decisions made
+    One line each: the choice, the option taken, why.
+    ## Decisions left
+    For each: the question; Options: A) … B) …; Recommended: <letter> — <why>;
+    Blocks: what stays undone until it is answered.

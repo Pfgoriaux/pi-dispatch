@@ -116,7 +116,7 @@ export function architectFinalTask(c: PlanContext, draft: string, preMortem: str
 		"",
 		"# Feature plan: <short title>",
 		"## Goal",
-		"## Decisions for you (\"None\" if empty)",
+		"## Decisions for you (\"None\" if empty; for each: the question, Options: A) … B) …, Recommended: <letter> — <why>, and the tasks it changes)",
 		"## Scope (in, out, unchanged)",
 		"## Execution tasks",
 		...TASK_CONTRACT,

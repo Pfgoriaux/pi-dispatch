@@ -159,8 +159,12 @@ reviewer and the verifier read that file. It reports missing or unrequested
 behaviour, edge cases the diff makes reachable, other readers and writers of
 changed tables, statuses, events and shared functions, and new code that
 duplicates an existing equivalent. With neither `intent` nor a PR description,
-it skips the spec check. The fix writer acts only on the Findings and Slop
-sections; spec gaps, overlaps and reuse stay for the user to decide.
+it skips the spec check.
+
+Reviewers tag a finding `[decision]` when its fix is a choice between valid
+designs. The verifier lists those under Decisions, with options and a
+recommended one. The fix writer acts only on the Findings and Slop sections;
+decisions, spec gaps, overlaps and reuse stay for the user to decide.
 
 The two code reviewers cannot share a model after fallback. If both fail, review
 stops; failed verification returns unverified reports. Configure the models with
