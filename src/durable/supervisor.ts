@@ -291,6 +291,7 @@ async function judgeLiveRun(result: PilotProcResult, stopped?: string): Promise<
 		return { status: "blocked", spentUsd: null, reason: `worker ${result.spawned!.pid} or its process group is still running (${group})` };
 	}
 	if (result.launched && !result.spawned) return { status: "blocked", spentUsd: null, reason: result.error ?? "worker identity was never recorded" };
+	if (result.preInferenceRefusal) return { status: "failed", spentUsd: 0, reason: result.error ?? "pre-inference refusal" };
 	if (result.status !== "ok") {
 		const reported = result.usage?.cost.total ?? 0;
 		return {
@@ -305,13 +306,13 @@ async function judgeLiveRun(result: PilotProcResult, stopped?: string): Promise<
 async function judgeOrphan(worker: WorkerIdentity, dir: string, sessionId: string, limits: RunLimits, review?: Readonly<ReviewState>): Promise<Ran> {
 	const exit = await awaitExit(worker, limits);
 	if ("blocked" in exit) return { status: "blocked", spentUsd: null, reason: exit.blocked };
+	const evidence = readEvidence(dir, sessionId);
+	if (evidence.state === "refused") return { status: "failed", spentUsd: 0, reason: evidence.reason };
 	const stopped = exit.stopped ?? review?.stopReason;
 	if (review && stopped) {
 		return { status: "failed", spentUsd: null, reason: stopped, stopped: true, reportedUsd: reportedEvidenceUsd(dir, sessionId) };
 	}
-	const evidence = readEvidence(dir, sessionId);
 	if (evidence.state === "ambiguous") return { status: "blocked", spentUsd: null, reason: evidence.reason };
-	if (evidence.state === "refused") return { status: "failed", spentUsd: 0, reason: evidence.reason };
 	if (evidence.state === "unsettled") return { status: "failed", spentUsd: null, reason: exit.stopped ?? "worker exited before it settled" };
 	if (evidence.problem) return { status: "failed", spentUsd: evidence.spentUsd, reason: evidence.problem, thinking: evidence.thinking, providerThinkingLevel: evidence.providerThinkingLevel };
 	return { status: "settled", spentUsd: evidence.spentUsd, text: evidence.text, thinking: evidence.thinking, providerThinkingLevel: evidence.providerThinkingLevel };

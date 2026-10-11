@@ -345,8 +345,9 @@ test('durable status includes requested and observed writer and reviewer effort'
  const value = batchStatus('running');
  value.report = { phase: 'running', deadline: config.limits.deadline, spentUsd: 1, allowanceUsd: 20, halted: [],
   tasks: [{ id: 'api', state: 'verified', attempts: 1, spentUsd: 1,
-   effort: { writer: 'xhigh', reviewer: 'max', effective: 'xhigh', reviewEffective: 'unknown' } }] };
+   effort: { writer: { requested: 'xhigh', effective: 'xhigh' }, reviewer: { requested: 'max', effective: 'unknown' } } }] };
  await fixture(t, (_call, res) => json(res, value));
  const output = await batchTool().call({ action: 'status', id: created.id });
  assert.match(output, /writer xhigh→xhigh, reviewer max→unknown/);
+ assert.doesNotMatch(output, /\[object Object\]|undefined/);
 });

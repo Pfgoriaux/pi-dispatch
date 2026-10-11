@@ -47,8 +47,9 @@ test("resume retains requests through repeated override cycles and persists actu
 		const result = await tool.execute("test", { ...params, herdr: false }, undefined, undefined, ctx as any);
 		return (result.details as DispatchDetails).items[0];
 	};
-	const first = await run({ agent: "scout", task: "remember", model: "fixture/original", thinking: "xhigh", persist: true });
+	const first = await run({ tasks: [{ agent: "scout", task: "remember", model: "fixture/original" }], thinking: "xhigh", persist: true });
 	assert.equal(first.status, "ok");
+	assert.equal(first.model, "fixture/original");
 	const id = first.sessionId!;
 	for (const [override, expected] of [[undefined, "xhigh"], [undefined, "xhigh"], ["max", "max"], [undefined, "max"], ["high", "high"], [undefined, "high"]]) {
 		const resumed = await run({ resume: id, task: "continue", thinking: override });

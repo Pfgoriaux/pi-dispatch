@@ -3,7 +3,8 @@ import { isTaskThinking } from "../thinking.ts";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ForemanClient } from "../foreman-client.ts";
-import type { BatchReport, PilotConfig } from "../durable/scheduler.ts";
+import type { BatchReport, PilotConfig, TaskReport } from "../durable/scheduler.ts";
+import type { EffortEvidence } from "../durable/contracts.ts";
 import { truncateText } from "../worker.ts";
 
 type ForemanConfig = Omit<PilotConfig, "reviewer"> & {
@@ -12,9 +13,15 @@ type ForemanConfig = Omit<PilotConfig, "reviewer"> & {
 	worker: PilotConfig["worker"] & { reviewModel?: string };
 };
 interface Draft { id: string; policyHash: string; summary: string[] }
+type ForemanReport = Omit<BatchReport, "tasks"> & {
+	stopped?: string | null;
+	tasks: readonly (Omit<TaskReport, "effort"> & {
+		effort?: { writer: EffortEvidence; reviewer: EffortEvidence };
+	})[];
+};
 interface Status {
 	batch: { id: string; state: string; error: string | null; policyHash: string; config: ForemanConfig };
-	report: (BatchReport & { stopped?: string | null }) | null;
+	report: ForemanReport | null;
 }
 interface Params {
 	action: "draft" | "launch" | "status" | "stop";
@@ -116,7 +123,7 @@ function status({ batch, report }: Status): string {
 	for (const task of report.tasks) {
 		const pr = task.pr ? ` PR #${task.pr.number}` : "";
 		const reason = task.reason ? ` — ${task.reason}` : "";
-		const effort = task.effort ? ` effort writer ${task.effort.writer}→${task.effort.effective}, reviewer ${task.effort.reviewer}→${task.effort.reviewEffective}` : "";
+		const effort = task.effort ? ` effort writer ${task.effort.writer.requested}→${task.effort.writer.effective}, reviewer ${task.effort.reviewer.requested}→${task.effort.reviewer.effective}` : "";
 		lines.push(`  ${task.state.padEnd(8)} ${task.id} (${task.attempts} attempt${task.attempts === 1 ? "" : "s"}, ${usd(task.spentUsd)})${pr}${effort}${reason}`);
 	}
 	return lines.join("\n");

@@ -73,7 +73,8 @@ const blocker='## [blocker] Broken '+id+'\\n- File: src/'+id+'.txt:1\\n- Problem
 const gate=(then)=>{const f=path.join(${JSON.stringify(gates)},kind+'-'+id);const t=setInterval(()=>{if(fs.existsSync(f)){clearInterval(t);then();}},50);};
 const runaway=()=>setInterval(()=>out({type:'message_update',assistantMessageEvent:{type:'thinking_delta',contentIndex:0,delta:'!'}}),20);
 const refuse=()=>{out({type:'dispatch_thinking_error',preInference:true,error:'unsupported fixture thinking'});process.exit(1);};
-const reviewer={'refuse-once':()=>earlier===0?refuse():finish('No findings.'),'refuse-gate-once':()=>earlier===0?gate(refuse):finish('No findings.'),runaway,partial,'runaway-once':()=>earlier===0?runaway():finish('No findings.'),stubborn:()=>{process.on('SIGTERM',()=>log('stopped'));setInterval(()=>{},1000);},blank:()=>finish(''),'blank-once':()=>finish(earlier===0?'':'No findings.'),clean:()=>finish('No findings.'),block:()=>finish(blocker),'block-once':()=>finish(earlier===0?blocker:'No findings.'),unpriced:()=>finish('No findings.',{...${JSON.stringify(usage)},cost:undefined}),gate:()=>gate(()=>finish('No findings.'))};
+const refuseOnStop=()=>{process.on('SIGTERM',refuse);log('ready-to-refuse');setInterval(()=>{},1000);};
+const reviewer={'refuse-stop-once':()=>earlier===0?refuseOnStop():finish('No findings.'),'refuse-once':()=>earlier===0?refuse():finish('No findings.'),'refuse-gate-once':()=>earlier===0?gate(refuse):finish('No findings.'),runaway,partial,'runaway-once':()=>earlier===0?runaway():finish('No findings.'),stubborn:()=>{process.on('SIGTERM',()=>log('stopped'));setInterval(()=>{},1000);},blank:()=>finish(''),'blank-once':()=>finish(earlier===0?'':'No findings.'),clean:()=>finish('No findings.'),block:()=>finish(blocker),'block-once':()=>finish(earlier===0?blocker:'No findings.'),unpriced:()=>finish('No findings.',{...${JSON.stringify(usage)},cost:undefined}),gate:()=>gate(()=>finish('No findings.'))};
 const work={ok:()=>{commit('src/'+id+'.txt');finish();},linger:()=>{commit('src/'+id+'.txt');finish();setInterval(()=>{},1000);},slow:()=>setTimeout(()=>{commit('src/'+id+'.txt');finish();},700),outside:()=>{commit('docs/'+id+'.md');finish();},hang:()=>setInterval(()=>{},1000),stubborn:()=>{process.on('SIGTERM',()=>{});setInterval(()=>{},1000);},gate:()=>gate(()=>{commit('src/'+id+'.txt');finish();})};
 setTimeout(()=>(review?reviewer:work)[mode](),300);
 `);
@@ -841,6 +842,7 @@ test('review: live and adopted cancellations retain reported costs above the res
   assert.equal(result.report.spentUsd, 3.25, formatReport(result.report));
   assert.deepEqual(result.report.halted, []);
   assert.equal(result.attempts[0].review?.spentUsd, 3);
+  assert.equal(result.attempts[0].review?.reservationCharged, true, 'unproven stopped reviews still charge the reservation');
   assert.deepEqual([pi.reviews('a').length, gh.prs().length], [1, 0]);
  }
 });
@@ -976,15 +978,23 @@ test('review: verified pre-inference refusal spends zero and permits fallback wi
  assert.equal(resumed.report.spentUsd, 0.5);
 });
 
-test('recovery: pre-inference reviewer refusal records zero once and allows the next model', async () => {
+test('recovery: pre-inference reviewer refusal overrides a recorded stop and records zero once', async () => {
  const w = workspace(), pi = fakePi({ 'a:review': 'refuse-gate-once' }), gh = fakeGh(w.bare);
  const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin), file = batchFile(w, cfg);
  const pid = await crashOwner(file, cfg, pi, 'a', 'review');
  const identity = await processStartIdentity(pid);
  pi.release('a', 'review');
  await exitOf(pid, identity);
+ const reopened = await openBatch(cfg, agents);
+ try {
+  const attempt = (await reopened.store.read()).attempts[0];
+  await reopened.store.harness.commit(async tx => {
+   (await tx.doc(reopened.store.contracts.AttemptDoc, attempt.key, attempt)).review!.stopReason = 'cancelled';
+  }, reopened.store.context);
+ } finally { await reopened.close(); }
  const adopted = await runBatch(cfg, 'resume');
  assert.equal(adopted.attempts[0].review?.spentUsd, 0);
+ assert.notEqual(adopted.attempts[0].review?.reservationCharged, true);
  assert.deepEqual(adopted.report.halted, []);
  assert.equal(pi.reviews('a').length, 1);
  const next = await runBatch(cfg, 'resume');
@@ -993,3 +1003,50 @@ test('recovery: pre-inference reviewer refusal records zero once and allows the 
  assert.deepEqual(pi.reviews('a').map(r => r.model), ['fake/reviewer', 'fake/fallback']);
  assert.equal(pi.starts('a').length, 1);
 });
+
+for (const recovered of [false, true]) {
+ for (const stop of ['cancelled', 'reviewer timed out']) {
+  test(`review: ${recovered ? 'recovered' : 'live'} ${stop} racing a verified refusal spends zero`, async () => {
+   const w = workspace(), pi = fakePi({ 'a:review': 'refuse-stop-once' }), gh = fakeGh(w.bare);
+   const cfg = config(w, [{ id: 'a' }], pi.bin, gh.bin);
+   const ready = () => pi.events().some(e => e.event === 'ready-to-refuse');
+   const cancelled = stop === 'cancelled';
+   let review;
+   if (recovered) {
+    const pid = await crashOwner(batchFile(w, cfg), cfg, pi, 'a', 'review');
+    await waitFor(ready);
+    const reopened = await openBatch(cfg, agents);
+    try {
+     const attempt = (await reopened.store.read()).attempts[0];
+     review = await supervisorFor(cfg, reopened, attempt.branch!).review(attempt.key, {
+      agent: agents.reviewer, model: cfg.reviewer.model, thinking: 'high', intent: 'do a', baseSha: attempt.baseSha!,
+     }, { deadlineAt: cancelled ? Date.parse(cfg.limits.deadline) : Date.now(), signal: cancelled ? AbortSignal.abort() : undefined });
+     assert.equal(await processStartIdentity(pid), null, 'refusal is settled only after the reviewer exits');
+    } finally { await reopened.close(); }
+   } else {
+    const owner = await openBatch(cfg, { ...agents, reviewTimeLimitMs: cancelled ? 60_000 : 3000 });
+    try {
+     await owner.create();
+     const running = owner.execute();
+     await waitFor(ready);
+     if (cancelled) await owner.stop(true);
+     await running;
+     review = (await owner.store.read()).attempts[0].review!;
+     assert.equal(await processStartIdentity(pi.reviews('a')[0].pid), null);
+    } finally { await owner.close(); }
+   }
+   assert.equal(review.stopReason, stop, 'the stop raced with refusal');
+   assert.equal(review.status, 'failed');
+   assert.equal(review.spentUsd, 0);
+   assert.equal(review.failures, 1);
+   assert.notEqual(review.reservationCharged, true);
+   assert.match(review.reason!, /pre-inference refusal|unsupported fixture thinking/);
+   assert.equal(pi.reviews('a').length, 1);
+   const next = await runBatch(cfg, 'resume');
+   assert.equal(byId(next.report).a.state, 'pr-ready', formatReport(next.report));
+   assert.equal(next.report.spentUsd, 0.5);
+   assert.deepEqual(pi.reviews('a').map(r => r.model), ['fake/reviewer', 'fake/fallback']);
+   assert.equal(pi.starts('a').length, 1);
+  });
+ }
+}
