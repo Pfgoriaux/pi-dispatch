@@ -25,7 +25,7 @@ const agent: AgentConfig = {
 	source: "bundled",
 	filePath: "test",
 };
-const model = { provider: "fake", id: "model" } as Model<Api>;
+const model = { provider: "fake", id: "model", reasoning: true } as Model<Api>;
 const registry = { find: () => model } as unknown as ModelRegistry;
 
 test("explicit inherit bypasses roster and selects parent without a live request", async () => {
@@ -45,16 +45,17 @@ test("explicit inherit bypasses roster and selects parent without a live request
 	assert.equal(result.status, "aborted");
 });
 
-test("explicit model retains agent effort and reports resolved identity", async () => {
+test("explicit model raises legacy effort and reports resolved identity", async () => {
 	const controller = new AbortController();
 	await runWorker(agent, "test", {
 		registry,
 		fallbackModel: model,
 		modelSpec: "fake/model",
 		signal: controller.signal,
-		onAttempt: (selected, thinking, attempt) => {
+		onAttempt: (selected, thinking, attempt, requested) => {
 			assert.equal(selected, "fake/model");
-			assert.equal(thinking, "low");
+			assert.equal(thinking, "unknown");
+			assert.equal(requested, "high");
 			assert.equal(attempt, 1);
 			controller.abort();
 		},
@@ -140,9 +141,9 @@ for (const source of ["explicit", "inherit", "frontmatter"] as const) {
 		t.mock.method(ModelRuntime, "create", async () => { throw new Error("402 payment_required"); });
 		const controller = new AbortController();
 		const attempts: string[] = [];
-		const parent = { provider: "aperture", id: "neuralwatt/kimi-k3" } as Model<Api>;
+		const parent = { provider: "aperture", id: "neuralwatt/kimi-k3", reasoning: true } as Model<Api>;
 		const result = await runWorker({ ...agent, name: "fallback-test-agent", model: "aperture/neuralwatt/kimi-k3" }, "test", {
-			registry: { find: (provider: string, id: string) => ({ provider, id }) } as ModelRegistry,
+			registry: { find: (provider: string, id: string) => ({ provider, id, reasoning: true }) } as ModelRegistry,
 			fallbackModel: parent,
 			modelSpec: source === "explicit" ? "aperture/neuralwatt/kimi-k3" : source === "inherit" ? "inherit" : undefined,
 			signal: controller.signal,
@@ -161,7 +162,7 @@ for (const source of ["explicit", "inherit", "frontmatter"] as const) {
 test("exhaustion preserves billing error and actual model when fallback cannot resolve", async (t) => {
 	t.mock.method(ModelRuntime, "create", async () => { throw new Error("402 payment_required"); });
 	const result = await runWorker(agent, "test", {
-		registry: { find: (provider: string, id: string) => provider === "aperture" && id === "neuralwatt/kimi-k3" ? { provider, id } : undefined } as ModelRegistry,
+		registry: { find: (provider: string, id: string) => provider === "aperture" && id === "neuralwatt/kimi-k3" ? { provider, id, reasoning: true } : undefined } as ModelRegistry,
 		fallbackModel: undefined,
 		modelSpec: "aperture/neuralwatt/kimi-k3",
 	});
@@ -207,6 +208,8 @@ console.log(JSON.stringify({type: "message_end", message: {role: "assistant", co
 		thinking: "high",
 	});
 	assert.equal(result.status, "ok");
+	assert.equal(result.thinking, "unknown");
+	assert.equal(result.requestedThinking, "high");
 	assert.ok(logs.includes("tool_execution_end: read [error] 1.2s"));
 	assert.ok(logs.includes("tool_execution_end: [unregistered tool] [error]"));
 	assert.ok(!logs.join("\n").includes("private"));

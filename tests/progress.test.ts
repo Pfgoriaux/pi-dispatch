@@ -48,6 +48,7 @@ test("queued, selected model, failover and completion are visible without expans
 		(update) => updates.push(update),
 	);
 	assert.equal(updates[0].details.activity?.[0].status, "queued");
+	assert.doesNotMatch(renderDispatchResult(updates[0], { expanded: false }, theme, {}).render(120).join("\n"), /unknown/);
 	progress.start(0);
 	progress.options(0).onAttempt("vendor/model-a", "low", 1);
 	const first = updates.at(-1)!;
@@ -92,7 +93,7 @@ test("thrown worker failures preserve the last selected model and retry count", 
 		});
 		assert.equal(failed.status, "error");
 		assert.equal(failed.model, "provider/model-b");
-		assert.equal(failed.thinking, "high");
+		assert.equal(failed.thinking, "unknown");
 		assert.equal(failed.attempts, 2);
 	} finally { await progress.end(); }
 });

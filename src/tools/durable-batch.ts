@@ -1,27 +1,35 @@
 /** durable_batch asks for user approval; Foreman owns validation and execution. */
+import { isTaskThinking } from "../thinking.ts";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ForemanClient } from "../foreman-client.ts";
-import type { BatchReport, BatchTaskSpec, PilotConfig } from "../durable/scheduler.ts";
-import type { ThinkingLevel } from "../types.ts";
+import type { BatchReport, BatchTaskSpec, PilotConfig, TaskReport } from "../durable/scheduler.ts";
+import type { EffortEvidence } from "../durable/contracts.ts";
 import { truncateText } from "../worker.ts";
 import { HETZNER_DRAFT_GUIDANCE } from "./feature-plan-prompts.ts";
 
 type ForemanTask = BatchTaskSpec & {
 	model?: string;
-	thinking?: ThinkingLevel;
 	reviewModel?: string;
 	modelFallbacks?: readonly string[];
 };
 type ForemanConfig = Omit<PilotConfig, "reviewer" | "batch" | "worker"> & {
 	executor?: string;
 	batch: { id: string; tasks: readonly ForemanTask[] };
-	worker: PilotConfig["worker"] & { reviewModel?: string; reviewThinking?: ThinkingLevel };
+	worker: PilotConfig["worker"] & { reviewModel?: string };
 };
 interface Draft { id: string; policyHash: string; summary: string[] }
+type ForemanReport = Omit<BatchReport, "tasks"> & {
+	stopped?: string | null;
+	baseSha?: string | null;
+	baseSource?: string | null;
+	tasks: readonly (Omit<TaskReport, "effort"> & {
+		effort?: { writer: EffortEvidence; reviewer: EffortEvidence };
+	})[];
+};
 interface Status {
 	batch: { id: string; state: string; error: string | null; policyHash: string; config: ForemanConfig };
-	report: (BatchReport & { stopped?: string | null; baseSha?: string | null; baseSource?: string | null }) | null;
+	report: ForemanReport | null;
 }
 interface Params {
 	action: "draft" | "launch" | "status" | "stop";
@@ -51,11 +59,38 @@ function batchRoute(id: string | undefined): string {
 const argv = (parts: readonly string[]) => parts.map((part) => JSON.stringify(part)).join(" ");
 const PROMPT_CHARS = 200;
 
+/** Validate effort locally without normalizing the server-owned config or hash. */
+function assertDraftThinking(value: unknown): void {
+	const config = value as Partial<ForemanConfig> | undefined;
+	const worker = config?.worker;
+	const efforts: [string, unknown][] = [["worker.thinking", worker?.thinking]];
+	if (worker?.reviewThinking !== undefined) efforts.push(["worker.reviewThinking", worker.reviewThinking]);
+	const tasks = config?.batch?.tasks;
+	if (!Array.isArray(tasks)) throw new Error("batch.tasks must be an array");
+	for (const [i, task] of tasks.entries()) {
+		if (!task || typeof task !== "object") throw new Error(`batch.tasks[${i}] must be an object`);
+		for (const key of ["thinking", "reviewThinking"] as const) {
+			if (task[key] !== undefined) efforts.push([`batch.tasks[${i}].${key}`, task[key]]);
+		}
+	}
+	for (const [field, effort] of efforts) {
+		if (!isTaskThinking(effort)) throw new Error(`${field} must be high, xhigh, or max; redraft and reapprove the batch. Existing workers are not changed.`);
+	}
+}
+
+/** Foreman's effort formula: writer = task ?? worker; reviewer = task review ?? worker review ?? writer. */
+const writerThinking = (task: ForemanTask, worker: ForemanConfig["worker"]) => task.thinking ?? worker.thinking;
+const reviewerThinking = (task: ForemanTask, worker: ForemanConfig["worker"]) =>
+	task.reviewThinking ?? worker.reviewThinking ?? writerThinking(task, worker);
+
+const taskEfforts = (config: ForemanConfig): string[] => config.batch.tasks.map((task) =>
+	`  ${task.id} effort: writer ${writerThinking(task, config.worker)}; reviewer ${reviewerThinking(task, config.worker)}`);
+
 function taskSummary(task: ForemanTask, worker: ForemanConfig["worker"]): string[] {
 	return [
 		`- ${task.id}${task.dependencies.length ? ` (after ${task.dependencies.join(", ")})` : ""}; owns ${task.ownedFiles.join(", ")}`,
-		`  Writer: ${task.model ?? worker.model} (${task.thinking ?? worker.thinking})`,
-		`  Reviewer: ${task.reviewModel ?? worker.reviewModel ?? worker.model} (${worker.reviewThinking ?? worker.thinking})`,
+		`  Writer: ${task.model ?? worker.model} (${writerThinking(task, worker)})`,
+		`  Reviewer: ${task.reviewModel ?? worker.reviewModel ?? worker.model} (${reviewerThinking(task, worker)})`,
 		`  Writer fallbacks (ordered): ${task.modelFallbacks?.join(" -> ") || "none"}`,
 		`  checks: ${task.checks.map(argv).join("; ")}`,
 		`  prompt: ${Array.from(task.prompt.replace(/\s+/g, " ")).slice(0, PROMPT_CHARS).join("")}${task.prompt.length > PROMPT_CHARS ? "…" : ""}`,
@@ -95,10 +130,11 @@ function launchRefusal(ctx: ExtensionContext): string | undefined {
 async function launch(client: ForemanClient, route: string, drafts: Map<string, Draft>, ctx: ExtensionContext): Promise<string> {
 	const { batch, report } = await client.request<Status>("GET", route);
 	if (!["pending", "stopped"].includes(batch.state)) return `Launch refused: batch ${batch.id} is ${batch.state}.`;
+	assertDraftThinking(batch.config);
 	const cached = drafts.get(batch.id);
 	const facts = cached?.policyHash === batch.policyHash ? cached.summary : summary(batch.config, batch.state === "stopped" ? "resume" : "run");
 	const approved = await ctx.ui.confirm("Launch durable batch?", [
-		...facts, ...baseFacts(report), `Policy hash: ${batch.policyHash}`, "", "Workers run unattended and spend money. Approve?",
+		...facts, ...taskEfforts(batch.config), ...baseFacts(report), `Policy hash: ${batch.policyHash}`, "", "Workers run unattended and spend money. Approve?",
 	].join("\n"));
 	if (!approved) return `Launch declined by the user; nothing started for ${batch.id}.`;
 	return JSON.stringify(await client.request("POST", `${route}/approve`, { policyHash: batch.policyHash }));
@@ -109,7 +145,7 @@ const usd = (value: number | null) => value === null ? "unknown" : `$${value.toF
 function status({ batch, report }: Status): string {
 	const lines = [`Batch ${batch.id}: ${batch.state}`];
 	if (batch.error) lines.push(`Error: ${batch.error}`);
-	if (!report) return lines.join("\n");
+	if (!report) return [...lines, ...taskEfforts(batch.config)].join("\n");
 	lines.push(`Phase: ${report.phase}; deadline ${report.deadline}`,
 		`Accounted spend: ${usd(report.spentUsd)} of ${usd(report.allowanceUsd)} allowance (not a provider spending cap)`);
 	lines.push(...baseFacts(report));
@@ -118,7 +154,8 @@ function status({ batch, report }: Status): string {
 	for (const task of report.tasks) {
 		const pr = task.pr ? ` PR #${task.pr.number}` : "";
 		const reason = task.reason ? ` — ${task.reason}` : "";
-		lines.push(`  ${task.state.padEnd(8)} ${task.id} (${task.attempts} attempt${task.attempts === 1 ? "" : "s"}, ${usd(task.spentUsd)})${pr}${reason}`);
+		const effort = task.effort ? ` effort writer ${task.effort.writer.requested}→${task.effort.writer.effective}, reviewer ${task.effort.reviewer.requested}→${task.effort.reviewer.effective}` : "";
+		lines.push(`  ${task.state.padEnd(8)} ${task.id} (${task.attempts} attempt${task.attempts === 1 ? "" : "s"}, ${usd(task.spentUsd)})${pr}${effort}${reason}`);
 	}
 	return lines.join("\n");
 }
@@ -150,9 +187,10 @@ export function registerDurableBatchTool(pi: ExtensionAPI): void {
 				const config = params.action === "draft" ? normalizeDraftConfig(params.config) : undefined;
 				const client = new ForemanClient();
 				if (params.action === "draft") {
+					assertDraftThinking(config);
 					const draft = await client.request<Draft>("POST", "/batches", config);
 					drafts.set(draft.id, draft);
-					return text([`Batch: ${draft.id}`, `Policy hash: ${draft.policyHash}`, ...draft.summary].join("\n"));
+					return text([`Batch: ${draft.id}`, `Policy hash: ${draft.policyHash}`, ...draft.summary, ...taskEfforts(config as ForemanConfig)].join("\n"));
 				}
 				const route = batchRoute(params.id);
 				if (params.action === "launch") return text(await launch(client, route, drafts, ctx));

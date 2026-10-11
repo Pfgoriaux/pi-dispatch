@@ -9,6 +9,7 @@ import {
 	HETZNER_DRAFT_GUIDANCE, HETZNER_MODEL_GUIDANCE, HETZNER_TASK_PROMPT_TEMPLATE,
 } from "../src/tools/feature-plan-prompts.ts";
 import { registerDurableBatchTool } from "../src/tools/durable-batch.ts";
+import { isTaskThinking } from "../src/thinking.ts";
 import { isolateAgentDir } from "./isolated-agent-dir.ts";
 
 isolateAgentDir();
@@ -63,6 +64,7 @@ test("planning prompts scale contracts to scope without repeating loaded writer 
 	const final = architectFinalTask(context, "draft", "risk", "challenge");
 	assert.match(draft, /small feature usually needs one or two/);
 	assert.match(final, /not a fixed word limit/);
+	assert.match(final, /^## Decisions for you\nWrite "None" if empty;[^\n]*Options: A\) … B\) …, Recommended: <letter> — <why>, and the tasks it changes\.$/m);
 	assert.match(final, /Do not repeat AGENTS.md instructions or reminders/);
 	assert.match(final, /not separate workers/);
 	assert.match(final, /Read applicable AGENTS.md instructions first/, "in-process planners disable context loading");
@@ -83,6 +85,11 @@ test("tool and architect prompts share the exact self-contained Hetzner drafting
 		assert.doesNotMatch(text, /synthetic\/hf:zai-org\/GLM/);
 	}
 	assert.ok(!tool.promptGuidelines.join("\n").includes(HETZNER_DRAFT_GUIDANCE));
+	const thinking = HETZNER_MODEL_GUIDANCE.split("\n").find((line) => line.startsWith("Writer and reviewer thinking"));
+	assert.match(thinking ?? "", /must be `high` or above/);
+	const levels = [...(thinking ?? "").matchAll(/`([a-z]+)`/g)].map((match) => match[1]);
+	assert.deepEqual(levels, ["high", "high", "xhigh", "max"]);
+	assert.ok(levels.every(isTaskThinking), "drafted efforts pass the below-high guard");
 	assert.match(draft, /```\nReturn a concise draft design \(Markdown; omit empty sections\):\n## Goal\n## Scope/);
 	assert.match(final, /# Feature plan: <short title>\n## Goal\n## Decisions for you/);
 });
@@ -92,4 +99,5 @@ test("README documents the shared prompt template and literal model table", asyn
 	assert.ok(readme.includes(HETZNER_TASK_PROMPT_TEMPLATE));
 	const table = HETZNER_MODEL_GUIDANCE.split("\n").filter((line) => line.startsWith("|"));
 	for (const row of table) assert.ok(readme.includes(row), row);
+	assert.match(readme, /Writer and reviewer thinking\s+must be `high` or above/);
 });

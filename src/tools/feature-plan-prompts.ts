@@ -24,6 +24,7 @@ export const HETZNER_MODEL_GUIDANCE = `| Executor contract | Task model | Task r
 | Small/bounded GLM | \`${GLM_MODEL}\` | \`${KIMI_MODEL}\` | None |
 | \`precise\` | Keep local; do not draft for Hetzner | — | — |
 Set limits.maxAttemptsPerTask: 2 for the Kimi fallback. GLM has no equivalent Synthetic route on Aperture; do not propose a GLM fallback.
+Writer and reviewer thinking must be \`high\` or above: set worker.thinking, and any worker.reviewThinking, task thinking, or task reviewThinking, to \`high\` (default), \`xhigh\`, or \`max\`. durable_batch refuses lower effort before drafting.
 Use these literal defaults, not environment-overridden PROFILES or REVIEW_MODELS. This is drafting guidance, not automatic configuration rewriting, provider validation, or routing.`;
 
 export const HETZNER_DRAFT_GUIDANCE = [
@@ -116,6 +117,7 @@ export function challengerTask(c: PlanContext, draft: string, preMortem: string)
 const TASK_CONTRACT = [
 	"### Task N: <title>",
 	`- Executor: exactly one of \`long\` (default), \`${GLM_MODEL}\` (small, well-bounded), or \`precise\` (auth, migrations, concurrency, shared interfaces)`,
+	"- Thinking: exactly one of `high` (default), `xhigh` (complex, auth, migrations, concurrency, review), or `max` (explicit, exceptionally hard)",
 	"- Executor reason: <only required for `precise`>",
 	"- Repository: <repo root the task runs in>",
 	"- Source pointers: <only essential paths the worker would otherwise miss; omit if none>",
@@ -146,6 +148,7 @@ export function architectFinalTask(c: PlanContext, draft: string, preMortem: str
 		HETZNER_DRAFT_GUIDANCE,
 		"Scale plan length to scope, not a fixed word limit. Small features usually need one or two short implementation contracts; large features may need more coordination detail.",
 		"Split tasks only for meaningful ownership or dependencies. Keep routine checkout preparation, documentation, and final checks with the coordinator or an implementation task, not separate workers.",
+		"Pass each contract’s Thinking through as the dispatch task thinking field, or the Foreman task thinking field for Hetzner drafts, independent of Executor.",
 		"Local tasks in one dispatch call share one repository and feature checkout; different repositories need separate calls.",
 		"Keep independent tasks separate so they can run in parallel; order dependent tasks. Put exact shared interfaces in the contracts that need them without repeating a separate architecture section.",
 		"Answer technical questions yourself. Ask the human only about product decisions the code cannot answer.",
@@ -154,7 +157,8 @@ export function architectFinalTask(c: PlanContext, draft: string, preMortem: str
 		"",
 		"# Feature plan: <short title>",
 		"## Goal",
-		"## Decisions for you (\"None\" if empty)",
+		"## Decisions for you",
+		"Write \"None\" if empty; for each: the question, Options: A) … B) …, Recommended: <letter> — <why>, and the tasks it changes.",
 		"## Scope (in, out, unchanged)",
 		"## Execution tasks",
 		...TASK_CONTRACT,

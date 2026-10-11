@@ -33,7 +33,7 @@ const quotas = (synthetic: number, neuralwatt: number) => {
 const nw = "aperture/neuralwatt/kimi-k3";
 const sy = "aperture/synthetic/hf:moonshotai/Kimi-K3";
 const agent: AgentConfig = { name: "quota-worker", description: "test", tools: [], model: nw, quotaRouting: true, thinking: "high", systemPrompt: "fixture", source: "bundled", filePath: "fixture" };
-const registry = { find: (provider: string, id: string) => ({ provider, id }) } as ModelRegistry;
+const registry = { find: (provider: string, id: string) => ({ provider, id, reasoning: true }) } as ModelRegistry;
 
 for (const source of ["tier-frontmatter", "tier-task", "pinned-task", "pinned-frontmatter", "inherit"] as const) {
 	test(`SDK quota routing: ${source}`, async () => {
@@ -41,7 +41,7 @@ for (const source of ["tier-frontmatter", "tier-task", "pinned-task", "pinned-fr
 		const controller = new AbortController();
 		const calls: string[] = [], warnings: string[] = [];
 		const result = await runWorker({ ...agent, quotaRouting: source !== "pinned-frontmatter" }, "test", {
-			registry, fallbackModel: { provider: "aperture", id: "neuralwatt/kimi-k3" } as any,
+			registry, fallbackModel: { provider: "aperture", id: "neuralwatt/kimi-k3", reasoning: true } as any,
 			modelSpec: source === "inherit" ? "inherit" : source.endsWith("task") ? nw : undefined,
 			steerByQuota: source === "tier-task" ? true : undefined,
 			signal: controller.signal, onWarning: w => warnings.push(w),
@@ -66,7 +66,7 @@ test("SDK rereads cache for subsequent spawns and skips unavailable routes", asy
 	quotas(100, 20);
 	const controller = new AbortController();
 	const result = await runWorker(agent, "test", {
-		registry: { find: (provider: string, id: string) => id.startsWith("synthetic/") ? undefined : { provider, id } } as ModelRegistry,
+		registry: { find: (provider: string, id: string) => id.startsWith("synthetic/") ? undefined : { provider, id, reasoning: true } } as ModelRegistry,
 		fallbackModel: undefined, signal: controller.signal, onAttempt: () => controller.abort(),
 	});
 	assert.equal(result.model, nw);

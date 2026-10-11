@@ -32,3 +32,23 @@ test("writer contract stages named files and returns a branch without merging", 
 	assert.match(WORKER_CONTRACT, /Do not start pi or other agent CLIs/);
 	assert.match(architectFinalTask({ cwd: "/fixture", idea: "fixture", focus: "" }, "", "", ""), /- Repository:/);
 });
+
+for (const file of ["writer.md", "durable/writer.md"]) {
+	test(`${file}: decision tiers preserve user choices and the full report shape`, () => {
+		const writer = readFileSync(new URL(`../agents/${file}`, import.meta.url), "utf8");
+		assert.match(writer, /tiers apply only within the task’s authorization/);
+		assert.match(writer, /Choices reserved by the\ntask or user, including \[decision\] findings, stay for the user/);
+		assert.match(writer, /Skip those choices\nand any work that depends on them/);
+		assert.match(writer, /A recommendation is not authorization/);
+		for (const tier of ["Decide silently", "Decide and report", "Do not decide", "When unsure"])
+			assert.ok(writer.includes(tier), tier);
+		for (const boundary of ["production", "destructive or irreversible", "money", "public contracts", "auth", "permissions", "secrets", "messages sent outside", "contradicts", "materially different work"])
+			assert.ok(writer.includes(boundary), boundary);
+		assert.deepEqual([...writer.matchAll(/^    ## (.+)$/gm)].map(m => m[1]), [
+			"Changed", "Checks", "Untested, and why", "Decisions made", "Decisions left",
+		]);
+		assert.match(writer, /12 KB of UTF-8[\s\S]*report cap/);
+		assert.match(writer, /## Untested, and why\n[^#]*missing access or tools/);
+		assert.match(writer, /## Decisions left\n[^#]*Options: A\)[^#]*Recommended:[^#]*Blocks:[^#]*missing access/);
+	});
+}

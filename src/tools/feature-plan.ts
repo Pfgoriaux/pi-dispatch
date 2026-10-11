@@ -3,11 +3,12 @@
  * Architect and challenger share one ModelDiversity pool, and the final step excludes
  * the challenger's model, so fallbacks never merge the two roles.
  */
+import { TaskThinkingSchema, resolveRequest } from "../thinking.ts";
 
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { agentRosterHelp, discoverAgents } from "../agents.ts";
-import { runWorker, sumWorkerUsage, truncateText } from "../worker.ts";
+import { runWorker, sumWorkerUsage, effortSummary, truncateText } from "../worker.ts";
 import type { AgentConfig, DispatchDetails, WorkerResult } from "../types.ts";
 import { DispatchProgress } from "../progress.ts";
 import { renderDispatchResult } from "../render.ts";
@@ -69,9 +70,10 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 			"Plan a feature (read-only)",
 		promptGuidelines: [
 			"feature_plan: Use for requested feature planning, not small changes or bugs. Show the plan and unresolved decisions before implementation.",
-			"feature_plan: Dispatch approved contracts verbatim to writer tasks with their Executor model, one repository per call. Review and obtain user authorization for integration before dependent tasks. Read saved reports fully when previews are truncated. Recover existing text instead of restarting planning; replan only when requirements or evidence change.",
+			"feature_plan: Dispatch approved contracts verbatim to writer tasks with their Executor model and Thinking, one repository per call. Review and obtain user authorization for integration before dependent tasks. Read saved reports fully when previews are truncated. Recover existing text instead of restarting planning; replan only when requirements or evidence change.",
 		],
 		parameters: Type.Object({
+			thinking: Type.Optional(TaskThinkingSchema),
 			herdr: Type.Optional(
 				Type.Boolean({
 					description: "false disables Herdr viewer tabs",
@@ -89,6 +91,7 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 			),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const thinking = resolveRequest({ task: params.thinking });
 			const { byName, agents } = discoverAgents(ctx);
 			const scout = byName.get("scout");
 			const planner = byName.get("planner");
@@ -123,7 +126,7 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 							claimModel: model.claimModel,
 							excludeModels: [...WORKFLOW_EXCLUDED_MODELS, ...(model.excludeModels ?? [])],
 							fallbackModels: WORKFLOW_FALLBACK_MODELS,
-							thinking: "high",
+							thinking,
 							...progress.options(index),
 						}),
 					signal,
@@ -136,7 +139,7 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 				return result;
 			};
 			const finish = (text: string, aggregated: boolean, truncated = false) => ({
-				content: [{ type: "text" as const, text }],
+				content: [{ type: "text" as const, text: `${effortSummary(results)}\n\n${text}` }],
 				details: {
 					mode: "chain",
 					items: results,

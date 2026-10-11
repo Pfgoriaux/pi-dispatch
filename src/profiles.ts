@@ -1,8 +1,8 @@
 /**
- * Effort-tiered model routing for agent spawning.
+ * Model-tier routing for agent spawning.
  *
  * Agents request a tier by name in their frontmatter (`model: cheap`); this
- * module expands it to a concrete `provider/id` spec plus a thinking default.
+ * module expands it to a concrete `provider/id` spec without choosing thinking effort.
  * "inherit" and explicit provider/id specs keep their existing meaning.
  *
  * TIER SELECTION GUIDE:
@@ -22,8 +22,8 @@
  *   long     — Default implementation, multi-file refactors, and research
  *              across many files. Kimi K3.
  *
- * Tiers express *effort*, not identity: pick a tier by how hard a task is,
- * not by who does it. Cross-check scouting and duplicate code review need
+ * Tiers choose model strength, not thinking effort. Pick a tier by how hard
+ * a task is, not by who does it. Cross-check scouting and duplicate code review need
  * deliberately different fixed models — a tier is shared, so two workers
  * on the same tier are correlated.
  *
@@ -35,8 +35,6 @@ export type ProfileTier = "cheap" | "balanced" | "precise" | "long";
 export interface ModelProfile {
 	/** Concrete model spec ("provider/id"). */
 	model: string;
-	/** Thinking level applied when the agent frontmatter sets none. */
-	thinking: string;
 }
 
 function envModel(name: string): string | undefined {
@@ -56,26 +54,22 @@ export const PROFILES: Record<ProfileTier, ModelProfile> = {
 		model:
 			envModel("DISPATCH_PROFILE_CHEAP_MODEL") ??
 			"aperture/neuralwatt/deepseek-v4.1-flash",
-		thinking: "off",
 	},
 	// BALANCED: Standard reviews, synthesis, general work.
 	// Sonnet 5.5 (with Sol 6.1 as quota-routed counterpart via withProviderFallbacks).
 	balanced: {
 		model: envModel("DISPATCH_PROFILE_BALANCED_MODEL") ?? "anthropic/claude-sonnet-5-5",
-		thinking: "high",
 	},
 	// PRECISE: Security, architecture, complex features, production-critical.
 	// Opus 5.5 (with Astra as quota-routed counterpart via withProviderFallbacks).
 	precise: {
 		model:
 			envModel("DISPATCH_PROFILE_PRECISE_MODEL") ?? "anthropic/claude-opus-5-5",
-		thinking: "high",
 	},
 	// LONG: Default writer model, multi-file refactors, codebase research.
 	// Kimi K3
 	long: {
 		model: envModel("DISPATCH_PROFILE_LONG_MODEL") ?? KIMI_MODEL,
-		thinking: "high",
 	},
 };
 
@@ -113,9 +107,4 @@ export function isProfileTier(spec: string | undefined): spec is ProfileTier {
 export function expandModelSpec(spec: string | undefined): string | undefined {
 	if (!spec) return undefined;
 	return isProfileTier(spec) ? PROFILES[spec].model : spec;
-}
-
-/** Tier thinking default for a frontmatter spec; undefined for non-tiers. */
-export function tierThinking(spec: string | undefined): string | undefined {
-	return isProfileTier(spec) ? PROFILES[spec].thinking : undefined;
 }

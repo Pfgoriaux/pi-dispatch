@@ -34,7 +34,7 @@ function setup(t: TestContext, answer: (spec: string) => string | undefined = sp
 	});
 	const registry = {
 		find: (provider: string, id: string) => ({
-			provider, id, api: "openai-completions", name: id, reasoning: false, input: ["text"],
+			provider, id, api: "openai-completions", name: id, reasoning: true, input: ["text"],
 			contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}),
 		getRegisteredNativeProvider: () => undefined,
@@ -137,7 +137,7 @@ test("model allowlist checks resolved identity, not just the requested spec", as
 	const { calls, run, registry } = setup(t);
 	t.mock.method(registry, "find", (provider: string, id: string) => ({
 		provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-completions",
-		name: `${provider}/${id}`, reasoning: false, input: ["text"], contextWindow: 32000,
+		name: `${provider}/${id}`, reasoning: true, input: ["text"], contextWindow: 32000,
 		maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	}));
 	const result = await run();

@@ -26,7 +26,7 @@ afterEach(() => {
 const config = {
 	batch: { id: "night-1", tasks: [{ id: "api", dependencies: [], ownedFiles: ["src/"], checks: [["npm", "test"]], prompt: "Fix the API" }] },
 	repo: { root: "/repo", baseBranch: "feat/api", branchPrefix: "batch/night-1", worktreesRoot: "/worktrees", sessionsRoot: "/sessions" },
-	worker: { piExecutable: "/bin/pi", model: "test/writer", thinking: "high", reviewModel: "test/reviewer", reviewThinking: "medium" },
+	worker: { piExecutable: "/bin/pi", model: "test/writer", thinking: "high", reviewModel: "test/reviewer", reviewThinking: "high" },
 	spend: { allowanceUsd: 20, reservations: { api: 5 } },
 	limits: { maxWorkers: 1, maxAttemptsPerTask: 2, deadline: "2026-12-01T06:00:00Z" },
 	publication: { repo: "owner/repo", remote: "origin", url: "git@example.invalid:owner/repo.git", gh: "/bin/gh" },
@@ -89,7 +89,7 @@ const normal: Handler = (call, res) => {
 test("draft forwards config unchanged and returns the server summary, ID, and hash", async (t) => {
 	const calls = await fixture(t, normal);
 	const { call, tool } = batchTool();
-	const input = { arbitrary: "server validates this, not Pi" };
+	const input = { ...config, arbitrary: "server validates other fields, not Pi" };
 	const output = await call({ action: "draft", config: input });
 	assert.equal(tool.executionMode, "sequential");
 	assert.deepEqual(calls, [{ method: "POST", route: "/batches", body: input, authorization: `Bearer ${TOKEN}` }]);
@@ -101,7 +101,7 @@ test("object and JSON-string drafts send identical HTTP object bodies", async (t
 	const tool = batchTool();
 	const input = {
 		...config,
-		batch: { ...config.batch, tasks: [{ ...config.batch.tasks[0], model: "task/writer", thinking: "low", reviewModel: "task/reviewer", modelFallbacks: ["task/fallback"] }] },
+		batch: { ...config.batch, tasks: [{ ...config.batch.tasks[0], model: "task/writer", thinking: "xhigh", reviewModel: "task/reviewer", modelFallbacks: ["task/fallback"] }] },
 	};
 	for (const value of [input, JSON.stringify(input)]) {
 		const result = await tool.result({ action: "draft", config: value });
@@ -219,7 +219,7 @@ test("a changed server hash does not reuse a stale summary", async (t) => {
 	assert.doesNotMatch(tool.asked[0], /Server approval summary/);
 	assert.match(tool.asked[0], /sha256:new-server-hash/);
 	assert.match(tool.asked[0], /Writer: changed\/writer \(high\)/);
-	assert.match(tool.asked[0], /Reviewer: changed\/reviewer \(medium\)/);
+	assert.match(tool.asked[0], /Reviewer: changed\/reviewer \(high\)/);
 	assert.match(tool.asked[0], /Writer fallbacks \(ordered\): changed\/fallback/);
 });
 
@@ -292,7 +292,7 @@ test("status handles pending reports and truncates long UTF-8 text", async (t) =
 	const status = batchStatus();
 	await fixture(t, (_call, res) => json(res, status));
 	const { call } = batchTool();
-	assert.equal(await call({ action: "status", id: created.id }), "Batch night-1: pending");
+	assert.equal(await call({ action: "status", id: created.id }), "Batch night-1: pending\n  api effort: writer high; reviewer high");
 	status.batch.error = "界".repeat(10_000);
 	const output = await call({ action: "status", id: created.id });
 	assert.ok(Buffer.byteLength(output) < 13_000);
@@ -362,14 +362,14 @@ test("client bounds the entire request to 60 seconds", async (t) => {
 const modelCases = [
 	{
 		name: "task overrides and ordered fallbacks",
-		task: { model: "task/writer", thinking: "low", reviewModel: "task/reviewer", modelFallbacks: ["fallback/first", "fallback/second"] },
+		task: { model: "task/writer", thinking: "xhigh", reviewModel: "task/reviewer", reviewThinking: "max", modelFallbacks: ["fallback/first", "fallback/second"] },
 		worker: config.worker,
-		facts: ["Writer: task/writer (low)", "Reviewer: task/reviewer (medium)", "Writer fallbacks (ordered): fallback/first -> fallback/second"],
+		facts: ["Writer: task/writer (xhigh)", "Reviewer: task/reviewer (max)", "Writer fallbacks (ordered): fallback/first -> fallback/second"],
 	},
 	{
 		name: "worker model, thinking, and review settings",
-		task: {}, worker: config.worker,
-		facts: ["Writer: test/writer (high)", "Reviewer: test/reviewer (medium)", "Writer fallbacks (ordered): none"],
+		task: {}, worker: { ...config.worker, reviewThinking: "xhigh" },
+		facts: ["Writer: test/writer (high)", "Reviewer: test/reviewer (xhigh)", "Writer fallbacks (ordered): none"],
 	},
 	{
 		name: "legacy reviewer inherits worker model and thinking",
@@ -377,10 +377,10 @@ const modelCases = [
 		facts: ["Writer: test/writer (high)", "Reviewer: test/writer (high)", "Writer fallbacks (ordered): none"],
 	},
 	{
-		name: "task writer and thinking never become reviewer defaults",
-		task: { model: "task/writer", thinking: "off", modelFallbacks: [] },
+		name: "task writer model never becomes the reviewer default; review effort follows the task writer",
+		task: { model: "task/writer", thinking: "xhigh", modelFallbacks: [] },
 		worker: { ...config.worker, reviewModel: undefined, reviewThinking: undefined },
-		facts: ["Writer: task/writer (off)", "Reviewer: test/writer (high)", "Writer fallbacks (ordered): none"],
+		facts: ["Writer: task/writer (xhigh)", "Reviewer: test/writer (xhigh)", "Writer fallbacks (ordered): none"],
 	},
 	{
 		name: "task writer with inherited thinking and worker reviewer",
@@ -388,10 +388,15 @@ const modelCases = [
 		facts: ["Writer: task/writer (high)", "Reviewer: test/reviewer (high)", "Writer fallbacks (ordered): none"],
 	},
 	{
-		name: "task reviewer and thinking with inherited writer",
-		task: { thinking: "low", reviewModel: "task/reviewer" },
+		name: "task reviewer with inherited writer model",
+		task: { thinking: "max", reviewModel: "task/reviewer" },
 		worker: { ...config.worker, reviewThinking: undefined },
-		facts: ["Writer: test/writer (low)", "Reviewer: task/reviewer (high)", "Writer fallbacks (ordered): none"],
+		facts: ["Writer: test/writer (max)", "Reviewer: task/reviewer (max)", "Writer fallbacks (ordered): none"],
+	},
+	{
+		name: "worker review thinking precedes task writer thinking",
+		task: { thinking: "max" }, worker: config.worker,
+		facts: ["Writer: test/writer (max)", "Reviewer: test/reviewer (high)", "Writer fallbacks (ordered): none"],
 	},
 ];
 
@@ -424,7 +429,7 @@ test("reconstructed approval does not use the standalone pilot reviewer branch",
 	const tool = batchTool(false);
 	await tool.call({ action: "launch", id: created.id });
 	assert.doesNotMatch(tool.asked[0], /obsolete\//);
-	assert.match(tool.asked[0], /Reviewer: test\/reviewer \(medium\)/);
+	assert.match(tool.asked[0], /Reviewer: test\/reviewer \(high\)/);
 });
 
 test("status renders optional base SHA and source and tolerates old or null fields", async (t) => {
@@ -445,4 +450,61 @@ test("status renders optional base SHA and source and tolerates old or null fiel
 	assert.match(await tool.call({ action: "status", id: created.id }), /Base SHA: 0123456789abcdef/);
 	base = { baseSource: "local" };
 	assert.match(await tool.call({ action: "status", id: created.id }), /Base source: local/);
+});
+
+test("new drafts reject below-high worker/task efforts before posting and preserve explicit fields", async t => {
+ const calls = await fixture(t, normal);
+ const { call, result } = batchTool();
+ for (const low of [
+  { ...config, worker: { ...config.worker, thinking: "off" } },
+  JSON.stringify({ ...config, worker: { ...config.worker, thinking: "off" } }),
+  { ...config, worker: { ...config.worker, reviewThinking: "medium" } },
+  { ...config, batch: { ...config.batch, tasks: [{ ...config.batch.tasks[0], thinking: "low" }] } },
+  { ...config, batch: { ...config.batch, tasks: [{ ...config.batch.tasks[0], reviewThinking: "off" }] } },
+ ]) {
+  const denied = await result({ action: "draft", config: low });
+  assert.equal(denied.isError, true);
+  assert.match(denied.content[0].text, /redraft and reapprove/);
+ }
+ assert.equal(calls.length, 0);
+ const mixed = { ...config, batch: { ...config.batch, tasks: [{ ...config.batch.tasks[0], thinking: "xhigh", reviewThinking: "max" }] } };
+ assert.match(await call({ action: "draft", config: mixed }), /api effort: writer xhigh; reviewer max/);
+ assert.deepEqual(calls[0].body, mixed);
+});
+
+test("launch blocks legacy low effort without approval or hash changes; status is still available", async t => {
+ const legacy = batchStatus("stopped");
+ legacy.batch.config = { ...config, worker: { ...config.worker, thinking: "off" } };
+ const calls = await fixture(t, (_call, res) => json(res, legacy));
+ const { result, call, asked } = batchTool();
+ const denied = await result({ action: "launch", id: created.id });
+ assert.equal(denied.isError, true);
+ assert.match(denied.content[0].text, /redraft and reapprove/);
+ assert.equal(asked.length, 0);
+ assert.match(await call({ action: "status", id: created.id }), /stopped/);
+ assert.ok(calls.every(c => c.method === "GET"));
+ assert.equal(legacy.batch.policyHash, HASH);
+});
+
+test('malformed draft tasks return validation errors without posting', async t => {
+ const calls = await fixture(t, normal);
+ const { result } = batchTool();
+ for (const tasks of [{}, 'tasks', 42, null, undefined, [null]]) {
+  const denied = await result({ action: 'draft', config: { ...config, batch: { ...config.batch, tasks } } });
+  assert.equal(denied.isError, true);
+  assert.match(denied.content[0].text, /batch.tasks.*must be/);
+  assert.doesNotMatch(denied.content[0].text, /entries.*function|Cannot read/);
+ }
+ assert.equal(calls.length, 0);
+});
+
+test('durable status includes requested and observed writer and reviewer effort', async t => {
+ const value = batchStatus('running');
+ value.report = { phase: 'running', deadline: config.limits.deadline, spentUsd: 1, allowanceUsd: 20, halted: [],
+  tasks: [{ id: 'api', state: 'verified', attempts: 1, spentUsd: 1,
+   effort: { writer: { requested: 'xhigh', effective: 'xhigh' }, reviewer: { requested: 'max', effective: 'unknown' } } }] };
+ await fixture(t, (_call, res) => json(res, value));
+ const output = await batchTool().call({ action: 'status', id: created.id });
+ assert.match(output, /writer xhigh→xhigh, reviewer max→unknown/);
+ assert.doesNotMatch(output, /\[object Object\]|undefined/);
 });

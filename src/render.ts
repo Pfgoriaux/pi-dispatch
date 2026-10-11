@@ -6,6 +6,7 @@
  * line. Renders via the same thunk pattern the official example uses
  * (reuse lastComponent, mutate text).
  */
+import { effortLabel } from "./thinking.ts";
 
 import { Text } from "@earendil-works/pi-tui";
 import { keyHint } from "@earendil-works/pi-coding-agent";
@@ -177,7 +178,7 @@ export function renderDispatchResult(
 				(row.status === "queued" ? "model pending" : "resolving model");
 			lines.push(
 				`  ${icon} ${row.index + 1}. ${theme.fg("accent", row.agent)} · ${model}` +
-					(row.thinking ? ` · ${row.thinking}` : "") +
+					(row.status === "queued" ? "" : ` · ${effortLabel(row)}`) +
 					` · ${row.status} · ${formatSeconds(row.ms)}` +
 					(row.attempts > 1 ? ` · attempt ${row.attempts}` : ""),
 			);

@@ -19,6 +19,7 @@ import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { resolveRequest, resolveEffective, isTaskThinking } from "./thinking.ts";
 import { resolveChildModel } from "./child-model.ts";
 import { workerTools } from "./linkup.ts";
 import { workerSystemPrompt } from "./worker-prompt.ts";
@@ -29,7 +30,6 @@ import { dirtyLines } from "./worktree.ts";
 import { startupTimeoutMs } from "./startup.ts";
 import { stopWorker } from "./process-tree.ts";
 import {
-	THINKING_LEVELS,
 	type AgentConfig,
 	type WorkerResult,
 } from "./types.ts";
@@ -47,7 +47,7 @@ export interface RunWorkerProcOptions {
 	/** Live worker activity for observers (Herdr panes); UI-only, throttled naturally by event rate. */
 	onStream?: (line: string) => void;
 	onWarning?: (warning: string) => void;
-	onAttempt?: (model: string, thinking: string, attempt: number) => void;
+	onAttempt?: (model: string, thinking: string, attempt: number, requestedThinking?: string) => void;
 	thinking?: string;
 	/** Parent registry resolves bare IDs before the child can choose a provider. */
 	registry?: ModelRegistry;
@@ -101,6 +101,8 @@ interface ChildMessage {
 	model?: string;
 	stopReason?: string;
 	errorMessage?: string;
+	thinkingLevel?: string;
+	providerThinkingLevel?: string;
 }
 
 /** Last assistant message with text content and no tool calls. */
@@ -161,8 +163,7 @@ export async function runWorkerProc(
 	if (!model?.includes("/")) {
 		return { agent: agent.name, task, status: "error", text: "", error: "Child workers require a resolved provider/model identity", ms: Date.now() - started, attempts: 0 };
 	}
-	const thinking = options.thinking && THINKING_LEVELS.has(options.thinking)
-		? options.thinking : (agent.thinking ?? "off");
+	const thinking = resolveRequest({ task: options.thinking, agentConfig: agent.thinking }, agent.filePath, options.onWarning);
 	let candidates = withProviderFallbacks([{
 		modelSpec: model, thinking,
 		entry: { provider: "", model, thinking, weight: 1 },
@@ -171,6 +172,7 @@ export async function runWorkerProc(
 		candidates = quotaCandidates(candidates, options.onWarning);
 	}
 	const attempts: WorkerResult[] = [];
+	const failedAttempts: string[] = [];
 	let result: WorkerResult = { agent: agent.name, task, status: "error", text: "", error: "No eligible model candidates", ms: 0, attempts: 0 };
 	for (const candidate of candidates) {
 		if (options.signal?.aborted) {
@@ -181,6 +183,15 @@ export async function runWorkerProc(
 			const reason = `No model available for candidate "${candidate.modelSpec}"`;
 			options.onWarning?.(reason);
 			if (attempts.length === 0) result = { ...result, error: reason };
+			continue;
+		}
+		try {
+			resolveEffective(thinking, options.registry ? resolveChildModel(options.registry, candidate.modelSpec) : undefined);
+		} catch (error) {
+			const reason = (error as Error).message;
+			options.onWarning?.(reason);
+			failedAttempts.push(reason);
+			result = { ...result, error: reason, model: candidate.modelSpec, requestedThinking: thinking, thinking: "unknown" };
 			continue;
 		}
 		const quotaReason = exhaustedQuotaReason(candidate.modelSpec);
@@ -194,11 +205,12 @@ export async function runWorkerProc(
 			...options,
 			modelOverride: candidate.modelSpec,
 			thinking: candidate.thinking,
-			onAttempt: (selected, effort) => options.onAttempt?.(selected, effort, attempts.length + 1),
+			onAttempt: (selected, effort, _attempt, requested) => options.onAttempt?.(selected, effort, attempts.length + 1, requested),
 			onBoundary: () => { toolsStarted = true; options.onBoundary?.(); },
 		});
 		result = attempt;
 		attempts.push(result);
+		if (result.status === "error") failedAttempts.push(`${candidate.modelSpec}: ${result.error ?? "failed"}`);
 		if (options.signal?.aborted) result = { ...result, status: "aborted" };
 		// A fresh process cannot safely replay a writer after tools may have changed files.
 		if (result.status !== "error" || toolsStarted || startupFailure) break;
@@ -206,7 +218,10 @@ export async function runWorkerProc(
 	return {
 		...result,
 		status: options.signal?.aborted ? "aborted" : result.status,
+		requestedThinking: thinking,
+		thinking: result.thinking ?? "unknown",
 		attempts: attempts.length,
+		failedAttempts: failedAttempts.length ? failedAttempts : undefined,
 		usage: sumUsage(attempts.map(attempt => ({ role: "assistant", usage: attempt.usage }))),
 		ms: Date.now() - started,
 	};
@@ -246,6 +261,8 @@ export interface PilotProcResult extends WorkerResult {
 	launched: boolean;
 	/** True when the child reported `agent_settled`; usage is complete only then. */
 	settled: boolean;
+	/** Verified refusal before any provider request, checked against the event and session files. */
+	preInferenceRefusal?: boolean;
 	/** Every assistant completion supplied usable priced usage. */
 	spendKnown: boolean;
 }
@@ -275,17 +292,19 @@ function pilotPreflight(options: PilotProcOptions): string | undefined {
 	}
 	if (!SESSION_ID.test(options.sessionId)) return `Invalid pilot session ID ${JSON.stringify(options.sessionId)}`;
 	if (!path.isAbsolute(options.sessionDir)) return "Pilot session directory must be absolute";
-	if (!THINKING_LEVELS.has(options.thinking)) return `Invalid thinking level ${JSON.stringify(options.thinking)}`;
+	if (!isTaskThinking(options.thinking)) return "New launches require high, xhigh, or max thinking; redraft and reapprove the batch.";
 	const resolved = options.registry ? resolveChildModel(options.registry, options.model) : undefined;
 	const exact = options.registry ? resolved && `${resolved.provider}/${resolved.id}` : options.model;
 	if (exact !== options.model || !options.model.includes("/")) return `Pilot model ${JSON.stringify(options.model)} is not an exact provider/id`;
+	try { resolveEffective(options.thinking, resolved); }
+	catch (error) { return (error as Error).message; }
 	return undefined;
 }
 
 /** Run exactly one pilot child: one spawn, no fallback, no quota routing. */
 export async function runPilotProc(agent: AgentConfig, task: string, options: PilotProcOptions): Promise<PilotProcResult> {
 	const refused = (error: string): PilotProcResult => ({
-		agent: agent.name, task, status: "error", text: "", error, ms: 0, attempts: 0, spawned: null, launched: false, settled: false, spendKnown: false,
+		agent: agent.name, task, status: "error", text: "", error, requestedThinking: options.thinking, thinking: "unknown", ms: 0, attempts: 0, spawned: null, launched: false, settled: false, spendKnown: false,
 	});
 	const invalid = pilotPreflight(options);
 	if (invalid) return refused(invalid);
@@ -321,6 +340,9 @@ export async function runPilotProc(agent: AgentConfig, task: string, options: Pi
 			}
 		},
 	});
+	const preInferenceRefusal = seen.thinkingRefusal
+		? (await import("./durable/evidence.ts")).readEvidence(options.sessionDir, options.sessionId).state === "refused"
+		: false;
 	const mismatch = result.status === "ok" && seen.sessionId !== options.sessionId;
 	return {
 		...result,
@@ -330,6 +352,7 @@ export async function runPilotProc(agent: AgentConfig, task: string, options: Pi
 		spawned,
 		launched: seen.launched,
 		settled: seen.settled,
+		preInferenceRefusal,
 		spendKnown: seen.completions > 0 && seen.spendKnown,
 	};
 }
@@ -342,7 +365,7 @@ export function pricedUsage(usage: Usage | undefined): boolean {
 	return usage.totalTokens === 0 || cost > 0;
 }
 
-interface PilotSeen { sessionId?: string; launched: boolean; settled: boolean; completions: number; spendKnown: boolean }
+interface PilotSeen { thinkingRefusal?: boolean; sessionId?: string; launched: boolean; settled: boolean; completions: number; spendKnown: boolean }
 interface PilotSpawn {
 	command: string;
 	prefixArgs: readonly string[];
@@ -361,7 +384,7 @@ async function runOneProc(
 	pilot?: PilotSpawn,
 ): Promise<WorkerResult & { startupFailure?: boolean }> {
 	const started = Date.now();
-	const base = { agent: agent.name, task, ms: 0, attempts: 1 };
+	const base = { agent: agent.name, task, ms: 0, attempts: 1, requestedThinking: options.thinking, thinking: "unknown" as string, providerThinkingLevel: undefined as string | undefined };
 	const fail = (
 		status: WorkerResult["status"],
 		error: string,
@@ -390,8 +413,9 @@ async function runOneProc(
 	if (web.warning) options.onWarning?.(web.warning);
 	// Let the child's actual selected model choose its adaptation, including CLI defaults.
 	const promptExtension = fileURLToPath(new URL("./model-prompts/extension.ts", import.meta.url));
+	const guardExtension = fileURLToPath(new URL("./thinking-guard.ts", import.meta.url));
 	const session = pilot?.sessionArgs ?? ["--no-session"];
-	const args: string[] = ["-p", ...session, "--mode", "json", "--extension", promptExtension];
+	const args: string[] = ["-p", ...session, "--mode", "json", "--extension", promptExtension, "--extension", guardExtension];
 	for (const entry of web.extensionPaths) args.push("--extension", entry);
 	if (web.tools.length > 0) {
 		args.push("--tools", web.tools.join(","));
@@ -406,16 +430,13 @@ async function runOneProc(
 	// `Model "inherit" not found` before making any API call).
 	const spec = options.modelOverride?.trim() || agent.model;
 	const model = spec && spec !== "inherit" ? spec : options.model;
-	const thinking =
-		options.thinking && THINKING_LEVELS.has(options.thinking)
-			? options.thinking
-			: (agent.thinking ?? "off");
+	const thinking = resolveRequest({ task: options.thinking, agentConfig: agent.thinking }, agent.filePath, options.onWarning);
 	if (model) {
 		const slash = model.indexOf("/");
 		args.push("--provider", model.slice(0, slash), "--model", model);
 	}
-	args.push("--thinking", thinking);
-	options.onAttempt?.(model ?? "child default", thinking, 1);
+	args.push("--thinking", thinking, "--dispatch-thinking", thinking);
+	options.onAttempt?.(model ?? "child default", "unknown", 1, thinking);
 	const systemPrompt = workerSystemPrompt(agent, web.warning);
 	// `--` ends option parsing: `task` is model-controlled text, so without
 	// this separator a task beginning with "-"/"--" would be parsed by the
@@ -447,6 +468,10 @@ async function runOneProc(
 		if (!event || typeof event !== "object") return;
 		if (["agent_start", "message_start", "message_update", "tool_execution_start"].includes(event.type ?? "")) clearTimeout(timer);
 		switch (event.type) {
+			case "dispatch_thinking_error":
+				if (pilot) { pilot.seen.thinkingRefusal = true; pilot.seen.spendKnown = false; }
+				if (typeof event.error === "string") lastError = { stopReason: "error", errorMessage: event.error };
+				break;
 			case "session":
 				if (pilot && pilot.seen.sessionId === undefined && typeof event.id === "string") pilot.seen.sessionId = event.id;
 				break;
@@ -465,6 +490,8 @@ async function runOneProc(
 							if (!pricedUsage(message.usage)) pilot.seen.spendKnown = false;
 						}
 						if (message.model) lastModel = message.model;
+						base.thinking = typeof message.thinkingLevel === "string" ? message.thinkingLevel : "unknown";
+						base.providerThinkingLevel = message.providerThinkingLevel;
 						if (message.stopReason || message.errorMessage) {
 							lastError = {
 								stopReason: message.stopReason,
@@ -506,6 +533,8 @@ async function runOneProc(
 				if (idx >= 0) {
 					finalText = textOf(messages[idx]);
 					finalUsage = messages[idx].usage;
+					base.thinking = messages[idx].thinkingLevel ?? "unknown";
+					base.providerThinkingLevel = messages[idx].providerThinkingLevel;
 				}
 				break;
 			}
@@ -672,7 +701,6 @@ async function runOneProc(
 			: undefined,
 		text,
 		model: model ?? lastModel,
-		thinking,
 		usage: endedMessages.length ? sumUsage(endedMessages) : finalUsage,
 		ms: Date.now() - started,
 	};

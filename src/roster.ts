@@ -54,7 +54,7 @@ function isValidRosterEntry(entry: unknown): entry is RosterEntry {
 	const e = entry as Record<string, unknown>;
 	if (typeof e.provider !== "string" || !e.provider) return false;
 	if (typeof e.model !== "string" || !e.model) return false;
-	// thinking is OPTIONAL (defaults to "off") but must be valid when present.
+	// thinking is OPTIONAL (defaults to "high") but must be valid when present.
 	if (
 		typeof e.thinking !== "undefined" &&
 		(typeof e.thinking !== "string" || !THINKING_LEVELS.has(e.thinking))
@@ -73,7 +73,7 @@ function normalizeRoster(entries: unknown): RosterEntry[] | undefined {
 	const dropped = entries.length;
 	const valid = entries.filter(isValidRosterEntry).map((e) => ({
 		...e,
-		thinking: e.thinking ?? "off",
+		thinking: e.thinking ?? "high",
 	}));
 	if (valid.length === 0) return undefined;
 	if (valid.length < dropped) {
@@ -267,14 +267,14 @@ export function resolveCandidates(
 		const candidates = withProviderFallbacks([
 			{
 				modelSpec: agent.model,
-				thinking: agent.thinking ?? "off",
+				thinking: agent.thinking ?? "high",
 				entry: {
 					provider:
 						agent.model.includes("/") ? agent.model.split("/", 2)[0] : "inherit",
 					model: agent.model.includes("/")
 						? agent.model.slice(agent.model.indexOf("/") + 1)
 						: agent.model,
-					thinking: agent.thinking ?? "off",
+					thinking: agent.thinking ?? "high",
 					weight: 1,
 				},
 			},
