@@ -31,7 +31,7 @@ const sy = "aperture/synthetic/hf:moonshotai/Kimi-K3";
 const agent: AgentConfig = { name: "eligibility-fixture", description: "test", model: opus, tools: [], thinking: "high", systemPrompt: "fixture", source: "bundled", filePath: "fixture" };
 const catalog = [opus, astra, sol, nw, sy].map(spec => {
 	const slash = spec.indexOf("/");
-	return { provider: spec.slice(0, slash), id: spec.slice(slash + 1) };
+	return { provider: spec.slice(0, slash), id: spec.slice(slash + 1), reasoning: true };
 });
 const registry = {
 	find: (provider: string, id: string) => catalog.find(model => model.provider === provider && model.id === id),
@@ -49,8 +49,8 @@ for (const source of ["frontmatter", "pin", "inherit", "bare-pin"] as const) {
 		const controller = new AbortController();
 		const calls: string[] = [];
 		const result = await runWorker(agent, "test", {
-			registry: source === "bare-pin" ? { getAll: () => [{ provider: "anthropic", id: "claude-opus-5-5" }], getAvailable: () => [] } as any : registry,
-			fallbackModel: { provider: "anthropic", id: "claude-opus-5-5" } as any,
+			registry: source === "bare-pin" ? { getAll: () => [{ provider: "anthropic", id: "claude-opus-5-5", reasoning: true }], getAvailable: () => [] } as any : registry,
+			fallbackModel: { provider: "anthropic", id: "claude-opus-5-5", reasoning: true } as any,
 			modelSpec: source === "inherit" ? "inherit" : source === "pin" ? opus : source === "bare-pin" ? "claude-opus-5-5" : undefined,
 			steerByQuota: false, signal: controller.signal,
 			onAttempt: model => { calls.push(model); controller.abort(); },
@@ -117,7 +117,7 @@ for (const source of ["frontmatter", "pin", "inherit"] as const) {
 }
 
 test("child resolves bare IDs before quota checks and pins the actual provider", async () => {
-	const bareRegistry = { ...registry, getAll: () => [{ provider: "anthropic", id: "claude-opus-5-5" }] } as any;
+	const bareRegistry = { ...registry, getAll: () => [{ provider: "anthropic", id: "claude-opus-5-5", reasoning: true }] } as any;
 	quota("claude", 0);
 	quota("codex", 40);
 	const result = await runWorkerProc(agent, "test", { cwd: root, modelOverride: "claude-opus-5-5", registry: bareRegistry });
@@ -221,7 +221,7 @@ test("SDK rechecks quotas after asynchronous setup without counting a skipped pr
 	t.mock.method(AgentSession.prototype, "getLastAssistantText", () => "fixture response");
 	const setupRegistry = {
 		...registry,
-		find: (provider: string, id: string) => ({ provider, id, api: "openai-completions", name: id, reasoning: false,
+		find: (provider: string, id: string) => ({ provider, id, api: "openai-completions", name: id, reasoning: true,
 			input: ["text"], contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
 		getRegisteredNativeProvider: () => undefined, getApiKeyForProvider: async () => undefined,
 	} as unknown as ModelRegistry;
@@ -261,7 +261,7 @@ test("cancellation from the final quota-skip warning wins in both tiers", async 
 });
 
 test("child flags preserve provider-prefixed IDs through the installed CLI resolver", async () => {
-	const models = [{ provider: "p", id: "p/foo" }, { provider: "p", id: "z/foo" }];
+	const models = [{ provider: "p", id: "p/foo", reasoning: true }, { provider: "p", id: "z/foo", reasoning: true }];
 	const prefixedRegistry = { find: (provider: string, id: string) => models.find(model => model.provider === provider && model.id === id) } as ModelRegistry;
 	writeFileSync(bin, `#!/usr/bin/env node
 console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:JSON.stringify(process.argv.slice(2))}],stopReason:'stop'}}));
@@ -276,7 +276,7 @@ console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content
 	});
 	assert.equal(resolved.error, undefined);
 	assert.equal(resolved.model.id, "p/foo");
-	models.push({ provider: "p", id: "foo" });
+	models.push({ provider: "p", id: "foo", reasoning: true });
 	const colliding = await runWorkerProc(agent, "test", { cwd: root, modelOverride: "p/p/foo", registry: prefixedRegistry });
 	assert.equal(colliding.status, "error");
 	assert.equal(colliding.attempts, 0);

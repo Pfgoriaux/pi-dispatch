@@ -15,7 +15,7 @@ function runIsolated(t: test.TestContext, args: string[], env: Record<string, st
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-host-sdk-"));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	const script = path.join(dir, "owner.mjs");
-	fs.writeFileSync(script, 'import { parseFrontmatter, getAgentDir } from "@earendil-works/pi-coding-agent";\nconsole.log(typeof parseFrontmatter, typeof getAgentDir);\n');
+	fs.writeFileSync(script, 'import { parseFrontmatter, getAgentDir } from "@earendil-works/pi-coding-agent";\nimport { getSupportedThinkingLevels } from "@earendil-works/pi-ai";\nconsole.log(typeof parseFrontmatter, typeof getAgentDir, typeof getSupportedThinkingLevels);\n');
 	const { PI_DISPATCH_HOST_SDK: _, ...base } = process.env;
 	return spawnSync(process.execPath, [...args, script], { cwd: dir, encoding: "utf8", env: { ...base, ...env } });
 }
@@ -29,5 +29,5 @@ test("owner without the host hook cannot resolve the Pi SDK", (t) => {
 test("host hook resolves the Pi SDK from PI_DISPATCH_HOST_SDK", (t) => {
 	const result = runIsolated(t, ["--import", pathToFileURL(hook).href], { PI_DISPATCH_HOST_SDK: pathToFileURL(path.join(sdkDir, "dist", "index.js")).href });
 	assert.equal(result.status, 0, result.stderr);
-	assert.equal(result.stdout.trim(), "function function");
+	assert.equal(result.stdout.trim(), "function function function");
 });

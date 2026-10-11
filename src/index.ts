@@ -21,15 +21,16 @@
  * checked) — see resolveSessionCwd.
  */
 
+import { TaskThinkingSchema, type TaskThinking } from "./thinking.ts";
 import { Type } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { agentRosterHelp, discoverAgents } from "./agents.ts";
-import { expandModelSpec, isProfileTier, tierThinking } from "./profiles.ts";
+import { expandModelSpec, isProfileTier } from "./profiles.ts";
 import { renderDispatchCall, renderDispatchResult } from "./render.ts";
-import { findWorkerSession, runWorker, truncateText } from "./worker.ts";
+import { findWorkerSession, runWorker, effortSummary, truncateText } from "./worker.ts";
 import { notifyDispatchDone } from "./herdr.ts";
 import { DispatchProgress } from "./progress.ts";
 import { resolveSessionCwd } from "./session-cwd.ts";
@@ -55,17 +56,19 @@ const MAX_CHAIN_LENGTH = 8;
 const MAX_CONCURRENCY = 4;
 
 interface TaskItem {
+	thinking?: TaskThinking;
 	agent: string;
 	task: string;
 	cwd?: string;
 	worktree?: boolean;
 	/** Herdr viewer defaults on inside Herdr; false opts out. */
 	herdr?: boolean;
-	/** Optional per-task model override: effort tier (`cheap`/`balanced`/`precise`/`long`) or explicit `provider/id`. Skips rosters. */
+	/** Optional per-task model override: model tier (`cheap`/`balanced`/`precise`/`long`) or explicit `provider/id`. Skips rosters. */
 	model?: string;
 }
 
 interface DispatchParams {
+	thinking?: TaskThinking;
 	agent?: string;
 	task?: string;
 	tasks?: TaskItem[];
@@ -80,6 +83,7 @@ interface DispatchParams {
 }
 
 const TaskItemSchema = Type.Object({
+	thinking: Type.Optional(TaskThinkingSchema),
 	agent: Type.String({ description: "Agent name from the Dispatch agents roster" }),
 	task: Type.String({ description: "Self-contained task description" }),
 	cwd: Type.Optional(
@@ -138,7 +142,7 @@ function labeledOutputs(results: WorkerResult[]): {
 			// Errors are model-visible here too — they go through the same cap.
 			const out = truncateText(r.text || r.error || "(no output)");
 			truncated = truncated || out.truncated;
-			return `## Task ${i + 1} (${r.agent}${r.status === "ok" ? "" : ` — ${r.status}`})\n${out.text}`;
+			return `## Task ${i + 1} (${r.agent}${r.status === "ok" ? "" : ` — ${r.status}`})\n${effortSummary([r])}\n${out.text}`;
 		})
 		.join("\n\n");
 	return { text, truncated };
@@ -191,6 +195,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"dispatch: Select by required capabilities before model strength. Scout locates code; investigator diagnoses code/runtime; advisor judges decisions. Check the live roster: model choice cannot grant tools.",
 			"dispatch: Use one advisor for consequential trade-offs, stuck work, or unresolved risks. Otherwise delegate 3+ independent tasks, context-heavy work, or explicit requests. Do routine work directly; repeat consultations only with new evidence.",
+			"dispatch: Thinking is independent of model tier: high (default), xhigh, or max. Pass each task contract’s Thinking as thinking; unsupported effort errors before inference.",
 			"dispatch: Supply goal, paths, constraints, and output shape. Workers do not see this conversation or automatically inherit its instructions.",
 			"dispatch: Worker completion is not task completion. Evaluate returned checks against the user's scope and safety rules. Complete authorized verification; report specific access/approval blockers and what remains unverified.",
 			"dispatch: Writers require tasks with worktree:true and authorization to commit. Set target to a clean feature checkout when needed. Review returned branches, integrate only with authorization, then run dependent tasks. PR merges require user review and authorization.",
@@ -199,6 +204,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 			"dispatch: Never launch agent CLIs through bash to bypass rejected requests, depth limits, or tool restrictions; report the blocker.",
 		],
 		parameters: Type.Object({
+			thinking: Type.Optional(TaskThinkingSchema),
 			target: Type.Optional(Type.String({ description: "Clean feature repo root that worktree tasks branch from: the session cwd, a directory inside it, or a linked worktree of the session's repository (for example under ~/eden/.worktrees/). Must be on a feature branch. Defaults to the session cwd" })),
 			agent: Type.Optional(
 				Type.String({ description: "Agent name (single mode)" }),
@@ -383,14 +389,11 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 		try {
 			await paneSession.open(ctx.cwd, signal);
 
-			const taskModel = (item: TaskItem) =>
-				item.model
-					? {
-							modelSpec: expandModelSpec(item.model)!,
-							steerByQuota: isProfileTier(item.model),
-							thinking: tierThinking(item.model),
-						}
-					: undefined;
+			const taskModel = (item: TaskItem) => ({
+				modelSpec: expandModelSpec(item.model),
+				steerByQuota: item.model ? isProfileTier(item.model) : undefined,
+				thinking: item.thinking ?? params.thinking,
+			});
 
 			const runOne = async (
 				agent: AgentConfig,
@@ -398,7 +401,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 				cwd?: string,
 				index?: number,
 				resumeFile?: string,
-				modelOverride?: { modelSpec: string; thinking?: string; steerByQuota?: boolean },
+				modelOverride?: { modelSpec?: string; thinking?: string; steerByQuota?: boolean },
 			) => {
 				let result: WorkerResult;
 				if (index !== undefined) paneSession.start(index);
@@ -411,11 +414,12 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 						...(index !== undefined
 							? paneSession.options(index)
 							: { onBoundary: emitProgress }),
-						persist: params.persist,
+						persist: params.persist || !!params.resume,
 						resumeFile,
 						modelSpec: modelOverride?.modelSpec,
 						steerByQuota: modelOverride?.steerByQuota,
-						thinking: modelOverride?.thinking,
+						thinking: modelOverride?.thinking ?? params.thinking,
+						savedResumeThinking: params.resume ? findWorkerSession(params.resume)?.requestedThinking : undefined,
 					});
 				} catch (err) {
 					// Contain per-task failures (bad agent frontmatter, loader/session
@@ -601,6 +605,8 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 					aggregateTask,
 					undefined,
 					willAggregate ? items.length : undefined,
+					undefined,
+					{ thinking: params.thinking ?? "high" },
 				);
 				results = [...results, aggregateResult];
 				if (aggregateResult.status === "ok") {
@@ -609,7 +615,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 					// through the same cap as any worker output.
 					const capped = truncateText(aggregateResult.text);
 					truncated = truncated || capped.truncated;
-					content = capped.text;
+					content = `${effortSummary(results)}\n\n${capped.text}`;
 				} else {
 					const labeled = labeledOutputs(results.slice(0, -1));
 					truncated = truncated || labeled.truncated;

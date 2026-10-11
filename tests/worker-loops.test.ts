@@ -17,7 +17,7 @@ const agent: AgentConfig = {
 };
 const registry = {
 	find: (provider: string, id: string) => ({
-		provider, id, api: "openai-completions", name: id, reasoning: false,
+		provider, id, api: "openai-completions", name: id, reasoning: true,
 		input: ["text"], contextWindow: 32000, maxTokens: 2000,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	}),

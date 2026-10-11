@@ -103,7 +103,7 @@ test("ordinary and locally tool-less workers get Linkup automatically; broken re
 		assert.deepEqual(this.getActiveToolNames(), [...localTools, ...LINKUP_TOOLS]);
 	});
 	t.mock.method(AgentSession.prototype, "getLastAssistantText", () => "fixture success");
-	const model = { provider: "linkup-fixture", id: "test" } as Model<Api>;
+	const model = { provider: "linkup-fixture", id: "test", reasoning: true } as Model<Api>;
 	const registry = {
 		find: () => model, getRegisteredNativeProvider: () => undefined,
 		getApiKeyForProvider: async () => undefined,
@@ -136,7 +136,7 @@ console.log(JSON.stringify({type: "message_end", message: {role: "assistant", co
 	assert.equal(child.status, "ok", child.error);
 	const args = JSON.parse(child.text) as string[];
 	assert.deepEqual(args[args.indexOf("--tools") + 1].split(","), ["read", ...LINKUP_TOOLS]);
-	assert.equal(args.filter((arg) => arg === "--extension").length, 4);
+	assert.equal(args.filter((arg) => arg === "--extension").length, 5);
 	assert.ok(args.some((arg) => arg.endsWith("src/model-prompts/extension.ts")));
 	assert.equal(args[args.indexOf("--exclude-tools") + 1], "dispatch,pr_review,feature_plan,council,durable_batch");
 
@@ -166,7 +166,7 @@ test("missing Linkup leaves ordinary workers usable with a warning; pre-abort st
 	const warnings: string[] = [];
 	const controller = new AbortController();
 	const options = {
-		registry: { find: () => ({ provider: "fake", id: "model" }) } as unknown as ModelRegistry,
+		registry: { find: () => ({ provider: "fake", id: "model", reasoning: true }) } as unknown as ModelRegistry,
 		fallbackModel: undefined, modelSpec: "fake/model",
 		onWarning: (warning: string) => warnings.push(warning),
 		onAttempt: () => controller.abort(), signal: controller.signal,

@@ -9,7 +9,9 @@
  *   `session` header with `version: 3`, then entries; every assistant message
  *   is a `message` entry with `usage`). Spend and the final answer come from it.
  *
- * Anything missing, unreadable, or inconsistent between the two is ambiguous.
+ * A terminal pre-inference guard refusal proves zero spend only without assistant
+ * or tool activity in either file. Pi may not have flushed a session file yet.
+ * Other missing, unreadable, or inconsistent evidence remains ambiguous.
  */
 
 import fs from "node:fs";
@@ -20,14 +22,15 @@ import { PILOT_EVENTS_FILE, pricedUsage } from "../worker-proc.ts";
 export type Evidence =
 	| { readonly state: "ambiguous"; readonly reason: string }
 	| { readonly state: "unsettled" }
-	| { readonly state: "settled"; readonly spentUsd: number | null; readonly text: string; readonly problem: string | null };
+	| { readonly state: "refused"; readonly reason: string }
+	| { readonly state: "settled"; readonly spentUsd: number | null; readonly text: string; readonly problem: string | null; readonly thinking: string; readonly providerThinkingLevel?: string };
 
 type Part = { type?: string; text?: string };
-type Message = { role?: string; content?: Part[] | string; usage?: Usage; stopReason?: string; errorMessage?: string };
+type Message = { role?: string; content?: Part[] | string; usage?: Usage; stopReason?: string; errorMessage?: string; thinkingLevel?: string; providerThinkingLevel?: string };
 type Line = Record<string, unknown> & { type?: string; id?: unknown; message?: Message };
 
 /** JSON lines of a file; a torn final line is dropped, any other bad line makes the file unreadable. */
-function jsonLines(file: string): Line[] | undefined {
+function jsonLines(file: string, strict = false): Line[] | undefined {
 	if (!fs.existsSync(file)) return undefined;
 	const lines = fs.readFileSync(file, "utf8").split("\n");
 	const parsed: Line[] = [];
@@ -36,7 +39,7 @@ function jsonLines(file: string): Line[] | undefined {
 		try {
 			parsed.push(JSON.parse(line) as Line);
 		} catch {
-			if (i < lines.length - 1) return undefined;
+			if (strict || i < lines.length - 1) return undefined;
 		}
 	}
 	return parsed;
@@ -72,6 +75,30 @@ function finalProblem(message: Message | undefined): string | null {
 	return textOf(message).trim() ? null : "blank response from child pi";
 }
 
+/** Any assistant/tool activity contradicts a claim that no provider request was allowed. */
+function inferenceActivity(line: Line): boolean {
+	if (line.type === "message_update" || line.type?.startsWith("tool_execution_")) return true;
+	if (line.message?.role === "assistant" || line.message?.role === "toolResult") return true;
+	return Array.isArray(line.messages) && line.messages.some((message) =>
+		message?.role === "assistant" || message?.role === "toolResult");
+}
+
+function refusalEvidence(dir: string, sessionId: string, events: Line[]): Evidence {
+	const refused = events.filter((e) => e.type === "dispatch_thinking_error");
+	const last = events.at(-1);
+	if (refused.length !== 1 || last !== refused[0] || last.preInference !== true || typeof last.error !== "string") return { state: "unsettled" };
+	const ambiguous = (reason: string): Evidence => ({ state: "ambiguous", reason });
+	if (!jsonLines(path.join(dir, PILOT_EVENTS_FILE), true)) return ambiguous("refusal event log is incomplete");
+	const file = sessionFile(dir, sessionId);
+	// Pi may exit before the first conversation entry flushes its session file.
+	if (Array.isArray(file) && file.length > 0) return ambiguous("refusal has multiple session files");
+	const entries = typeof file === "string" ? jsonLines(file, true) : [];
+	if (!entries) return ambiguous("refusal session file is unreadable");
+	if (typeof file === "string" && (entries[0]?.type !== "session" || entries[0]?.id !== sessionId || entries[0]?.version !== 3)) return ambiguous("refusal session header does not match");
+	if ([...events, ...entries].some(inferenceActivity)) return ambiguous("pre-inference refusal contradicts assistant or tool activity");
+	return { state: "refused", reason: last.error };
+}
+
 /** Judge a child from its session directory. Never reads other paths. */
 export function readEvidence(dir: string, sessionId: string): Evidence {
 	const ambiguous = (reason: string): Evidence => ({ state: "ambiguous", reason });
@@ -80,6 +107,7 @@ export function readEvidence(dir: string, sessionId: string): Evidence {
 	if (!events) return ambiguous("worker event log is missing or unreadable");
 	const header = events.find((e) => e.type === "session");
 	if (header?.id !== sessionId) return ambiguous(`worker event log is not session ${sessionId}`);
+	if (events.some((e) => e.type === "dispatch_thinking_error")) return refusalEvidence(dir, sessionId, events);
 	const settled = events.find((e) => e.type === "agent_settled");
 	if (!settled) return { state: "unsettled" };
 	const file = sessionFile(dir, sessionId);
@@ -93,5 +121,6 @@ export function readEvidence(dir: string, sessionId: string): Evidence {
 	const priced = assistant.length > 0 && assistant.every((m) => pricedUsage(m.usage));
 	const spentUsd = priced ? assistant.reduce((sum, m) => sum + m.usage!.cost.total, 0) : null;
 	const last = assistant.at(-1);
-	return { state: "settled", spentUsd, text: last ? textOf(last) : "", problem: settled.aborted === true ? "worker run was aborted" : finalProblem(last) };
+	const observed = events.filter((e) => e.type === "message_end" && e.message?.role === "assistant").at(-1)?.message;
+	return { state: "settled", thinking: observed?.thinkingLevel ?? "unknown", providerThinkingLevel: observed?.providerThinkingLevel, spentUsd, text: last ? textOf(last) : "", problem: settled.aborted === true ? "worker run was aborted" : finalProblem(last) };
 }

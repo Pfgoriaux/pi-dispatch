@@ -58,7 +58,7 @@ for (const scenario of ["short", "review-long", "final-long", "verify-failed", "
 		});
 		const registry = {
 			find: (provider: string, id: string) => ({
-				provider, id, api: "openai-completions", name: id, reasoning: false, input: ["text"],
+				provider, id, api: "openai-completions", name: id, reasoning: true, input: ["text"],
 				contextWindow: 64000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			}),
 			getRegisteredNativeProvider: () => undefined,
@@ -97,6 +97,9 @@ for (const scenario of ["short", "review-long", "final-long", "verify-failed", "
 			assert.equal(result.details.items.length, 6, "no writer or merge step runs");
 		} else {
 			assert.match(result.content[0].text, /Fix skipped: fix=false/);
+			assert.match(result.content[0].text, /task:<validated Findings and Slop only>/);
+			assert.match(result.content[0].text, /Leave Decisions, \[decision\] findings in any section, Spec gaps, Overlaps and Reuse for the user/);
+			assert.match(result.content[0].text, /Recommendations are not authorization/);
 		}
 	});
 }

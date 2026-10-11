@@ -117,6 +117,30 @@ test("only the spec reviewer and the verifier receive the PR description, and th
 	assert.match(fixTask({ cwd: "/repo", label: "PR #1", findings: "" }), /Fix only the Findings and Slop sections/);
 });
 
+test("review prompts reserve tagged choices without moving spec, overlap or reuse work into automatic fixes", () => {
+	const c = { cwd: "/repo", diffFile: "/tmp/diff", label: "PR #1" };
+	for (const task of [correctnessSecurityTask, correctnessTask, specReuseTask]) {
+		assert.match(task(c), /add \[decision\] after the severity/);
+		assert.match(task(c), /options and your recommended one under Fix/);
+	}
+	const aggregate = verifyAggregateTask({ ...c, reports: [] });
+	assert.match(aggregate, /Decisions \(confirmed bugs, security or slop findings[^\n]*tagged \[decision\] or not; for each: severity,/);
+	assert.match(aggregate, /Keep spec gaps, overlaps and reuse in their original sections/);
+	assert.match(aggregate, /do not promote them to Findings or Slop for automatic fixes/);
+	assert.deepEqual([...aggregate.matchAll(/^## ([^(\n]+)/gm)].map(m => m[1].trim()), [
+		"Findings", "Decisions", "Spec gaps", "Overlaps", "Reuse", "Slop", "3-month risk", "Rejected", "Unverifiable", "Verdict",
+	]);
+	const fix = fixTask({ ...c, findings: "## Findings\n## [blocker][decision] Choose storage" });
+	assert.match(fix, /Fix only the Findings and Slop sections/);
+	assert.match(fix, /Decisions, Spec gaps, Overlaps and Reuse are for the user: do not implement them/);
+	assert.match(fix, /Skip \[decision\] findings in any section; recommendations are not authorization/);
+	assert.match(fix, /If a fix turns out to need a design choice, skip it/);
+	let tool: any;
+	registerPrReviewTool({ registerTool: (value: unknown) => { tool = value; } } as unknown as ExtensionAPI);
+	assert.match(tool.promptGuidelines.join("\n"), /Fix only Findings and Slop; leave Decisions, \[decision\] findings in any section, Spec gaps, Overlaps and Reuse for the user/);
+	assert.match(tool.promptGuidelines.join("\n"), /Recommendations are not authorization/);
+});
+
 test("a PR number sends its saved description to the spec reviewer and verifier only", async (t) => {
 	const previousHerdr = process.env.HERDR_ENV;
 	delete process.env.HERDR_ENV;
@@ -144,7 +168,7 @@ test("a PR number sends its saved description to the spec reviewer and verifier 
 	});
 	const registry = {
 		find: (provider: string, id: string) => ({
-			provider, id, api: "openai-completions", name: id, reasoning: false, input: ["text"],
+			provider, id, api: "openai-completions", name: id, reasoning: true, input: ["text"],
 			contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}),
 		getRegisteredNativeProvider: () => undefined,
@@ -242,7 +266,7 @@ test("workflow credit fallbacks never duplicate models within parallel phases", 
 	});
 	const registry = {
 		find: (provider: string, id: string) => ({
-			provider, id, api: "openai-completions", name: id, reasoning: false, input: ["text"],
+			provider, id, api: "openai-completions", name: id, reasoning: true, input: ["text"],
 			contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}),
 		getRegisteredNativeProvider: () => undefined,
@@ -314,7 +338,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 	});
 	const registry = {
 		find: (provider: string, id: string) => ({
-			provider, id, api: "openai-completions", name: id, reasoning: false, input: ["text"],
+			provider, id, api: "openai-completions", name: id, reasoning: true, input: ["text"],
 			contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}),
 		getRegisteredNativeProvider: () => undefined,
@@ -345,7 +369,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 	assert.match(promptOf("PREMORTEM-TEXT"), /preventive design change or check/);
 	assert.match(promptOf("CHALLENGE-TEXT"), /DRAFT-TEXT[\s\S]*PREMORTEM-TEXT/);
 	assert.match(promptOf("FINAL-TEXT"), /DRAFT-TEXT[\s\S]*PREMORTEM-TEXT[\s\S]*CHALLENGE-TEXT/);
-	assert.match(plan.content[0].text, /^FINAL-TEXT\n\nFull report saved to: /);
+	assert.match(plan.content[0].text, /FINAL-TEXT\n\nFull report saved to: /);
 	assert.equal(plan.details.aggregated, true);
 	assert.equal(plan.usage.totalTokens, 8);
 
@@ -366,7 +390,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 
 	fail = (_provider, step) => step === "CHALLENGE-TEXT";
 	const noChallenge = await runPlan();
-	assert.match(noChallenge.content[0].text, /^FINAL-TEXT\n\nFull report saved to: /, "final plan still runs without a challenge");
+	assert.match(noChallenge.content[0].text, /FINAL-TEXT\n\nFull report saved to: /, "final plan still runs without a challenge");
 	assert.match(promptOf("FINAL-TEXT"), /DESIGN CHALLENGE:\\n\(unavailable:/);
 
 	// Anthropic and OpenAI out of credits: GLM drafts and finalizes; the challenger cannot reuse it.
@@ -413,7 +437,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 		assert.equal(unsaved.details.truncated, true);
 		assert.equal(unsaved.details.items[index].text, report(target));
 		assert.equal(unsaved.details.items[index].status, "ok", "storage failure does not rewrite model status");
-		assert.ok(unsaved.content[0].text.startsWith(target), "retain the completed report preview");
+		assert.ok(unsaved.content[0].text.split("\n\n")[1].startsWith(target), "retain the completed report preview");
 		assert.match(unsaved.content[0].text, /Report could not be saved/);
 		assert.match(unsaved.content[0].text, /\/sessions\/plan-recovery.jsonl/);
 	}

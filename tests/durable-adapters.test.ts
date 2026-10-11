@@ -89,7 +89,7 @@ async function setup(admitted = { maxWorkers: 2, maxAttemptsPerTask: 2, budgetUs
  return { ...w, storePath, store, options };
 }
 
-const task = (key: string, extra: object = {}) => ({ key, prompt: 'fixture', agent, model: 'fake/model', thinking: 'off', ownedPaths: ['src/'], ...extra });
+const task = (key: string, extra: object = {}) => ({ key, prompt: 'fixture', agent, model: 'fake/model', thinking: 'high', ownedPaths: ['src/'], ...extra });
 // Ordinary adapter tests need a hang guard, not a timing assertion around Git/process startup.
 // Deadline/cancellation tests below pass their own short limits explicitly.
 const soon = (ms = 120_000) => ({ deadlineAt: Date.now() + ms });
@@ -97,7 +97,7 @@ const alive = async (pid: number, startedAt: string) => await processStartIdenti
 
 test('pilot child: explicit executable, documented session flags, stripped coordinator env, one spawn', async () => {
  const dir = fs.mkdtempSync(path.join(W, 'child-'));
- const base = { cwd: dir, model: 'fake/model', thinking: 'off', sessionId: 'pd-test-1', sessionDir: path.join(dir, 's'), onSpawn: () => {} };
+ const base = { cwd: dir, model: 'fake/model', thinking: 'high', sessionId: 'pd-test-1', sessionDir: path.join(dir, 's'), onSpawn: () => {} };
  const noFallback = fakePi(`process.exit(1);`);
  process.env.PI_DISPATCH_PI_BIN = noFallback.bin;
  for (const piExecutable of ['fake-pi', 'relative/pi', path.join(W, 'missing')]) {
@@ -141,7 +141,7 @@ test('pilot child: an unrecorded identity stops the child', async () => {
  const dir = fs.mkdtempSync(path.join(W, 'child-'));
  const hang = fakePi('setInterval(()=>{},1000);');
  const result = await runPilotProc(agent, 'x', {
-  cwd: dir, model: 'fake/model', thinking: 'off', sessionId: 'pd-test-2', sessionDir: path.join(dir, 's'), piExecutable: hang.bin,
+  cwd: dir, model: 'fake/model', thinking: 'high', sessionId: 'pd-test-2', sessionDir: path.join(dir, 's'), piExecutable: hang.bin,
   onSpawn: async () => { throw new Error('store unavailable'); },
  });
  assert.equal(result.status, 'error'); assert.match(result.error!, /not recorded: store unavailable/);
@@ -163,12 +163,12 @@ test('evidence: completion needs agent_settled and a session file that agrees wi
  write(`2026-01-01T00-00-00-000Z_${sid}.jsonl`, [header, { type: 'message', id: 'u', message: { role: 'user', content: 'x' } }]);
  assert.match((readEvidence(dir, sid) as any).reason, /0 assistant messages, event log 1/);
  write(`2026-01-01T00-00-00-000Z_${sid}.jsonl`, [header, { type: 'message', id: 'a', message: message('done') }]);
- assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: 0.25, text: 'done', problem: null });
+ assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: 0.25, text: 'done', problem: null, thinking: 'unknown', providerThinkingLevel: undefined });
  write('events.log', [header, { type: 'message_end', message: message('done') }, { type: 'agent_settled', aborted: true }]);
- assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: 0.25, text: 'done', problem: 'worker run was aborted' });
+ assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: 0.25, text: 'done', problem: 'worker run was aborted', thinking: 'unknown', providerThinkingLevel: undefined });
  write('events.log', [header, { type: 'message_end', message: message('done') }, { type: 'agent_settled', aborted: false }]);
  write(`2026-01-01T00-00-00-000Z_${sid}.jsonl`, [header, { type: 'message', id: 'a', message: message('', { ...usage, cost: undefined }) }]);
- assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: null, text: '', problem: 'blank response from child pi' });
+ assert.deepEqual(readEvidence(dir, sid), { state: 'settled', spentUsd: null, text: '', problem: 'blank response from child pi', thinking: 'unknown', providerThinkingLevel: undefined });
  write(`2026-01-01T00-00-00-000Z_${sid}.jsonl`, [{ ...header, id: 'other' }]);
  assert.match((readEvidence(dir, sid) as any).reason, /another header/);
 });
@@ -556,4 +556,78 @@ test('publication crash windows reconcile from remote and PR identities', async 
   assert.equal(published.pullRequest?.effect.pr?.number, 1, 'existing PR adopted at the new head');
   assert.equal((await store.recover()).halted, false);
  } finally { await store.close(); }
+});
+
+test('evidence: only an explicit, uncontradicted pre-inference refusal proves zero spend', () => {
+ const dir = fs.mkdtempSync(path.join(W, 'refusal-')), sid = 'pd-refusal';
+ const header = { type: 'session', version: 3, id: sid };
+ const refusal = { type: 'dispatch_thinking_error', preInference: true, error: 'unsupported thinking' };
+ const file = `fixture_${sid}.jsonl`;
+ const write = (name: string, lines: object[], tail = '') => fs.writeFileSync(path.join(dir, name), lines.map(l => JSON.stringify(l)).join('\n') + '\n' + tail);
+ write('events.log', [header, refusal]);
+ assert.deepEqual(readEvidence(dir, sid), { state: 'refused', reason: refusal.error });
+ write(file, [header, { type: 'message', message: { role: 'user' } }]);
+ assert.equal(readEvidence(dir, sid).state, 'refused');
+ for (const activity of [
+  { type: 'message_start', message: { role: 'assistant' } },
+  { type: 'message_end', message: { role: 'assistant', usage } },
+  { type: 'message_update' }, { type: 'tool_execution_start' }, { type: 'tool_execution_end' },
+  { type: 'agent_end', messages: [{ role: 'assistant' }] },
+ ]) {
+  write('events.log', [header, activity, refusal]);
+  assert.equal(readEvidence(dir, sid).state, 'ambiguous', activity.type);
+ }
+ write('events.log', [header, refusal]);
+ for (const role of ['assistant', 'toolResult']) {
+  write(file, [header, { type: 'message', message: { role } }]);
+  assert.equal(readEvidence(dir, sid).state, 'ambiguous');
+ }
+ write(file, [header]);
+ for (const preInference of [false, undefined]) {
+  write('events.log', [header, { ...refusal, preInference }]);
+  assert.equal(readEvidence(dir, sid).state, 'unsettled');
+ }
+ write('events.log', [header, refusal, refusal]);
+ assert.notEqual(readEvidence(dir, sid).state, 'refused');
+ write('events.log', [header, refusal], '{"type":');
+ assert.equal(readEvidence(dir, sid).state, 'ambiguous');
+ write('events.log', [header, refusal]);
+ write(file, [header], '{"type":');
+ assert.equal(readEvidence(dir, sid).state, 'ambiguous');
+ assert.equal(readEvidence(dir, 'other-session').state, 'ambiguous');
+});
+
+test('live pilot: zero-spend refusal requires clean event and session evidence; late refusal stays unknown', async () => {
+ for (const mode of ['early', 'late', 'message', 'tool', 'session']) {
+  const dir = fs.mkdtempSync(path.join(W, 'live-refusal-'));
+  const pi = fakePi(`
+const mode=${JSON.stringify(mode)};
+if(mode==='message')finish();
+if(mode==='tool')out({type:'tool_execution_start',toolName:'read'});
+if(mode==='session'){
+ const dir=args[args.indexOf('--session-dir')+1];
+ fs.writeFileSync(require('path').join(dir,'fixture_'+sid+'.jsonl'),[ {type:'session',version:3,id:sid}, {type:'message',message:{role:'assistant'}} ].map(e=>JSON.stringify(e)).join('\\n')+'\\n');
+}
+out({type:'dispatch_thinking_error',preInference:mode!=='late',error:'refused'});
+process.exit(1);`);
+  const result = await runPilotProc(agent, 'fixture', { cwd: dir, piExecutable: pi.bin, model: 'fake/model', thinking: 'high', sessionId: 'pd-refusal', sessionDir: path.join(dir, 'session'), onSpawn: () => {} });
+  assert.equal(result.status, 'error');
+  assert.equal(result.preInferenceRefusal, mode === 'early', mode);
+  assert.equal(result.spendKnown, false);
+ }
+});
+
+test('supervisor: verified writer refusal records zero without replay; late refusal halts on unknown spend', async () => {
+ for (const preInference of [true, false]) {
+  const s = await setup();
+  try {
+   const pi = fakePi(`out({type:'dispatch_thinking_error',preInference:${preInference},error:'refused'});process.exit(1);`);
+   const supervisor = new Supervisor(s.options({ piExecutable: pi.bin }));
+   const result = await supervisor.runAttempt(task('t1'), soon());
+   assert.equal(result.spentUsd, preInference ? 0 : null);
+   await assert.rejects(supervisor.adopt(task('t1'), result.key, soon()), /no recorded worker to adopt/);
+   if (!preInference) await assert.rejects(supervisor.runAttempt(task('t2'), soon()), /unknown spend/);
+   assert.equal(pi.spawns().length, 1);
+  } finally { await s.store.close(); }
+ }
 });

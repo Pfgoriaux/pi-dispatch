@@ -17,7 +17,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { THINKING_LEVELS, type AgentConfig } from "./types.ts";
-import { expandModelSpec, isProfileTier, tierThinking } from "./profiles.ts";
+import { expandModelSpec, isProfileTier } from "./profiles.ts";
 
 type AgentFrontmatter = {
 	name?: unknown;
@@ -74,14 +74,13 @@ function loadAgentsFromDir(
 			continue;
 		}
 
-		// Frontmatter `model` may name an effort tier (cheap/balanced/precise/
+		// Frontmatter `model` may name a model tier (cheap/balanced/precise/
 		// long; see src/profiles.ts) — expand it to a concrete spec so every
 		// downstream consumer (candidates, write-tier child CLI) sees a real
 		// model id. Anything else ("inherit", provider/id) passes through and
 		// unknown ids fail clearly at candidate resolution, not silently.
 		const rawModel =
 			typeof frontmatter.model === "string" ? frontmatter.model : undefined;
-		const tierDefault = tierThinking(rawModel);
 
 		agents.push({
 			name: frontmatter.name,
@@ -89,16 +88,12 @@ function loadAgentsFromDir(
 			tools: parseToolList(frontmatter.tools),
 			model: expandModelSpec(rawModel),
 			quotaRouting: isProfileTier(rawModel),
-			// Frontmatter thinking overrides the tier default; frontmatter
-			// thinking is optional and invalid values fall back to "off"
-			// (or the tier default) rather than dropping the whole agent file.
+			// Preserve legacy values; the worker applies the high floor.
 			thinking:
 				typeof frontmatter.thinking === "string" &&
 				THINKING_LEVELS.has(frontmatter.thinking)
 				? (frontmatter.thinking as AgentConfig["thinking"])
-				: tierDefault && THINKING_LEVELS.has(tierDefault)
-					? (tierDefault as AgentConfig["thinking"])
-					: undefined,
+				: undefined,
 			systemPrompt: body.trim(),
 			source,
 			filePath,

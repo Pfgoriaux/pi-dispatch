@@ -4,6 +4,7 @@
  * The process that runs or resumes a batch owns its store until it exits and
  * answers `status`/`stop` over a Unix socket in a private per-user directory.
  */
+import { isTaskThinking, type TaskThinking } from "../thinking.ts";
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -73,6 +74,16 @@ class Reader {
 
 const relativePath = (file: string) => !path.isAbsolute(file) && !file.split("/").includes("..");
 
+/** Optional effort fields stay absent so legacy approval hashes remain unchanged. */
+function readThinking(r: Reader, raw: Raw, key: "thinking" | "reviewThinking", where: string): { thinking?: TaskThinking; reviewThinking?: TaskThinking } {
+	if (raw[key] === undefined) return {};
+	if (!isTaskThinking(raw[key])) {
+		r.problems.push(`${where}.${key} must be high, xhigh, or max`);
+		return {};
+	}
+	return { [key]: raw[key] };
+}
+
 function readTask(r: Reader, value: unknown, i: number): BatchTaskSpec {
 	const where = `batch.tasks[${i}]`;
 	const raw = r.object(value, where);
@@ -84,6 +95,8 @@ function readTask(r: Reader, value: unknown, i: number): BatchTaskSpec {
 	const dependencies = r.strings(raw, "dependencies", where, 0);
 	if (new Set(dependencies).size !== dependencies.length) r.problems.push(`${where}.dependencies must not repeat`);
 	return {
+		...readThinking(r, raw, "thinking", where),
+		...readThinking(r, raw, "reviewThinking", where),
 		id: r.string(raw, "id", where, (v) => SAFE_ID.test(v), "a safe identifier"),
 		dependencies,
 		ownedFiles,
@@ -161,6 +174,7 @@ export function parseConfig(value: unknown): PilotConfig {
 			branchPrefix: r.string(repo, "branchPrefix", "repo", (v) => v.split("/").every((part) => SAFE_ID.test(part)), "safe branch path segments"),
 		},
 		worker: {
+			...(worker.reviewThinking === undefined ? {} : { reviewThinking: r.string(worker, "reviewThinking", "worker", (v) => THINKING_LEVELS.has(v), "a thinking level") as ThinkingLevel }),
 			piExecutable: r.absolute(worker, "piExecutable", "worker"),
 			...(prefixArgs ? { piPrefixArgs: prefixArgs } : {}),
 			model: r.string(worker, "model", "worker", exactModel, "an exact provider/id"),

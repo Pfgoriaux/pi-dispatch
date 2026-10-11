@@ -15,6 +15,7 @@
  * - Pushes and pull requests go through `runEffect` (reconcile.ts).
  *   Target branches are never merged or removed.
  */
+import { isTaskThinking } from "../thinking.ts";
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -29,7 +30,7 @@ import { runPilotProc, type PilotProcResult } from "../worker-proc.ts";
 import { dirtyLines, gitThrow } from "../worktree.ts";
 import {
 	attemptKey, committedUsd, putAttempt, reviewFailures, reviewRetryable, runningWorkers,
-	type AttemptState, type ReviewState, type WorkerIdentity,
+	type AttemptState, type ReviewState, type WorkerIdentity, type EffortEvidence,
 } from "./contracts.ts";
 import { readEvidence, reportedEvidenceUsd } from "./evidence.ts";
 import {
@@ -125,7 +126,7 @@ export interface ReviewRequest {
 	readonly baseSha: string;
 }
 
-type Outcome = Pick<AttemptState, "status" | "spentUsd" | "reason"> & { headSha?: string | null };
+type Outcome = Pick<AttemptState, "status" | "spentUsd" | "reason"> & { headSha?: string | null; effort?: EffortEvidence };
 
 const MAX_TIMER_MS = 2 ** 31 - 1;
 const SAFE_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -261,12 +262,45 @@ const REVIEW_RULES = [
 	"If nothing qualifies, answer exactly: No findings.",
 ];
 
-/** Count findings in the shared pr_review format. A blocker counts only when it cites a changed file. */
-export function parseReview(text: string, changed: readonly string[]): Pick<ReviewState, "blocking" | "other" | "findings"> {
-	const sections = text.split(/^(?=## \[(?:blocker|major|minor)\])/m).filter((s) => /^## \[/.test(s));
+/** Ignore fenced examples, including an unclosed fence at the end of a report. */
+function withoutFencedCode(text: string): string {
+	let fence: string | undefined;
+	return text.split("\n").map((line) => {
+		const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+		if (!fence) {
+			fence = marker?.[1];
+			return fence ? "" : line;
+		}
+		if (marker?.[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = undefined;
+		return "";
+	}).join("\n");
+}
+
+/** One heading matcher for new reviews and legacy decision-count recovery. */
+function reviewFindings(text: string) {
+	const prose = withoutFencedCode(text);
+	const headings = [...prose.matchAll(/^##[ \t]+\[(blocker|major|minor)\][ \t]*(\[decision\])?[^\n]*/gm)];
+	return headings.map((heading, index) => ({
+		severity: heading[1], decision: Boolean(heading[2]),
+		section: prose.slice(heading.index, headings[index + 1]?.index),
+	}));
+}
+
+/** Only old stores lack the full-text count; their bounded findings are the available evidence. */
+export function reviewDecisions(review: Pick<ReviewState, "decisions" | "findings">): number {
+	return review.decisions ?? reviewFindings(review.findings ?? "").filter((f) => f.decision).length;
+}
+
+/** Count the full review before bounding its text. Decisions never trigger fixes. */
+export function parseReview(text: string, changed: readonly string[]): Pick<ReviewState, "blocking" | "other" | "decisions" | "findings"> {
+	const sections = reviewFindings(text);
+	const automatic = sections.filter((s) => !s.decision);
 	const cited = (section: string) => /^- File:\s*`?([^\s`:]+)/m.exec(section)?.[1];
-	const blocking = sections.filter((s) => s.startsWith("## [blocker]") && changed.includes(cited(s) ?? "")).length;
-	return { blocking, other: sections.length - blocking, findings: sections.length > 0 ? Array.from(text.trim()).slice(0, 6000).join("") : null };
+	const blocking = automatic.filter((s) => s.severity === "blocker" && changed.includes(cited(s.section) ?? "")).length;
+	return {
+		blocking, other: automatic.length - blocking, decisions: sections.length - automatic.length,
+		findings: sections.length > 0 ? Array.from(text.trim()).slice(0, 6000).join("") : null,
+	};
 }
 
 /** Session run name of a review try: `<key>/review`, then `<key>/review-<n>` for retries. */
@@ -274,11 +308,15 @@ const reviewRun = (key: string, review: Readonly<ReviewState>) =>
 	(review.tries ?? 1) === 1 ? `${key}/review` : `${key}/review-${review.tries}`;
 
 /** A finished child: settled with its answer, or a terminal outcome. */
-type Ran =
+type Ran = { thinking?: string; providerThinkingLevel?: string } & (
 	| { status: "settled"; spentUsd: number | null; text: string }
-	| { status: "blocked" | "failed"; spentUsd: number | null; reason: string; stopped?: boolean; reportedUsd?: number };
+	| { status: "blocked" | "failed"; spentUsd: number | null; reason: string; stopped?: boolean; reportedUsd?: number });
 
 async function judgeRun(result: PilotProcResult, stopped?: string): Promise<Ran> {
+	return { ...await judgeLiveRun(result, stopped), thinking: result.thinking ?? "unknown", providerThinkingLevel: result.providerThinkingLevel };
+}
+
+async function judgeLiveRun(result: PilotProcResult, stopped?: string): Promise<Ran> {
 	const spentUsd = spendOf(result);
 	// runPilotProc waited for its own child's exit; only surviving group members remain uncertain.
 	const group = result.spawned ? await remainingGroup(result.spawned.pid) : null;
@@ -286,6 +324,7 @@ async function judgeRun(result: PilotProcResult, stopped?: string): Promise<Ran>
 		return { status: "blocked", spentUsd: null, reason: `worker ${result.spawned!.pid} or its process group is still running (${group})` };
 	}
 	if (result.launched && !result.spawned) return { status: "blocked", spentUsd: null, reason: result.error ?? "worker identity was never recorded" };
+	if (result.preInferenceRefusal) return { status: "failed", spentUsd: 0, reason: result.error ?? "pre-inference refusal" };
 	if (result.status !== "ok") {
 		const reported = result.usage?.cost.total ?? 0;
 		return {
@@ -300,22 +339,33 @@ async function judgeRun(result: PilotProcResult, stopped?: string): Promise<Ran>
 async function judgeOrphan(worker: WorkerIdentity, dir: string, sessionId: string, limits: RunLimits, review?: Readonly<ReviewState>): Promise<Ran> {
 	const exit = await awaitExit(worker, limits);
 	if ("blocked" in exit) return { status: "blocked", spentUsd: null, reason: exit.blocked };
+	const evidence = readEvidence(dir, sessionId);
+	if (evidence.state === "refused") return { status: "failed", spentUsd: 0, reason: evidence.reason };
 	const stopped = exit.stopped ?? review?.stopReason;
 	if (review && stopped) {
 		return { status: "failed", spentUsd: null, reason: stopped, stopped: true, reportedUsd: reportedEvidenceUsd(dir, sessionId) };
 	}
-	const evidence = readEvidence(dir, sessionId);
 	if (evidence.state === "ambiguous") return { status: "blocked", spentUsd: null, reason: evidence.reason };
 	if (evidence.state === "unsettled") return { status: "failed", spentUsd: null, reason: exit.stopped ?? "worker exited before it settled" };
-	if (evidence.problem) return { status: "failed", spentUsd: evidence.spentUsd, reason: evidence.problem };
-	return { status: "settled", spentUsd: evidence.spentUsd, text: evidence.text };
+	if (evidence.problem) return { status: "failed", spentUsd: evidence.spentUsd, reason: evidence.problem, thinking: evidence.thinking, providerThinkingLevel: evidence.providerThinkingLevel };
+	return { status: "settled", spentUsd: evidence.spentUsd, text: evidence.text, thinking: evidence.thinking, providerThinkingLevel: evidence.providerThinkingLevel };
 }
 
-/** Spend is known only when the child never spawned or reported `agent_settled`. */
+/** Spend requires settlement, a verified pre-inference refusal, or no launch. */
 function spendOf(result: PilotProcResult): number | null {
-	if (!result.launched) return 0;
+	if (!result.launched || result.preInferenceRefusal) return 0;
 	if (!result.settled || !result.spendKnown) return null;
 	return result.usage?.cost.total ?? null;
+}
+
+function effortEvidence(requested: string, observed: { thinking?: string; providerThinkingLevel?: string }): EffortEvidence {
+	return { requested, effective: observed.thinking ?? "unknown",
+		...(observed.providerThinkingLevel !== undefined ? { providerThinkingLevel: observed.providerThinkingLevel } : {}),
+	};
+}
+
+function assertLaunchThinking(thinking: string): void {
+	if (!isTaskThinking(thinking)) throw new SupervisorBlockedError("New launches require high, xhigh, or max thinking; redraft and reapprove the batch. Existing workers are not changed.");
 }
 
 export class Supervisor {
@@ -344,6 +394,7 @@ export class Supervisor {
 		const remaining = limits.deadlineAt - Date.now();
 		if (!(remaining > 0 && remaining <= MAX_TIMER_MS)) throw new SupervisorBlockedError("Deadline must be in the future and within 24 days.");
 		if (limits.signal?.aborted) throw new SupervisorBlockedError("Cancelled before start.");
+		assertLaunchThinking(task.thinking);
 		const attempt = await this.#queue(() => this.#claim(task, limits));
 		let spawned = false;
 		try {
@@ -364,6 +415,7 @@ export class Supervisor {
 			key: attemptKey(task.key, plan.attempt), taskKey: task.key, attempt: plan.attempt, status: "running",
 			reservedUsd: plan.reserveUsd, spentUsd: 0, worker: null, worktree: await taskWorktreePath(worktreesRoot, featureRoot, branch),
 			branch, baseSha, headSha: null, pr: null, reason: null,
+			effort: { requested: task.thinking, effective: "unknown" },
 		};
 		await store.harness.commit((tx) => {
 			if (limits.signal?.aborted || limits.canStart?.() === false) throw new AttemptNotStartedError("Stopped before admission.");
@@ -425,6 +477,7 @@ export class Supervisor {
 			});
 			if (result.launched) markSpawned();
 			const outcome = await this.#judge(task, attempt, result, signal, stopped());
+			outcome.effort = effortEvidence(task.thinking, result);
 			return await this.#finish(attempt, outcome);
 		});
 	}
@@ -453,7 +506,7 @@ export class Supervisor {
 
 	async #judge(task: PilotTask, attempt: AttemptState, result: PilotProcResult, signal: AbortSignal, stopped?: string): Promise<Outcome> {
 		const ran = await judgeRun(result, stopped);
-		if (ran.status !== "settled") return ran;
+		if (ran.status !== "settled") return { status: ran.status, spentUsd: ran.spentUsd, reason: ran.reason };
 		return this.#verified(task, attempt, ran.spentUsd, signal);
 	}
 
@@ -510,11 +563,12 @@ export class Supervisor {
 	async #judgeAdopted(task: PilotTask, attempt: AttemptState, limits: RunLimits): Promise<Outcome> {
 		const { sessionId, dir } = this.#session(attempt.key);
 		const ran = await judgeOrphan(attempt.worker!, dir, sessionId, limits);
-		if (ran.status !== "settled") return ran;
+		const effort = effortEvidence(attempt.effort?.requested ?? "unknown", ran);
+		if (ran.status !== "settled") return { status: ran.status, spentUsd: ran.spentUsd, reason: ran.reason, effort };
 		if ((await dirtyLines(attempt.worktree!)).length > 0) {
-			return { status: "failed", spentUsd: ran.spentUsd, reason: `Worker left uncommitted edits; worktree retained at ${attempt.worktree}` };
+			return { status: "failed", spentUsd: ran.spentUsd, reason: `Worker left uncommitted edits; worktree retained at ${attempt.worktree}`, effort };
 		}
-		return this.#verified(task, attempt, ran.spentUsd, checkSignal(limits));
+		return { ...await this.#verified(task, attempt, ran.spentUsd, checkSignal(limits)), effort };
 	}
 
 	/**
@@ -530,7 +584,8 @@ export class Supervisor {
 		if (recorded && recorded.headSha !== attempt.headSha) throw new SupervisorBlockedError(`${key} has a review of another head.`);
 		if (recorded?.status === "running") return this.#adoptReview(attempt, recorded, request, limits);
 		if (recorded && !reviewRetryable(recorded)) return recorded;
-		const review = await this.#queue(() => this.#claimReview(attempt, request.model, limits));
+		assertLaunchThinking(request.thinking);
+		const review = await this.#queue(() => this.#claimReview(attempt, request, limits));
 		if (review.status !== "running") return review;
 		let spawned = false;
 		const ran = await this.#bounded(this.#reviewLimits(attempt, review, limits), async (signal, stopped) => {
@@ -567,16 +622,16 @@ export class Supervisor {
 		};
 	}
 
-	async #claimReview(attempt: AttemptState, model: string, limits: RunLimits): Promise<ReviewState> {
+	async #claimReview(attempt: AttemptState, request: ReviewRequest, limits: RunLimits): Promise<ReviewState> {
 		const { store } = this.options;
 		const plan = planReview(await store.read(), attempt.key, limits.deadlineAt);
 		const skip = "skip" in plan ? plan.skip : null;
 		const before = attempt.review;
 		const review: ReviewState = {
 			headSha: attempt.headSha!, status: skip ? "skipped" : "running", reservedUsd: "reserveUsd" in plan ? plan.reserveUsd : 0,
-			spentUsd: 0, worker: null, blocking: 0, other: 0, findings: null, reason: skip,
+			spentUsd: 0, worker: null, blocking: 0, other: 0, decisions: 0, findings: null, reason: skip,
 			tries: before ? (before.tries ?? 1) + 1 : 1, earlierUsd: before ? (before.earlierUsd ?? 0) + before.spentUsd! : 0,
-			startedAt: Date.now(), model, failures: reviewFailures(before),
+			startedAt: Date.now(), model: request.model, effort: { requested: request.thinking, effective: "unknown" }, failures: reviewFailures(before),
 		};
 		await store.harness.commit(async (tx) => {
 			if (!skip && (limits.signal?.aborted || limits.canStart?.() === false)) throw new AttemptNotStartedError("Stopped before review.");
@@ -611,6 +666,7 @@ export class Supervisor {
 			const review = (await tx.doc(store.contracts.AttemptDoc, attempt.key, attempt)).review;
 			if (review?.status !== "running") throw new Error(`Review of ${attempt.key} is not running.`);
 			Object.assign(review, patch);
+			review.effort = effortEvidence(review.effort?.requested ?? "unknown", ran);
 			if (ran.status === "failed" && ran.stopped) {
 				review.spentUsd = Math.max(review.reservedUsd, ran.spentUsd ?? 0, ran.reportedUsd ?? 0);
 				review.reservationCharged = true;

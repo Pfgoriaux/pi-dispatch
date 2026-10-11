@@ -50,7 +50,10 @@ export interface WorkerResult {
 	error?: string;
 	sessionId?: string;
 	model?: string;
+	/** Effective only; unknown until a session or message supplies evidence. */
 	thinking?: string;
+	requestedThinking?: string;
+	providerThinkingLevel?: string;
 	usage?: Usage;
 	/** Number of model candidates tried (details-only). */
 	attempts: number;
@@ -61,6 +64,7 @@ export interface WorkerResult {
 
 /** Planned/running identities; separate from terminal WorkerResult values. */
 export interface WorkerActivity {
+	requestedThinking?: string;
 	index: number;
 	agent: string;
 	task: string;
