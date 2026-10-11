@@ -38,3 +38,23 @@ test("bundled roles resolve to Kimi for writing and precise for planning", t => 
 		{ name: "planner", model: "anthropic/claude-opus-5-5", thinking: "high" },
 	]);
 });
+
+test("profile and review overrides still apply but cannot rewrite Hetzner guidance", () => {
+	const env = { ...process.env };
+	for (const tier of ["CHEAP", "BALANCED", "PRECISE", "LONG"]) env[`DISPATCH_PROFILE_${tier}_MODEL`] = `override/${tier.toLowerCase()}`;
+	for (const role of ["OPUS", "ASTRA", "PREMORTEM", "SPEC"]) env[`DISPATCH_REVIEW_${role}_MODEL`] = `override/${role.toLowerCase()}`;
+	const profilesUrl = new URL("../src/profiles.ts", import.meta.url).href;
+	const promptsUrl = new URL("../src/tools/feature-plan-prompts.ts", import.meta.url).href;
+	const { profiles, reviews, guidance, constants } = JSON.parse(execFileSync(process.execPath, [
+		"--import", "tsx", "--input-type=module", "-e",
+		`import { PROFILES, REVIEW_MODELS, KIMI_MODEL, GLM_MODEL, KIMI_FALLBACK_MODEL } from ${JSON.stringify(profilesUrl)};
+		import { HETZNER_DRAFT_GUIDANCE } from ${JSON.stringify(promptsUrl)};
+		console.log(JSON.stringify({ profiles: PROFILES, reviews: REVIEW_MODELS, guidance: HETZNER_DRAFT_GUIDANCE,
+			constants: [KIMI_MODEL, GLM_MODEL, KIMI_FALLBACK_MODEL] }));`,
+	], { env, encoding: "utf8" }));
+	for (const tier of ["cheap", "balanced", "precise", "long"]) assert.equal(profiles[tier].model, `override/${tier}`);
+	assert.deepEqual(reviews, { opus: "override/opus", astra: "override/astra", preMortem: "override/premortem", specReuse: "override/spec" });
+	assert.deepEqual(constants, ["aperture/neuralwatt/kimi-k3", "aperture/neuralwatt/glm-5.3", "aperture/synthetic/hf:moonshotai/Kimi-K3"]);
+	assert.doesNotMatch(guidance, /override\//);
+	for (const value of constants) assert.ok(guidance.includes(value));
+});
