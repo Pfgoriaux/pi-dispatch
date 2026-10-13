@@ -39,7 +39,7 @@ import {
 	withoutModels,
 	type RankedCandidate,
 } from "./roster.ts";
-import { resolveRequest, resolveEffective, effortLabel, THINKING_REFUSAL, type TaskThinking } from "./thinking.ts";
+import { resolveRequest, attemptThinking, effortLabel, THINKING_REFUSAL, type TaskThinking } from "./thinking.ts";
 import { exhaustedQuotaReason, quotaCandidates } from "./quota.ts";
 import { ToolHealth } from "./tool-health.ts";
 import { modelIdentity } from "./model-diversity.ts";
@@ -78,6 +78,8 @@ export interface RunWorkerOptions {
 	/** Exact requested effort, independent of model selection. */
 	thinking?: string;
 	savedResumeThinking?: string;
+	/** Built-in workflow steps only: run at `low` where the model supports it. */
+	lightThinking?: boolean;
 }
 
 /** Where persisted worker sessions live: <agentDir>/pi-dispatch/sessions. */
@@ -314,7 +316,7 @@ export async function runWorker(
 	const allowed = options.allowedModels?.map(modelIdentity);
 
 	for (let i = 0; i < candidates.length; i++) {
-		const candidate = { ...candidates[i], thinking };
+		const candidate: RankedCandidate = { ...candidates[i], thinking };
 		if (options.signal?.aborted) {
 			return { ...fail("aborted", "Aborted before next attempt"), attempts, usage: aggregatedUsage };
 		}
@@ -330,7 +332,7 @@ export async function runWorker(
 		}
 
 		try {
-			resolveEffective(candidate.thinking, model);
+			candidate.thinking = attemptThinking(thinking, model, options.lightThinking);
 		} catch (error) {
 			lastError = (error as Error).message;
 			lastAttempt = { ...fail("error", lastError), model: `${model.provider}/${model.id}`, requestedThinking: candidate.thinking, thinking: "unknown" };

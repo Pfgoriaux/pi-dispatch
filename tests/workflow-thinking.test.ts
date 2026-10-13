@@ -93,12 +93,14 @@ console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content
 			const items = (result.details as DispatchDetails).items;
 			assert.equal(items.length, count, text(result));
 			assert.ok(items.every(r => r.status === "ok"), text(result));
-			assert.ok(items.every(r => r.requestedThinking === (thinking ?? "high")), name);
-			assert.ok(items.every(r => r.thinking === (thinking ?? "high")), name);
+			// The pr_review pre-mortem (step 3) runs at low on models that support it.
+			const expected = items.map((_, i) => name === "pr_review" && i === 2 ? "low" : (thinking ?? "high"));
+			assert.deepEqual(items.map(r => r.requestedThinking), expected, name);
+			assert.deepEqual(items.map(r => r.thinking), expected, name);
 			assert.match(text(result), /[Ee]ffort:/);
 		}
 		assert.equal(calls.length, 13);
-		assert.ok(calls.every(c => c.thinking === (thinking ?? "high")));
+		assert.deepEqual(calls.filter(c => c.thinking !== (thinking ?? "high")).map(c => c.thinking), ["low"]);
 	});
 }
 

@@ -47,11 +47,14 @@ Other roles' shell permissions remain instructions, not a filesystem sandbox.
 ### Thinking effort
 
 All workers require at least `high`, including cheap scouts and aggregation.
+The one exception is the `pr_review` pre-mortem, which runs at `low` on models
+that support it and at the workflow choice on the others.
 `thinking: "high" | "xhigh" | "max"` is independent of model tiers.
 Dispatch accepts it at the top level and on each `tasks[]` or `chain[]` item;
 item choices override the invocation default. The aggregator uses the invocation
 choice or `high`. `feature_plan`, `pr_review` (including its fix writer), and
-`council` apply one choice throughout the workflow.
+`council` apply one choice throughout the workflow, except the `pr_review`
+pre-mortem.
 
 For dispatch workers, precedence is task choice → invocation choice → saved
 resume request → agent/roster configuration → `high`. Legacy below-high
@@ -147,7 +150,7 @@ review any of them.
 parallel
 ├─ Opus reviewer: correctness/security
 ├─ Astra reviewer: correctness
-├─ DeepSeek scout: pre-mortem
+├─ DeepSeek scout: pre-mortem (low thinking)
 ├─ slop-reviewer: unnecessary code/docs
 └─ GLM reviewer: spec gaps, reachable edge cases, overlaps, reuse
 reviewer → verify findings against diff and code → report

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createAgentSessionServices, DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { isTaskThinking, resolveRequest, resolveEffective, effortLabel } from "../src/thinking.ts";
+import { isTaskThinking, resolveRequest, resolveEffective, attemptThinking, effortLabel } from "../src/thinking.ts";
 import { runWorker, effortSummary } from "../src/worker.ts";
 import { runWorkerProc } from "../src/worker-proc.ts";
 import type { AgentConfig } from "../src/types.ts";
@@ -51,6 +51,14 @@ test("capabilities require exact effort, including sparse maps and non-reasoning
 	assert.throws(() => resolveEffective("high", { ...model, thinkingLevelMap: { high: null, max: "max" } }), /Unsupported thinking high/);
 	assert.equal(effortLabel({ requestedThinking: "xhigh" }), "xhigh→unknown");
 	assert.equal(effortLabel({ requestedThinking: "max", thinking: "max" }), "max");
+});
+
+test("light workflow steps run at low only where the model supports it", () => {
+	const model = thinkingModel();
+	assert.equal(attemptThinking("high", model, true), "low");
+	assert.equal(attemptThinking("high", model), "high");
+	assert.equal(attemptThinking("max", { ...model, thinkingLevelMap: { low: null, max: "max" } }, true), "max");
+	assert.throws(() => attemptThinking("xhigh", { ...model, thinkingLevelMap: { xhigh: null } }, true), /Unsupported thinking xhigh/);
 });
 
 test("unsupported SDK efforts make zero inference calls and report supported choices", async t => {

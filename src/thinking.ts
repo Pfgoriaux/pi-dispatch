@@ -40,6 +40,16 @@ export function resolveEffective(request: TaskThinking, model?: Model<Api>): { e
 	return { effective: request, verified: true };
 }
 
+/**
+ * Effort for one attempt. The task request is always checked exactly first.
+ * `light` lowers a built-in workflow step to `low` on models that support it;
+ * public task schemas cannot request it.
+ */
+export function attemptThinking(request: TaskThinking, model: Model<Api>, light = false): string {
+	resolveEffective(request, model);
+	return light && getSupportedThinkingLevels(model).includes("low") ? "low" : request;
+}
+
 export function effortLabel(result: { requestedThinking?: string; thinking?: string }): string {
 	const effective = result.thinking ?? "unknown";
 	return result.requestedThinking && result.requestedThinking !== effective

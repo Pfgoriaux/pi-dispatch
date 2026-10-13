@@ -4,7 +4,7 @@
  * Five in-process workers run in parallel:
  *   1. Opus 5.5: correctness + security
  *   2. Codex Astra: correctness
- *   3. DeepSeek 4.1 Flash: pre-mortem, "why did this break 3 months later?"
+ *   3. DeepSeek 4.1 Flash at low thinking: pre-mortem, "why did this break 3 months later?"
  *   4. slop-reviewer (balanced tier): doc rules and unneeded additions
  *   5. GLM 5.3: spec gaps, reachable edge cases, overlaps and reuse
  * A reviewer on the balanced tier then checks each finding against the code
@@ -388,7 +388,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					const runStep = (
 						index: number,
 						task: string,
-						model: { spec?: string; excludeModels?: string[]; steerByQuota?: boolean; claim?: boolean },
+						model: { spec?: string; excludeModels?: string[]; steerByQuota?: boolean; claim?: boolean; lightThinking?: boolean },
 					) =>
 						progress.run(
 							index,
@@ -404,6 +404,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 									fallbackModels: WORKFLOW_FALLBACK_MODELS,
 									steerByQuota: model.steerByQuota,
 									claimModel: model.claim ? pool.worker() : undefined,
+									lightThinking: model.lightThinking,
 									...progress.options(index),
 								}),
 							signal,
@@ -426,6 +427,8 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 						runStep(2, preMortemTask(reviewerCtx), {
 							spec: REVIEW_MODELS.preMortem,
 							steerByQuota: true,
+							// At high, DeepSeek spends 3-9k reasoning tokens per turn; low turns it off on Synthetic.
+							lightThinking: true,
 						}),
 						runStep(3, slopTask(reviewerCtx), {}),
 						// Outside the reviewer pool, like pre-mortem and slop.
