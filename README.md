@@ -461,11 +461,13 @@ Profile environment overrides do not change it.
 
 | Executor contract | Task model | Task reviewModel | Task modelFallbacks |
 |---|---|---|---|
-| `long` | `aperture/neuralwatt/kimi-k3` | `aperture/neuralwatt/glm-5.3` | `["aperture/synthetic/hf:moonshotai/Kimi-K3"]` |
-| Small/bounded GLM | `aperture/neuralwatt/glm-5.3` | `aperture/neuralwatt/kimi-k3` | `["aperture/synthetic/hf:zai-org/GLM-5.3"]` |
+| `long` | `aperture/neuralwatt/kimi-k3` | `aperture/neuralwatt/glm-5.3` | None |
+| Small/bounded GLM | `aperture/neuralwatt/glm-5.3` | `aperture/neuralwatt/kimi-k3` | None |
 | `precise` | Keep local; do not draft for Hetzner | — | — |
 
-Set `limits.maxAttemptsPerTask: 2` for the Synthetic fallbacks. Writer and reviewer thinking
+Foreman runs Kimi K3 and GLM 5.3 on Neuralwatt or Synthetic by provider quota and
+retries the other route after a provider refusal without using an attempt. Do not
+list the other route as a fallback. Writer and reviewer thinking
 must be `high` or above: set `worker.thinking`, and any `worker.reviewThinking`,
 task `thinking`, or task `reviewThinking`, to `high` (default), `xhigh`, or
 `max`. This guidance does not rewrite configuration, validate providers, or

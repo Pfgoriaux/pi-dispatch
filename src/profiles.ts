@@ -45,7 +45,6 @@ function envModel(name: string): string | undefined {
 /** Literal defaults; Hetzner drafting guidance must not inherit profile overrides. */
 export const KIMI_MODEL = "aperture/neuralwatt/kimi-k3";
 export const GLM_MODEL = "aperture/neuralwatt/glm-5.3";
-export const KIMI_FALLBACK_MODEL = "aperture/synthetic/hf:moonshotai/Kimi-K3";
 export const GLM_FALLBACK_MODEL = "aperture/synthetic/hf:zai-org/GLM-5.3";
 
 export const PROFILES: Record<ProfileTier, ModelProfile> = {
