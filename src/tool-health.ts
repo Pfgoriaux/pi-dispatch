@@ -43,3 +43,30 @@ export class ToolHealth {
 		return this.failure;
 	}
 }
+
+/**
+ * Bound tool rounds for discovery steps. At the budget the worker is asked to
+ * answer from what it has; at double the budget the attempt fails.
+ */
+export class ToolBudget {
+	private calls = 0;
+	private asked = false;
+	readonly message: string;
+	readonly failure: string;
+
+	constructor(private readonly budget?: number) {
+		this.message = `Tool budget used (${budget} calls). Stop inspecting and give your final answer now from what you have.`;
+		this.failure = `Worker stopped after ${budget ? budget * 2 : 0} tool calls, twice its budget, without a final answer.`;
+	}
+
+	observe(event: ToolBoundary): "answer" | "stop" | undefined {
+		if (!this.budget || event.type !== "tool_execution_end") return undefined;
+		this.calls++;
+		if (this.calls >= this.budget * 2) return "stop";
+		if (this.calls >= this.budget && !this.asked) {
+			this.asked = true;
+			return "answer";
+		}
+		return undefined;
+	}
+}

@@ -39,11 +39,11 @@ import {
 	withoutModels,
 	type RankedCandidate,
 } from "./roster.ts";
-import { resolveRequest, attemptThinking, effortLabel, THINKING_REFUSAL, type TaskThinking } from "./thinking.ts";
+import { resolveRequest, resolveEffective, effortLabel, THINKING_REFUSAL } from "./thinking.ts";
 import { exhaustedQuotaReason, quotaCandidates } from "./quota.ts";
-import { ToolHealth } from "./tool-health.ts";
+import { ToolBudget, ToolHealth } from "./tool-health.ts";
 import { modelIdentity } from "./model-diversity.ts";
-import type { AgentConfig, WorkerResult } from "./types.ts";
+import type { AgentConfig, ThinkingLevel, WorkerResult } from "./types.ts";
 
 export interface RunWorkerOptions {
 	registry: ModelRegistry;
@@ -75,11 +75,11 @@ export interface RunWorkerOptions {
 	fallbackModels?: readonly string[];
 	/** Synchronous phase-wide claim, checked against the resolved model on every attempt. */
 	claimModel?: (spec: string) => boolean;
-	/** Exact requested effort, independent of model selection. */
+	/** Explicit effort; must meet the agent's role floor. Omitted: configuration, then the floor. */
 	thinking?: string;
 	savedResumeThinking?: string;
-	/** Built-in workflow steps only: run at `low` where the model supports it. */
-	lightThinking?: boolean;
+	/** After this many tool calls the worker is told to answer; at double, the attempt fails. */
+	toolBudget?: number;
 }
 
 /** Where persisted worker sessions live: <agentDir>/pi-dispatch/sessions. */
@@ -91,7 +91,7 @@ export interface WorkerSessionRecord {
 	file: string;
 	agent: string;
 	savedAt: number;
-	requestedThinking?: TaskThinking;
+	requestedThinking?: ThinkingLevel;
 	model?: string;
 }
 
@@ -118,7 +118,7 @@ export function recordWorkerSession(
 	sessionId: string,
 	file: string,
 	agent: string,
-	requestedThinking?: TaskThinking,
+	requestedThinking?: ThinkingLevel,
 	model?: string,
 ): void {
 	if (!file) return;
@@ -258,9 +258,10 @@ export async function runWorker(
 	const selection = override ? undefined : resolveCandidates(agent, await loadRosterConfig());
 	const savedResume = options.savedResumeThinking ?? (options.resumeFile ? SessionManager.open(options.resumeFile).buildSessionContext().thinkingLevel : undefined);
 	// Resolve once before routing/fallback: another candidate cannot change the request.
-	const thinking = resolveRequest({
+	const request = resolveRequest({
 		task: options.thinking, savedResume, resumeSource: options.resumeFile, agentConfig: selection?.candidates[0]?.thinking ?? agent.thinking,
-	}, `Agent/roster ${agent.name}`, options.onWarning);
+	}, agent.name, `Agent/roster ${agent.name}`, options.onWarning);
+	const thinking = request.level;
 	let candidates: RankedCandidate[] = override
 		? override === "inherit"
 			? []
@@ -332,10 +333,10 @@ export async function runWorker(
 		}
 
 		try {
-			candidate.thinking = attemptThinking(thinking, model, options.lightThinking);
+			candidate.thinking = resolveEffective(request, model).effective;
 		} catch (error) {
 			lastError = (error as Error).message;
-			lastAttempt = { ...fail("error", lastError), model: `${model.provider}/${model.id}`, requestedThinking: candidate.thinking, thinking: "unknown" };
+			lastAttempt = { ...fail("error", lastError), model: `${model.provider}/${model.id}`, requestedThinking: thinking, thinking: "unknown" };
 			failedAttempts.push(lastError);
 			options.onWarning?.(lastError);
 			continue;
@@ -364,11 +365,11 @@ export async function runWorker(
 			`${model.provider}/${model.id}`,
 			"unknown",
 			attempts,
-			candidate.thinking,
+			thinking,
 		);
 		let attempt: WorkerResult;
 		try {
-			attempt = await runOneCandidate(agent, task, options, candidate, model, extensionPaths);
+			attempt = await runOneCandidate(agent, task, options, candidate, thinking, model, extensionPaths);
 		} catch (error) {
 			if (error instanceof ExhaustedQuotaError) {
 				attempts--;
@@ -380,14 +381,14 @@ export async function runWorker(
 			if (error instanceof LinkupSetupError) {
 				return {
 					...fail(options.signal?.aborted ? "aborted" : "error", error.message),
-					model: `${model.provider}/${model.id}`, requestedThinking: candidate.thinking, thinking: "unknown",
+					model: `${model.provider}/${model.id}`, requestedThinking: thinking, thinking: "unknown",
 					attempts, usage: aggregatedUsage,
 				};
 			}
 			attempt = {
 				...fail(options.signal?.aborted ? "aborted" : "error", String(error)),
 				model: `${model.provider}/${model.id}`,
-				requestedThinking: candidate.thinking, thinking: "unknown",
+				requestedThinking: thinking, thinking: "unknown",
 			};
 		}
 		lastAttempt = attempt;
@@ -443,6 +444,7 @@ async function runOneCandidate(
 	task: string,
 	options: RunWorkerOptions,
 	candidate: RankedCandidate,
+	requestedThinking: string,
 	model: Model<Api>,
 	extensionPaths: string[],
 ): Promise<WorkerResult> {
@@ -464,7 +466,7 @@ async function runOneCandidate(
 		text: "",
 		error,
 		model: candidate.modelSpec,
-		requestedThinking: candidate.thinking, thinking: effectiveThinking,
+		requestedThinking, thinking: effectiveThinking,
 		ms: Date.now() - started,
 	});
 
@@ -530,6 +532,7 @@ async function runOneCandidate(
 	options.signal?.addEventListener("abort", onAbort, { once: true });
 
 	const toolHealth = new ToolHealth(session.getActiveToolNames());
+	const toolBudget = new ToolBudget(options.toolBudget);
 	let startupFailure: string | undefined;
 	let startupTimer: ReturnType<typeof setTimeout> | undefined;
 	const unsubscribe = session.subscribe((event) => {
@@ -555,6 +558,15 @@ async function runOneCandidate(
 				// The outer prompt settles and this attempt is classified as a failure.
 				session.agent.abort();
 			}
+			const budget = toolBudget.observe(event);
+			if (budget === "answer") {
+				options.onStream?.(`tool budget used (${options.toolBudget}); asked to answer`);
+				void session.steer(toolBudget.message);
+			} else if (budget === "stop") {
+				toolHealth.failure = toolBudget.failure;
+				options.onStream?.(`cutoff: ${toolHealth.failure}`);
+				session.agent.abort();
+			}
 		}
 	});
 
@@ -569,7 +581,7 @@ async function runOneCandidate(
 			sessionManager.appendThinkingLevelChange(session.thinkingLevel);
 		}
 		if (options.persist || options.resumeFile) {
-			recordWorkerSession(session.sessionId, session.sessionFile ?? "", agent.name, candidate.thinking as TaskThinking, `${model.provider}/${model.id}`);
+			recordWorkerSession(session.sessionId, session.sessionFile ?? "", agent.name, requestedThinking as ThinkingLevel, `${model.provider}/${model.id}`);
 		}
 		const budget = startupTimeoutMs();
 		startupTimer = setTimeout(() => {
@@ -625,7 +637,7 @@ async function runOneCandidate(
 		sessionId: session.sessionId,
 		model: `${model.provider}/${model.id}`,
 		thinking: session.thinkingLevel,
-		requestedThinking: candidate.thinking,
+		requestedThinking,
 		providerThinkingLevel: lastMessage?.role === "assistant" ? lastMessage.providerThinkingLevel : undefined,
 		usage: sumUsage(session.agent.state.messages),
 		ms: Date.now() - started,

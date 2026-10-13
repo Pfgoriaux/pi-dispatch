@@ -119,7 +119,7 @@ for (const scenario of ["success", "failure", "truncated"] as const) {
 			return;
 		}
 		if (scenario === "success") {
-			assert.match(result.text, /Effort:.*high[\s\S]*combined findings$/);
+			assert.match(result.text, /Effort: 1\. scout low; 2\. scout low; 3\. aggregator medium[\s\S]*combined findings$/);
 			return;
 		}
 		assert.equal(result.details.truncated, true);

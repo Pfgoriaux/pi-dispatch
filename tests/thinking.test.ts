@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createAgentSessionServices, DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { isTaskThinking, resolveRequest, resolveEffective, attemptThinking, effortLabel } from "../src/thinking.ts";
+import { isTaskThinking, resolveRequest, resolveEffective, workflowThinking, effortLabel } from "../src/thinking.ts";
 import { runWorker, effortSummary } from "../src/worker.ts";
 import { runWorkerProc } from "../src/worker-proc.ts";
 import type { AgentConfig } from "../src/types.ts";
@@ -21,27 +21,41 @@ fs.writeFileSync(path.join(process.env.PI_CODING_AGENT_DIR!, "settings/subagent-
 }));
 const agent: AgentConfig = { name: "thinking-fixture", description: "fixture", tools: [], model: "fixture/model", thinking: "low", systemPrompt: "fixture", source: "bundled", filePath: "fixture.md" };
 
-test("request precedence, default and legacy floor do not depend on model tiers", () => {
-	assert.equal(resolveRequest({}), "high");
-	assert.equal(resolveRequest({ task: "max", savedResume: "high", agentConfig: "off" }), "max");
-	assert.equal(resolveRequest({ task: "xhigh", savedResume: "max", agentConfig: "high" }), "xhigh");
-	assert.equal(resolveRequest({ savedResume: "max", agentConfig: "high" }), "max");
-	assert.equal(resolveRequest({ agentConfig: "xhigh" }), "xhigh");
+test("request precedence and role floors do not depend on model tiers", () => {
+	const level = (r: ReturnType<typeof resolveRequest>) => r.level;
+	assert.deepEqual(resolveRequest({}), { level: "high", explicit: false });
+	assert.equal(level(resolveRequest({ task: "max", savedResume: "high", agentConfig: "off" })), "max");
+	assert.equal(level(resolveRequest({ task: "xhigh", savedResume: "max", agentConfig: "high" })), "xhigh");
+	assert.deepEqual(resolveRequest({ savedResume: "max", agentConfig: "high" }), { level: "max", explicit: true });
+	assert.deepEqual(resolveRequest({ agentConfig: "xhigh" }), { level: "xhigh", explicit: false });
 	for (const legacy of ["off", "minimal", "low", "medium"]) {
 		const warnings: string[] = [];
-		assert.equal(resolveRequest({ agentConfig: legacy }, "fixture", w => warnings.push(w)), "high");
+		assert.deepEqual(resolveRequest({ agentConfig: legacy }, "reviewer", "fixture", w => warnings.push(w)), { level: "high", explicit: false });
 		assert.match(warnings[0], /fixture: thinking .* raised to high/);
-		assert.equal(resolveRequest({ savedResume: legacy, resumeSource: "/sessions/old.jsonl" }, "wrong agent", w => warnings.push(w)), "high");
+		assert.equal(level(resolveRequest({ savedResume: legacy, resumeSource: "/sessions/old.jsonl" }, "writer", "wrong agent", w => warnings.push(w))), "high");
 		assert.match(warnings[1], /Resumed session \/sessions\/old.jsonl: thinking .* raised to high/);
-		assert.throws(() => resolveRequest({ task: legacy }), /choose high, xhigh, max/);
+		assert.throws(() => resolveRequest({ task: legacy }, "reviewer"), /below the reviewer floor high/);
 	}
+	// Role floors: scouts default to low, aggregators and slop reviewers to medium; roster values at or above the floor are kept.
+	assert.deepEqual(resolveRequest({}, "scout"), { level: "low", explicit: false });
+	assert.deepEqual(resolveRequest({ agentConfig: "off" }, "scout", "roster", () => {}), { level: "low", explicit: false });
+	assert.deepEqual(resolveRequest({ agentConfig: "high" }, "scout"), { level: "high", explicit: false });
+	assert.deepEqual(resolveRequest({ task: "low" }, "scout"), { level: "low", explicit: true });
+	assert.throws(() => resolveRequest({ task: "off" }, "scout"), /below the scout floor low/);
+	assert.deepEqual(resolveRequest({}, "aggregator"), { level: "medium", explicit: false });
+	assert.deepEqual(resolveRequest({}, "slop-reviewer"), { level: "medium", explicit: false });
+	assert.deepEqual(resolveRequest({ task: "max" }, "aggregator"), { level: "max", explicit: true });
+	assert.equal(workflowThinking("reviewer", "xhigh"), "xhigh");
+	assert.equal(workflowThinking("writer", "max"), "max");
+	assert.equal(workflowThinking("scout", "max"), undefined);
+	assert.equal(workflowThinking("aggregator", "high"), undefined);
 	assert.equal(isTaskThinking("max"), true);
 	assert.equal(isTaskThinking("medium"), false);
 	assert.throws(() => resolveRequest({ task: "typo" }), /Unsupported/);
 	assert.throws(() => resolveRequest({ agentConfig: "typo" }), /Unsupported/);
 });
 
-test("capabilities require exact effort, including sparse maps and non-reasoning models", () => {
+test("explicit efforts need exact support; defaults rise to the nearest supported level", () => {
 	const model = thinkingModel();
 	assert.deepEqual(resolveEffective("max", model), { effective: "max", verified: true });
 	assert.deepEqual(resolveEffective("xhigh"), { effective: "xhigh", verified: false });
@@ -49,16 +63,15 @@ test("capabilities require exact effort, including sparse maps and non-reasoning
 	assert.throws(() => resolveEffective("xhigh", { ...model, thinkingLevelMap: { xhigh: null, max: "max" } }), /Unsupported thinking xhigh.*supported choices:.*high, max/);
 	assert.throws(() => resolveEffective("max", { ...model, thinkingLevelMap: undefined }), /supported choices: off, minimal, low, medium, high\./);
 	assert.throws(() => resolveEffective("high", { ...model, thinkingLevelMap: { high: null, max: "max" } }), /Unsupported thinking high/);
+	// A role default crosses a model without that exact level (GLM: medium → high; Synthetic GLM: low → high).
+	const glm = { ...model, thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" } } as typeof model;
+	assert.deepEqual(resolveEffective({ level: "medium", explicit: false }, glm), { effective: "high", verified: true });
+	assert.deepEqual(resolveEffective({ level: "low", explicit: false }, glm), { effective: "low", verified: true });
+	assert.deepEqual(resolveEffective({ level: "low", explicit: false }, { ...glm, thinkingLevelMap: { low: null, medium: null, high: "high", max: "max" } }), { effective: "high", verified: true });
+	assert.throws(() => resolveEffective({ level: "medium", explicit: true }, glm), /Unsupported thinking medium/);
+	assert.throws(() => resolveEffective({ level: "max", explicit: false }, { ...glm, thinkingLevelMap: { low: "low", high: "high", max: null } }), /Unsupported thinking max/);
 	assert.equal(effortLabel({ requestedThinking: "xhigh" }), "xhigh→unknown");
 	assert.equal(effortLabel({ requestedThinking: "max", thinking: "max" }), "max");
-});
-
-test("light workflow steps run at low only where the model supports it", () => {
-	const model = thinkingModel();
-	assert.equal(attemptThinking("high", model, true), "low");
-	assert.equal(attemptThinking("high", model), "high");
-	assert.equal(attemptThinking("max", { ...model, thinkingLevelMap: { low: null, max: "max" } }, true), "max");
-	assert.throws(() => attemptThinking("xhigh", { ...model, thinkingLevelMap: { xhigh: null } }, true), /Unsupported thinking xhigh/);
 });
 
 test("unsupported SDK efforts make zero inference calls and report supported choices", async t => {

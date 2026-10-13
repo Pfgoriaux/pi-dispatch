@@ -46,27 +46,36 @@ Other roles' shell permissions remain instructions, not a filesystem sandbox.
 
 ### Thinking effort
 
-All workers require at least `high`, including cheap scouts and aggregation.
-The one exception is the `pr_review` pre-mortem, which runs at `low` on models
-that support it and at the workflow choice on the others.
-`thinking: "high" | "xhigh" | "max"` is independent of model tiers.
-Dispatch accepts it at the top level and on each `tasks[]` or `chain[]` item;
-item choices override the invocation default. The aggregator uses the invocation
-choice or `high`. `feature_plan`, `pr_review` (including its fix writer), and
-`council` apply one choice throughout the workflow, except the `pr_review`
-pre-mortem.
+Each role has a floor, and the floor is the role's default:
 
-For dispatch workers, precedence is task choice → invocation choice → saved
-resume request → agent/roster configuration → `high`. Legacy below-high
-agent/roster settings are raised with a warning. Resume retains the last request
+| Roles | Floor | Why |
+|---|---|---|
+| scout | `low` | discovery is many short tool rounds; reasoning multiplies each one |
+| aggregator, slop-reviewer | `medium` | merging reports and pattern checks |
+| every other role (reviewer, planner, advisor, investigator, security-reviewer, writer) | `high` | review, planning, judgment, implementation |
+
+Invocation `thinking: "high" | "xhigh" | "max"` sets the high-floor roles.
+`feature_plan`, `pr_review` (including its fix writer), and `council` apply it
+to those roles throughout the workflow; scouts and the slop reviewer keep their
+role defaults. Dispatch `tasks[]` and `chain[]` items accept any level and must
+meet the item's role floor, so a scout can run `max` and a reviewer cannot run
+`low`. In single and resume modes the invocation choice targets that one worker.
+
+Precedence for a worker is task choice → invocation choice (high-floor roles)
+→ saved resume request → agent/roster configuration → role floor. Configuration
+below the floor is raised to it with a warning. Resume retains the last request
 unless overridden and records changes in the session history.
 
-Each candidate must support the exact request according to Pi capability metadata.
-Unsupported effort errors before inference and lists supported levels. Existing
-fallback chains keep the same request. Non-reasoning and virtual models are
-rejected before inference.
-Nothing clamps, escalates, or reruns a task to change effort. Child workers also
-load a guard that checks their actual model before provider requests.
+Explicit choices (task, invocation, resume) run exactly: a model without that
+level is refused before inference, with its supported levels listed. Role
+defaults run at the lowest supported level at or above the floor, so a
+`medium` default becomes `high` on GLM 5.3, which has no `medium`. Non-reasoning
+and virtual models are refused. Nothing reruns a task to change effort. Child
+workers also load a guard that checks their actual model before provider requests.
+
+Levels mean the same thing on every model only for `low`, `high` and `max`.
+`medium` exists on Anthropic and OpenAI models; DeepSeek, GLM and Kimi treat it
+as `high`. `off` exists on DeepSeek and Kimi; GLM always reasons.
 
 Reports show requested and effective effort. Child effective effort comes from
 assistant-message metadata, or `unknown` when it is absent; argv is not evidence
@@ -115,8 +124,8 @@ such as `node_modules`; install them only when authorized.
 ```text
 feature_plan({ idea, focus?, thinking? })
 └─ Architect (Astra): discover and draft
-   └─ Pre-mortem (DeepSeek): inspect likely failure
-      └─ Challenger (Opus): independently check the design
+   └─ Pre-mortem (DeepSeek scout, low thinking, 12 tool calls): inspect likely failure
+      └─ Challenger (Opus advisor): independently check the design
          └─ Architect: resolve issues and return task contracts
 ```
 
@@ -150,8 +159,8 @@ review any of them.
 parallel
 ├─ Opus reviewer: correctness/security
 ├─ Astra reviewer: correctness
-├─ DeepSeek scout: pre-mortem (low thinking)
-├─ slop-reviewer: unnecessary code/docs
+├─ DeepSeek scout: pre-mortem (low thinking, 12 tool calls)
+├─ slop-reviewer: unnecessary code/docs (medium thinking)
 └─ GLM reviewer: spec gaps, reachable edge cases, overlaps, reuse
 reviewer → verify findings against diff and code → report
 ```
@@ -235,9 +244,15 @@ frontmatter, then the parent model. Rosters live in
   "planner": [
     { "provider": "anthropic", "model": "claude-opus-5-5", "thinking": "high", "weight": 2 },
     { "provider": "openai-codex", "model": "gpt-6-astra", "thinking": "high", "weight": 1 }
+  ],
+  "scout": [
+    { "provider": "aperture", "model": "neuralwatt/deepseek-v4.1-flash", "thinking": "low", "weight": 3 }
   ]
 }
 ```
+
+Pre-mortem scouts have a tool budget: after 12 tool calls the worker is told to
+answer from what it has, and at 24 the attempt fails.
 
 Weights are positive and ordered descending, not sampled. A task model override
 bypasses the roster. Worktree/review-fix children do not read in-process rosters

@@ -32,10 +32,11 @@ for (const mode of ["tasks", "chain"] as const) {
 				{ agent: "scout", task: "three" }],
 		}, undefined, undefined, ctx as any);
 		const items = (result.details as DispatchDetails).items;
-		assert.deepEqual(items.map(r => r.requestedThinking), ["max", "high", "xhigh", "xhigh"]);
-		assert.deepEqual(items.map(r => r.thinking), ["max", "high", "xhigh", "xhigh"]);
+		// Invocation xhigh does not reach scouts or the aggregator: they keep their role defaults.
+		assert.deepEqual(items.map(r => r.requestedThinking), ["max", "high", "low", "medium"]);
+		assert.deepEqual(items.map(r => r.thinking), ["max", "high", "low", "medium"]);
 		assert.equal(calls.length, 4);
-		assert.match(text(result), /Effort:.*scout max;.*scout high;.*aggregator xhigh/);
+		assert.match(text(result), /Effort:.*scout max;.*scout high;.*scout low;.*aggregator medium/);
 	});
 }
 
@@ -47,7 +48,7 @@ test("resume retains requests through repeated override cycles and persists actu
 		const result = await tool.execute("test", { ...params, herdr: false }, undefined, undefined, ctx as any);
 		return (result.details as DispatchDetails).items[0];
 	};
-	const first = await run({ tasks: [{ agent: "scout", task: "remember", model: "fixture/original" }], thinking: "xhigh", persist: true });
+	const first = await run({ tasks: [{ agent: "scout", task: "remember", model: "fixture/original", thinking: "xhigh" }], persist: true });
 	assert.equal(first.status, "ok");
 	assert.equal(first.model, "fixture/original");
 	const id = first.sessionId!;
@@ -83,28 +84,29 @@ console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content
 		t.after(() => { if (oldBin === undefined) delete process.env.PI_DISPATCH_PI_BIN; else process.env.PI_DISPATCH_PI_BIN = oldBin; });
 		const ctx = { cwd: root, isProjectTrusted: () => true, modelRegistry: registry };
 		const registered = tools();
+		const inv = thinking ?? "high";
+		// High-floor steps take the invocation choice; scout pre-mortems run low and the slop reviewer medium.
 		const scenarios = [
-			{ name: "feature_plan", params: { idea: "fixture" }, count: 4 },
-			{ name: "council", params: { question: "fixture" }, count: 3 },
-			{ name: "pr_review", params: { pr: "HEAD^...HEAD", intent: "fixture", fix: true }, count: 7 },
+			{ name: "feature_plan", params: { idea: "fixture" }, expected: [inv, "low", inv, inv] },
+			{ name: "council", params: { question: "fixture" }, expected: [inv, inv, inv] },
+			{ name: "pr_review", params: { pr: "HEAD^...HEAD", intent: "fixture", fix: true }, expected: [inv, inv, "low", "medium", inv, inv, inv] },
 		];
-		for (const { name, params, count } of scenarios) {
+		for (const { name, params, expected } of scenarios) {
 			const result = await registered.get(name)!.execute("test", { ...params, thinking, herdr: false }, undefined, undefined, ctx as any);
 			const items = (result.details as DispatchDetails).items;
-			assert.equal(items.length, count, text(result));
+			assert.equal(items.length, expected.length, text(result));
 			assert.ok(items.every(r => r.status === "ok"), text(result));
-			// The pr_review pre-mortem (step 3) runs at low on models that support it.
-			const expected = items.map((_, i) => name === "pr_review" && i === 2 ? "low" : (thinking ?? "high"));
 			assert.deepEqual(items.map(r => r.requestedThinking), expected, name);
 			assert.deepEqual(items.map(r => r.thinking), expected, name);
 			assert.match(text(result), /[Ee]ffort:/);
 		}
 		assert.equal(calls.length, 13);
-		assert.deepEqual(calls.filter(c => c.thinking !== (thinking ?? "high")).map(c => c.thinking), ["low"]);
+		// The pr_review fix writer is a child process, not an SDK call.
+		assert.deepEqual(calls.map(c => c.thinking).sort(), scenarios.flatMap(s => s.expected).slice(0, -1).sort());
 	});
 }
 
-test("all public effort schemas accept only high, xhigh, max", () => {
+test("invocation effort schemas accept high, xhigh, max; task items accept any level above their role floor", () => {
 	const registered = tools();
 	for (const name of ["dispatch", "feature_plan", "pr_review", "council"]) {
 		const schema = registered.get(name)!.parameters as any;
@@ -112,19 +114,33 @@ test("all public effort schemas accept only high, xhigh, max", () => {
 	}
 	for (const mode of ["tasks", "chain"]) {
 		const schema = registered.get("dispatch")!.parameters as any;
-		assert.deepEqual(schema.properties[mode].items.properties.thinking.anyOf.map((v: any) => v.const), ["high", "xhigh", "max"]);
+		assert.deepEqual(schema.properties[mode].items.properties.thinking.anyOf.map((v: any) => v.const), ["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 	}
+});
+
+test("task efforts below the role floor are refused before inference", async t => {
+	const { registry, calls } = thinkingFixture(t);
+	const ctx = { cwd: process.env.PI_CODING_AGENT_DIR!, isProjectTrusted: () => false, modelRegistry: registry };
+	const result = await tools().get("dispatch")!.execute("test", { herdr: false, aggregate: false,
+		tasks: [{ agent: "reviewer", task: "low review", thinking: "low" }, { agent: "scout", task: "off scout", thinking: "off" }],
+	}, undefined, undefined, ctx as any);
+	const items = (result.details as DispatchDetails).items;
+	assert.deepEqual(items.map(r => r.status), ["error", "error"]);
+	assert.match(items[0].error!, /below the reviewer floor high/);
+	assert.match(items[1].error!, /below the scout floor low/);
+	assert.equal(calls.length, 0);
 });
 
 
 test("successful fallback keeps unsupported choices visible after aggregation", async t => {
 	const { registry, calls } = thinkingFixture(t, (p, id) => ({ ...thinkingModel(p, id), reasoning: p !== "anthropic" }));
 	const ctx = { cwd: process.env.PI_CODING_AGENT_DIR!, isProjectTrusted: () => false, modelRegistry: registry };
-	const result = await tools().get("dispatch")!.execute("test", { herdr: false, thinking: "xhigh", aggregate: true,
-		tasks: [{ agent: "scout", task: "test", model: "anthropic/claude-opus-5-5" }],
+	const result = await tools().get("dispatch")!.execute("test", { herdr: false, aggregate: true,
+		tasks: [{ agent: "scout", task: "test", model: "anthropic/claude-opus-5-5", thinking: "xhigh" }],
 	}, undefined, undefined, ctx as any);
 	assert.ok((result.details as DispatchDetails).items.every(r => r.status === "ok"));
 	assert.match(text(result), /Unsupported thinking xhigh.*supported choices: off/);
-	assert.ok(calls.every(c => c.thinking === "xhigh"));
+	assert.match(text(result), /Unsupported thinking medium for anthropic\/claude-sonnet-5-5/);
+	assert.deepEqual(calls.map(c => c.thinking), ["xhigh", "medium"]);
 	assert.ok(calls.every(c => !c.spec.startsWith("anthropic")));
 });

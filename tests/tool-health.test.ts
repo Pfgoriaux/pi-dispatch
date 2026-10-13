@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ToolHealth } from "../src/tool-health.ts";
+import { ToolBudget, ToolHealth } from "../src/tool-health.ts";
 
 const end = (toolName: string, isError = true) => ({ type: "tool_execution_end" as const, toolName, isError });
 
@@ -37,4 +37,16 @@ test("valid results reset streaks; registered tool errors are also bounded", () 
 	const failure = health.failure;
 	health.observe(end("read", false));
 	assert.equal(health.failure, failure, "cutoff cannot be undone by another parallel completion");
+});
+
+test("tool budget asks for an answer once at the budget and stops at double", () => {
+	const budget = new ToolBudget(3);
+	const end = { type: "tool_execution_end" as const, toolName: "read" };
+	assert.equal(budget.observe({ type: "tool_execution_start", toolName: "read" }), undefined);
+	assert.deepEqual([end, end, end].map(e => budget.observe(e)), [undefined, undefined, "answer"]);
+	assert.deepEqual([end, end].map(e => budget.observe(e)), [undefined, undefined]);
+	assert.equal(budget.observe(end), "stop");
+	assert.match(budget.message, /Tool budget used \(3 calls\)/);
+	assert.match(budget.failure, /after 6 tool calls/);
+	assert.equal(new ToolBudget().observe(end), undefined);
 });

@@ -12,6 +12,7 @@
  *   }
  */
 
+import { roleFloor } from "./thinking.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -267,14 +268,14 @@ export function resolveCandidates(
 		const candidates = withProviderFallbacks([
 			{
 				modelSpec: agent.model,
-				thinking: agent.thinking ?? "high",
+				thinking: agent.thinking ?? roleFloor(agent.name),
 				entry: {
 					provider:
 						agent.model.includes("/") ? agent.model.split("/", 2)[0] : "inherit",
 					model: agent.model.includes("/")
 						? agent.model.slice(agent.model.indexOf("/") + 1)
 						: agent.model,
-					thinking: agent.thinking ?? "high",
+					thinking: agent.thinking ?? roleFloor(agent.name),
 					weight: 1,
 				},
 			},

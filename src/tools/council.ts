@@ -1,4 +1,4 @@
-import { TaskThinkingSchema, resolveRequest, effortLabel } from "../thinking.ts";
+import { TaskThinkingSchema, requireTaskThinking, effortLabel } from "../thinking.ts";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discoverAgents } from "../agents.ts";
@@ -47,7 +47,7 @@ export function registerCouncilTool(pi: ExtensionAPI): void {
 			herdr: Type.Optional(Type.Boolean({ description: "false disables Herdr viewer tabs" })),
 		}),
 		async execute(_id, params, signal, onUpdate, ctx) {
-			const thinking = resolveRequest({ task: params.thinking });
+			const thinking = requireTaskThinking(params.thinking ?? "high");
 			if (!params.question.trim()) throw new Error("council: question must not be blank");
 			const advisor = discoverAgents(ctx).byName.get("advisor");
 			if (!advisor) throw new Error("council: advisor agent is unavailable");

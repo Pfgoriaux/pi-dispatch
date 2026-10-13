@@ -163,7 +163,8 @@ export async function runWorkerProc(
 	if (!model?.includes("/")) {
 		return { agent: agent.name, task, status: "error", text: "", error: "Child workers require a resolved provider/model identity", ms: Date.now() - started, attempts: 0 };
 	}
-	const thinking = resolveRequest({ task: options.thinking, agentConfig: agent.thinking }, agent.filePath, options.onWarning);
+	const request = resolveRequest({ task: options.thinking, agentConfig: agent.thinking }, agent.name, agent.filePath, options.onWarning);
+	const thinking = request.level;
 	let candidates = withProviderFallbacks([{
 		modelSpec: model, thinking,
 		entry: { provider: "", model, thinking, weight: 1 },
@@ -186,7 +187,7 @@ export async function runWorkerProc(
 			continue;
 		}
 		try {
-			resolveEffective(thinking, options.registry ? resolveChildModel(options.registry, candidate.modelSpec) : undefined);
+			resolveEffective(request, options.registry ? resolveChildModel(options.registry, candidate.modelSpec) : undefined);
 		} catch (error) {
 			const reason = (error as Error).message;
 			options.onWarning?.(reason);
@@ -430,7 +431,7 @@ async function runOneProc(
 	// `Model "inherit" not found` before making any API call).
 	const spec = options.modelOverride?.trim() || agent.model;
 	const model = spec && spec !== "inherit" ? spec : options.model;
-	const thinking = resolveRequest({ task: options.thinking, agentConfig: agent.thinking }, agent.filePath, options.onWarning);
+	const thinking = resolveRequest({ task: options.thinking, agentConfig: agent.thinking }, agent.name, agent.filePath, options.onWarning).level;
 	if (model) {
 		const slash = model.indexOf("/");
 		args.push("--provider", model.slice(0, slash), "--model", model);
