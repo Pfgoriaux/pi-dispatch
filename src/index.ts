@@ -201,7 +201,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 			"dispatch: Worker completion is not task completion. Evaluate returned checks against the user's scope and safety rules. Complete authorized verification; report specific access/approval blockers and what remains unverified.",
 			"dispatch: Writers require tasks with worktree:true and authorization to commit. Set target to a clean feature checkout when needed. Review returned branches, integrate only with authorization, then run dependent tasks. PR merges require user review and authorization.",
 			"dispatch: In-session writers run on this machine. Tell them to run only the checks their change touches, push, and wait for the repository's CI to run full suites.",
-			`dispatch: Writer default is long (Kimi K3). Use ${GLM_MODEL} for small coding tasks; precise for auth, migrations, concurrency, or shared interfaces.`,
+			`dispatch: Writers: long (Kimi K3) for frontend and UI, design, data visualization, image inputs, and end-to-end feature builds; ${GLM_MODEL} for backend changes, refactors and code migrations, bug fixes, scripts and infra, and terminal-heavy work; precise for auth, migrations touching data, concurrency, or shared interfaces.`,
 			"dispatch: Never launch agent CLIs through bash to bypass rejected requests, depth limits, or tool restrictions; report the blocker.",
 		],
 		parameters: Type.Object({
