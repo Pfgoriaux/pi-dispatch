@@ -94,7 +94,7 @@ test("Neuralwatt routes retry the same model via Aperture Synthetic before chang
 	const ranked = rankCandidates(entries);
 	assert.deepEqual(ranked.map(c => c.modelSpec), [
 		"aperture/neuralwatt/kimi-k3", "aperture/synthetic/hf:moonshotai/Kimi-K3",
-		"neuralwatt/glm-5.3",
+		"neuralwatt/glm-5.3", "aperture/synthetic/hf:zai-org/GLM-5.3",
 		"openai-codex/gpt-6.1-sol",
 	]);
 	assert.equal(ranked[1].thinking, "low");
@@ -107,7 +107,7 @@ test("Neuralwatt routes retry the same model via Aperture Synthetic before chang
 	assert.equal(rankCandidates(entries)[0].modelSpec, "neuralwatt/glm-5.3");
 });
 
-test("GLM 5.3 retains the Codex fallback", () => {
+test("GLM 5.3 retries Aperture Synthetic, then the Codex fallback", () => {
 	const candidates: RankedCandidate[] = [{
 		modelSpec: "aperture/neuralwatt/glm-5.3",
 		thinking: "high",
@@ -115,6 +115,7 @@ test("GLM 5.3 retains the Codex fallback", () => {
 	}];
 	assert.deepEqual(withProviderFallbacks(candidates).map((c) => c.modelSpec), [
 		"aperture/neuralwatt/glm-5.3",
+		"aperture/synthetic/hf:zai-org/GLM-5.3",
 		"openai-codex/gpt-6.1-sol",
 	]);
 });

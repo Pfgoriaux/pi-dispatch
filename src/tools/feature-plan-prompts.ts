@@ -1,4 +1,4 @@
-import { GLM_MODEL, KIMI_FALLBACK_MODEL, KIMI_MODEL } from "../profiles.ts";
+import { GLM_MODEL, KIMI_MODEL } from "../profiles.ts";
 
 export const HETZNER_TASK_PROMPT_TEMPLATE = `## Goal
 <One or two sentences stating the outcome.>
@@ -20,10 +20,10 @@ export const HETZNER_TASK_PROMPT_TEMPLATE = `## Goal
 
 export const HETZNER_MODEL_GUIDANCE = `| Executor contract | Task model | Task reviewModel | Task modelFallbacks |
 |---|---|---|---|
-| \`long\` | \`${KIMI_MODEL}\` | \`${GLM_MODEL}\` | \`["${KIMI_FALLBACK_MODEL}"]\` |
+| \`long\` | \`${KIMI_MODEL}\` | \`${GLM_MODEL}\` | None |
 | Small/bounded GLM | \`${GLM_MODEL}\` | \`${KIMI_MODEL}\` | None |
 | \`precise\` | Keep local; do not draft for Hetzner | — | — |
-Set limits.maxAttemptsPerTask: 2 for the Kimi fallback. GLM has no equivalent Synthetic route on Aperture; do not propose a GLM fallback.
+Foreman runs Kimi K3 and GLM 5.3 on Neuralwatt or Synthetic by provider quota and retries the other route after a provider refusal without using an attempt. Do not list the other route as a fallback.
 Writer and reviewer thinking must be \`high\` or above: set worker.thinking, and any worker.reviewThinking, task thinking, or task reviewThinking, to \`high\` (default), \`xhigh\`, or \`max\`. durable_batch refuses lower effort before drafting.
 Use these literal defaults, not environment-overridden PROFILES or REVIEW_MODELS. This is drafting guidance, not automatic configuration rewriting, provider validation, or routing.`;
 

@@ -55,11 +55,12 @@ test("DeepSeek 4.1 Flash steers between NeuralWatt and Synthetic; Haiku stays be
 
 test("quota never promotes another model family", () => {
 	const glm = "aperture/neuralwatt/glm-5.3";
+	const glmSy = "aperture/synthetic/hf:zai-org/GLM-5.3";
 	const mixed = withProviderFallbacks([candidate(glm), candidate(nw)]);
 	const result = steerByQuota(mixed, new Map([["synthetic", snapshot(100)], ["neuralwatt", snapshot(0)]]), now);
-	assert.deepEqual(specs(result.candidates), [glm, sy, nw, codexSol]);
-	assert.equal(result.candidates[1].thinking, "high");
-	assert.deepEqual(specs(withProviderFallbacks([candidate(glm)])), [glm, codexSol]);
+	assert.deepEqual(specs(result.candidates), [glmSy, glm, sy, nw, codexSol]);
+	assert.equal(result.candidates[2].thinking, "high");
+	assert.deepEqual(specs(withProviderFallbacks([candidate(glm)])), [glm, glmSy, codexSol]);
 });
 
 test("physical quotas use normalized percentages; zero blocked key dominates", () => {

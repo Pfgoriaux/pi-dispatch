@@ -82,7 +82,7 @@ test("tool and architect prompts share the exact self-contained Hetzner drafting
 	assert.ok(HETZNER_DRAFT_GUIDANCE.includes("not for your own output):\n```markdown\n" + HETZNER_TASK_PROMPT_TEMPLATE + "\n```"));
 	for (const text of [tool.description, draft, final]) {
 		assert.ok(text.includes(HETZNER_DRAFT_GUIDANCE));
-		assert.doesNotMatch(text, /synthetic\/hf:zai-org\/GLM/);
+		assert.match(text, /Do not list the other route as a fallback/);
 	}
 	assert.ok(!tool.promptGuidelines.join("\n").includes(HETZNER_DRAFT_GUIDANCE));
 	const thinking = HETZNER_MODEL_GUIDANCE.split("\n").find((line) => line.startsWith("Writer and reviewer thinking"));
