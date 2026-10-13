@@ -20,9 +20,10 @@ export const HETZNER_TASK_PROMPT_TEMPLATE = `## Goal
 
 export const HETZNER_MODEL_GUIDANCE = `| Executor contract | Task model | Task reviewModel | Task modelFallbacks |
 |---|---|---|---|
-| \`long\` | \`${KIMI_MODEL}\` | \`${GLM_MODEL}\` | None |
-| Small/bounded GLM | \`${GLM_MODEL}\` | \`${KIMI_MODEL}\` | None |
+| \`long\`: frontend and UI, design systems, data visualization, image inputs, end-to-end feature builds | \`${KIMI_MODEL}\` | \`${GLM_MODEL}\` | None |
+| GLM: backend changes, refactors and code migrations, bug fixes, scripts and infra, terminal-heavy work | \`${GLM_MODEL}\` | \`${KIMI_MODEL}\` | None |
 | \`precise\` | Keep local; do not draft for Hetzner | — | — |
+GLM 5.3 takes text only; a task that needs an image goes to Kimi.
 Foreman runs Kimi K3 and GLM 5.3 on Neuralwatt or Synthetic by provider quota and retries the other route after a provider refusal without using an attempt. Do not list the other route as a fallback.
 Writer and reviewer thinking must be \`high\` or above: set worker.thinking, and any worker.reviewThinking, task thinking, or task reviewThinking, to \`high\` (default), \`xhigh\`, or \`max\`. durable_batch refuses lower effort before drafting.
 Use these literal defaults, not environment-overridden PROFILES or REVIEW_MODELS. This is drafting guidance, not automatic configuration rewriting, provider validation, or routing.`;
@@ -116,7 +117,7 @@ export function challengerTask(c: PlanContext, draft: string, preMortem: string)
 
 const TASK_CONTRACT = [
 	"### Task N: <title>",
-	`- Executor: exactly one of \`long\` (default), \`${GLM_MODEL}\` (small, well-bounded), or \`precise\` (auth, migrations, concurrency, shared interfaces)`,
+	`- Executor: exactly one of \`long\` (frontend and UI, design, data visualization, image inputs, end-to-end feature builds), \`${GLM_MODEL}\` (backend changes, refactors and code migrations, bug fixes, scripts and infra, terminal-heavy work), or \`precise\` (auth, migrations touching data, concurrency, shared interfaces)`,
 	"- Thinking: exactly one of `high` (default), `xhigh` (complex, auth, migrations, concurrency, review), or `max` (explicit, exceptionally hard)",
 	"- Executor reason: <only required for `precise`>",
 	"- Repository: <repo root the task runs in>",

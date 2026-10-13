@@ -235,8 +235,11 @@ receives current role names and tools before each turn, not all role prompts.
 | precise | Anthropic Opus 5.5 |
 | long | Aperture Neuralwatt Kimi K3 |
 
-Use Kimi for default coding, explicit `aperture/neuralwatt/glm-5.3` for small,
-well-bounded tasks, and `precise` for high-risk coding. Override a tier with
+Writers split by work, not size. `long` (Kimi K3) takes frontend and UI, design
+systems, data visualization, image inputs, and end-to-end feature builds.
+Explicit `aperture/neuralwatt/glm-5.3` takes backend changes, refactors and
+migrations, bug fixes, scripts and infra, and terminal-heavy work; it takes text
+only. `precise` takes high-risk coding. Override a tier with
 `DISPATCH_PROFILE_<TIER>_MODEL` or a task's `model` with a tier or `provider/id`.
 Model choice never grants additional tools or authorization.
 
@@ -481,9 +484,11 @@ Profile environment overrides do not change it.
 
 | Executor contract | Task model | Task reviewModel | Task modelFallbacks |
 |---|---|---|---|
-| `long` | `aperture/neuralwatt/kimi-k3` | `aperture/neuralwatt/glm-5.3` | None |
-| Small/bounded GLM | `aperture/neuralwatt/glm-5.3` | `aperture/neuralwatt/kimi-k3` | None |
+| `long`: frontend and UI, design systems, data visualization, image inputs, end-to-end feature builds | `aperture/neuralwatt/kimi-k3` | `aperture/neuralwatt/glm-5.3` | None |
+| GLM: backend changes, refactors and code migrations, bug fixes, scripts and infra, terminal-heavy work | `aperture/neuralwatt/glm-5.3` | `aperture/neuralwatt/kimi-k3` | None |
 | `precise` | Keep local; do not draft for Hetzner | — | — |
+
+GLM 5.3 takes text only; a task that needs an image goes to Kimi.
 
 Foreman runs Kimi K3 and GLM 5.3 on Neuralwatt or Synthetic by provider quota and
 retries the other route after a provider refusal without using an attempt. Do not

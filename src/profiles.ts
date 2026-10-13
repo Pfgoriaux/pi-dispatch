@@ -19,8 +19,10 @@
  *              production-critical code. Top-tier models (Opus 5.5 / Astra)
  *              with quota-aware routing between them.
  *
- *   long     — Default implementation, multi-file refactors, and research
- *              across many files. Kimi K3.
+ *   long     — Frontend and UI, design, data visualization, image inputs,
+ *              end-to-end feature builds. Kimi K3. Backend changes, refactors,
+ *              code migrations, bug fixes, scripts and terminal-heavy work name
+ *              GLM_MODEL explicitly.
  *
  * Tiers choose model strength, not thinking effort. Pick a tier by how hard
  * a task is, not by who does it. Cross-check scouting and duplicate code review need
