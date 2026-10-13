@@ -92,11 +92,11 @@ test("three distinct opinions see the same task, not each other's answers; no fo
 });
 
 test("failed seats never borrow another seat or Sol; GLM may retry its other provider", async (t) => {
-	const { calls, run } = setup(t, spec => spec === "synthetic/hf:zai-org/GLM-5.3" ? "Only GLM answered" : undefined);
+	const { calls, run } = setup(t, spec => spec === "aperture/synthetic/hf:zai-org/GLM-5.3" ? "Only GLM answered" : undefined);
 	const result = await run();
 	assert.equal(calls.length, 4);
 	assert.equal(result.details.items.filter(item => item.status === "ok").length, 1);
-	assert.equal(result.details.items[2].model, "synthetic/hf:zai-org/GLM-5.3");
+	assert.equal(result.details.items[2].model, "aperture/synthetic/hf:zai-org/GLM-5.3");
 	assert.equal(result.details.items[2].attempts, 2);
 	assert.equal(result.usage?.cost.total, 0.04);
 	const text = JSON.stringify(result.content);

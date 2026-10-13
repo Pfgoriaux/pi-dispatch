@@ -291,7 +291,7 @@ test("excluding every candidate fails without calling a model", async (t) => {
 });
 
 const glmNeuralwatt = "aperture/neuralwatt/glm-5.3";
-const glmSynthetic = "synthetic/hf:zai-org/GLM-5.3";
+const glmSynthetic = "aperture/synthetic/hf:zai-org/GLM-5.3";
 const lastResorts = [glmNeuralwatt, glmSynthetic];
 
 test("workflow last resorts run GLM on Neuralwatt, then Synthetic, with Sol excluded", async (t) => {
@@ -307,11 +307,11 @@ test("workflow last resorts run GLM on Neuralwatt, then Synthetic, with Sol excl
 
 test("workflow last resorts are not retried when already in the chain", async (t) => {
 	const calls: string[] = [];
-	const registry = mockModels(t, [glmNeuralwatt, codexSol, glmSynthetic], calls);
+	const registry = mockModels(t, [glmNeuralwatt, glmSynthetic, codexSol], calls);
 	await runWorker(agent, "test", {
 		registry, fallbackModel: undefined, modelSpec: glmNeuralwatt, fallbackModels: lastResorts,
 	});
-	assert.deepEqual(calls, [glmNeuralwatt, codexSol, glmSynthetic]);
+	assert.deepEqual(calls, [glmNeuralwatt, glmSynthetic, codexSol]);
 });
 
 test("parallel reviewers cannot both fall back to GLM through different providers", async (t) => {

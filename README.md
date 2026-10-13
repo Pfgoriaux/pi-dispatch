@@ -244,14 +244,12 @@ before spawn.
 
 ### Routing and failure
 
-- Kimi and DeepSeek retry their Neuralwatt/Synthetic counterparts (direct and
-  Aperture routes supported). Kimi and GLM 5.3 retain a terminal Codex Sol 6.1
-  fallback; DeepSeek falls back through Haiku 5.5 then Sol.
+- Kimi, GLM 5.3 and DeepSeek retry their Neuralwatt/Synthetic counterparts
+  (direct and Aperture routes supported). Kimi and GLM 5.3 retain a terminal
+  Codex Sol 6.1 fallback; DeepSeek falls back through Haiku 5.5 then Sol.
 - Opus and Astra retry each other and end with Sol; Sonnet also falls back to Sol.
-  Ordinary GLM routing stays on Neuralwatt before Sol; workflow last resorts
-  additionally include GLM on Neuralwatt and direct Synthetic.
 - `feature_plan` and `pr_review` exclude Sol and end their chains with GLM 5.3
-  on Neuralwatt, then direct Synthetic. Model-identity guards prevent duplicates.
+  on Neuralwatt, then on Aperture Synthetic. Model-identity guards prevent duplicates.
   Council instead restricts each seat to its assigned model.
 - Quota steering ranks existing peer candidates without inserting a top model.
   Tiers/rosters opt in; concrete pins and `inherit` keep provider order.
@@ -464,11 +462,10 @@ Profile environment overrides do not change it.
 | Executor contract | Task model | Task reviewModel | Task modelFallbacks |
 |---|---|---|---|
 | `long` | `aperture/neuralwatt/kimi-k3` | `aperture/neuralwatt/glm-5.3` | `["aperture/synthetic/hf:moonshotai/Kimi-K3"]` |
-| Small/bounded GLM | `aperture/neuralwatt/glm-5.3` | `aperture/neuralwatt/kimi-k3` | None |
+| Small/bounded GLM | `aperture/neuralwatt/glm-5.3` | `aperture/neuralwatt/kimi-k3` | `["aperture/synthetic/hf:zai-org/GLM-5.3"]` |
 | `precise` | Keep local; do not draft for Hetzner | — | — |
 
-Set `limits.maxAttemptsPerTask: 2` for the Kimi fallback. GLM has no equivalent
-Synthetic route on Aperture; do not propose one. Writer and reviewer thinking
+Set `limits.maxAttemptsPerTask: 2` for the Synthetic fallbacks. Writer and reviewer thinking
 must be `high` or above: set `worker.thinking`, and any `worker.reviewThinking`,
 task `thinking`, or task `reviewThinking`, to `high` (default), `xhigh`, or
 `max`. This guidance does not rewrite configuration, validate providers, or

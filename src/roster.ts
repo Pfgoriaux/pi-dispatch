@@ -120,10 +120,11 @@ export function loadRosterConfig(): Promise<Map<string, RosterEntry[]> | undefin
 }
 
 // Model counterparts in Aperture's Synthetic catalog. Do not guess IDs.
-// GLM Flash and Kimi fast variants are not used; plain GLM 5.3 has no Synthetic peer.
+// GLM Flash and Kimi fast variants are not used.
 // Keep the requested provider first; quota routing may reorder exact peers.
 const SYNTHETIC_COUNTERPARTS = new Map([
 	["kimi-k3", "hf:moonshotai/Kimi-K3"],
+	["glm-5.3", "hf:zai-org/GLM-5.3"],
 	["deepseek-v4.1-flash", "hf:deepseek-ai/DeepSeek-V4.1-Flash"],
 ]);
 
@@ -222,8 +223,6 @@ export function withProviderFallbacks(candidates: RankedCandidate[]): RankedCand
 			if (id) counterpart = existing ? routeId(existing.modelSpec) : `neuralwatt/${id}`;
 		}
 		append(candidate);
-		// GLM 5.3 has no Synthetic peer; keep the direct Codex safety net.
-		if (route === "neuralwatt/glm-5.3") terminal ??= at(candidate, OPENAI_FALLBACK);
 		if (!counterpart) continue;
 		const existing = candidates.find(c => routeId(c.modelSpec) === counterpart);
 		append(existing ?? at(candidate, `aperture/${counterpart}`));
