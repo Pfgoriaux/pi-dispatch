@@ -541,7 +541,7 @@ and each task’s `thinking` and `reviewThinking`:
             "sessionsRoot": "/abs/sessions", "branchPrefix": "pilot/night-1" },
   "worker": { "piExecutable": "/abs/bin/pi", "model": "aperture/neuralwatt/kimi-k3", "thinking": "high" },
   "reviewer": { "model": "openai-codex/gpt-6-astra",
-                "fallbacks": ["aperture/neuralwatt/glm-5.3"] },
+                "fallbacks": ["aperture/neuralwatt/glm-5.3", "aperture/synthetic/hf:zai-org/GLM-5.3"] },
   "publication": { "remote": "origin", "url": "git@github.com:owner/repo.git",
                    "repo": "owner/repo", "gh": "/abs/bin/gh" }
 }
