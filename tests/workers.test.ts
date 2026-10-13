@@ -45,7 +45,7 @@ test("explicit inherit bypasses roster and selects parent without a live request
 	assert.equal(result.status, "aborted");
 });
 
-test("explicit model raises legacy effort and reports resolved identity", async () => {
+test("explicit model keeps configured effort at the role floor and reports resolved identity", async () => {
 	const controller = new AbortController();
 	await runWorker(agent, "test", {
 		registry,
@@ -55,7 +55,7 @@ test("explicit model raises legacy effort and reports resolved identity", async 
 		onAttempt: (selected, thinking, attempt, requested) => {
 			assert.equal(selected, "fake/model");
 			assert.equal(thinking, "unknown");
-			assert.equal(requested, "high");
+			assert.equal(requested, "low");
 			assert.equal(attempt, 1);
 			controller.abort();
 		},

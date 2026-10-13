@@ -4,8 +4,8 @@
  * Five in-process workers run in parallel:
  *   1. Opus 5.5: correctness + security
  *   2. Codex Astra: correctness
- *   3. DeepSeek 4.1 Flash: pre-mortem, "why did this break 3 months later?"
- *   4. slop-reviewer (balanced tier): doc rules and unneeded additions
+ *   3. DeepSeek 4.1 Flash (scout: low thinking, bounded tool budget): pre-mortem, "why did this break 3 months later?"
+ *   4. slop-reviewer (balanced tier, medium thinking): doc rules and unneeded additions
  *   5. GLM 5.3: spec gaps, reachable edge cases, overlaps and reuse
  * A reviewer on the balanced tier then checks each finding against the code
  * and returns one deduplicated report. fix:true hands it to a worktree writer.
@@ -13,7 +13,7 @@
  * Diff resolution: GitHub PR number (gh), a git rev-range, a branch compared
  * against HEAD, or the default origin base...HEAD.
  */
-import { TaskThinkingSchema, resolveRequest, effortLabel } from "../thinking.ts";
+import { TaskThinkingSchema, DEFAULT_TASK_THINKING, requireTaskThinking, workflowThinking, effortLabel } from "../thinking.ts";
 
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -230,6 +230,8 @@ const STEPS = [
 	{ agent: "reviewer", task: "Spec + reuse: requirements, edge cases, overlaps, duplicates" },
 	{ agent: "reviewer", task: "Verify and aggregate" },
 ];
+/** Pre-mortem scouts are told to answer at this many tool calls and fail at double. */
+export const PRE_MORTEM_TOOL_BUDGET = 12;
 const FIX_STEP = { agent: "writer", task: "Fix explicitly authorized findings" };
 
 /** Labeled report for the next step: actual model, status, and failed attempts. */
@@ -294,7 +296,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 			),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			const thinking = resolveRequest({ task: params.thinking });
+			const thinking = requireTaskThinking(params.thinking ?? DEFAULT_TASK_THINKING);
 			const started = Date.now();
 			let truncated = false;
 			const cap = (text: string, maxBytes?: number) => {
@@ -388,7 +390,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					const runStep = (
 						index: number,
 						task: string,
-						model: { spec?: string; excludeModels?: string[]; steerByQuota?: boolean; claim?: boolean },
+						model: { spec?: string; excludeModels?: string[]; steerByQuota?: boolean; claim?: boolean; toolBudget?: number },
 					) =>
 						progress.run(
 							index,
@@ -398,12 +400,13 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 									fallbackModel: ctx.model,
 									cwd,
 									signal,
-									thinking,
+									thinking: workflowThinking(STEPS[index].agent, thinking),
 									modelSpec: model.spec,
 									excludeModels: [...WORKFLOW_EXCLUDED_MODELS, ...(model.excludeModels ?? [])],
 									fallbackModels: WORKFLOW_FALLBACK_MODELS,
 									steerByQuota: model.steerByQuota,
 									claimModel: model.claim ? pool.worker() : undefined,
+									toolBudget: model.toolBudget,
 									...progress.options(index),
 								}),
 							signal,
@@ -426,6 +429,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 						runStep(2, preMortemTask(reviewerCtx), {
 							spec: REVIEW_MODELS.preMortem,
 							steerByQuota: true,
+							toolBudget: PRE_MORTEM_TOOL_BUDGET,
 						}),
 						runStep(3, slopTask(reviewerCtx), {}),
 						// Outside the reviewer pool, like pre-mortem and slop.

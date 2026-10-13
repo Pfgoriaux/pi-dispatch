@@ -12,6 +12,7 @@
  *   }
  */
 
+import { roleFloor } from "./thinking.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -54,7 +55,7 @@ function isValidRosterEntry(entry: unknown): entry is RosterEntry {
 	const e = entry as Record<string, unknown>;
 	if (typeof e.provider !== "string" || !e.provider) return false;
 	if (typeof e.model !== "string" || !e.model) return false;
-	// thinking is OPTIONAL (defaults to "high") but must be valid when present.
+	// thinking is OPTIONAL (defaults to the role floor) but must be valid when present.
 	if (
 		typeof e.thinking !== "undefined" &&
 		(typeof e.thinking !== "string" || !THINKING_LEVELS.has(e.thinking))
@@ -68,12 +69,12 @@ function isValidRosterEntry(entry: unknown): entry is RosterEntry {
 }
 
 /** Validate and normalize one agent's roster list. Returns undefined if invalid. */
-function normalizeRoster(entries: unknown): RosterEntry[] | undefined {
+function normalizeRoster(agentName: string, entries: unknown): RosterEntry[] | undefined {
 	if (!Array.isArray(entries)) return undefined;
 	const dropped = entries.length;
 	const valid = entries.filter(isValidRosterEntry).map((e) => ({
 		...e,
-		thinking: e.thinking ?? "high",
+		thinking: e.thinking ?? roleFloor(agentName),
 	}));
 	if (valid.length === 0) return undefined;
 	if (valid.length < dropped) {
@@ -111,7 +112,7 @@ export function loadRosterConfig(): Promise<Map<string, RosterEntry[]> | undefin
 
 		const map = new Map<string, RosterEntry[]>();
 		for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
-			const roster = normalizeRoster(value);
+			const roster = normalizeRoster(name, value);
 			if (roster) map.set(name, roster);
 		}
 		return map.size > 0 ? map : undefined;
@@ -267,14 +268,14 @@ export function resolveCandidates(
 		const candidates = withProviderFallbacks([
 			{
 				modelSpec: agent.model,
-				thinking: agent.thinking ?? "high",
+				thinking: agent.thinking ?? roleFloor(agent.name),
 				entry: {
 					provider:
 						agent.model.includes("/") ? agent.model.split("/", 2)[0] : "inherit",
 					model: agent.model.includes("/")
 						? agent.model.slice(agent.model.indexOf("/") + 1)
 						: agent.model,
-					thinking: agent.thinking ?? "high",
+					thinking: agent.thinking ?? roleFloor(agent.name),
 					weight: 1,
 				},
 			},

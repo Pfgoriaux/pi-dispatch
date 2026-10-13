@@ -1,9 +1,10 @@
 /**
- * feature_plan — architect draft → cheap pre-mortem → challenger → architect final plan.
+ * feature_plan — architect draft → scout pre-mortem (low thinking, bounded tools) → advisor challenger → architect final plan.
  * Architect and challenger share one ModelDiversity pool, and the final step excludes
  * the challenger's model, so fallbacks never merge the two roles.
  */
-import { TaskThinkingSchema, resolveRequest } from "../thinking.ts";
+import { TaskThinkingSchema, DEFAULT_TASK_THINKING, requireTaskThinking, workflowThinking } from "../thinking.ts";
+import { PRE_MORTEM_TOOL_BUDGET } from "./pr-review.ts";
 
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -35,12 +36,13 @@ const preMortemModel = () => envModel("DISPATCH_PREMORTEM_MODEL") ?? "aperture/n
 const STEPS = [
 	{ agent: "planner", task: "Architect: draft design" },
 	{ agent: "scout", task: "Pre-mortem: 3-month failure" },
-	{ agent: "scout", task: "Challenger: review design" },
+	{ agent: "advisor", task: "Challenger: review design" },
 	{ agent: "planner", task: "Architect: final plan" },
 ];
 
 interface StepModel {
 	spec: string;
+	toolBudget?: number;
 	steerByQuota?: boolean;
 	claimModel?: (spec: string) => boolean;
 	excludeModels?: string[];
@@ -91,12 +93,13 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 			),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			const thinking = resolveRequest({ task: params.thinking });
+			const thinking = requireTaskThinking(params.thinking ?? DEFAULT_TASK_THINKING);
 			const { byName, agents } = discoverAgents(ctx);
 			const scout = byName.get("scout");
+			const advisor = byName.get("advisor");
 			const planner = byName.get("planner");
-			if (!scout || !planner) {
-				const missing = [!scout && "scout", !planner && "planner"].filter(Boolean);
+			if (!scout || !advisor || !planner) {
+				const missing = [!scout && "scout", !advisor && "advisor", !planner && "planner"].filter(Boolean);
 				throw new Error(
 					`feature_plan: missing bundled agent(s): ${missing.join(", ")}. Available agents:\n${agentRosterHelp(agents)}`,
 				);
@@ -126,7 +129,8 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 							claimModel: model.claimModel,
 							excludeModels: [...WORKFLOW_EXCLUDED_MODELS, ...(model.excludeModels ?? [])],
 							fallbackModels: WORKFLOW_FALLBACK_MODELS,
-							thinking,
+							thinking: workflowThinking(agent.name, thinking),
+							toolBudget: model.toolBudget,
 							...progress.options(index),
 						}),
 					signal,
@@ -168,8 +172,9 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 				const preMortem = await step(scout, preMortemTask(c, draftText), {
 					spec: preMortemModel(),
 					steerByQuota: true,
+					toolBudget: PRE_MORTEM_TOOL_BUDGET,
 				});
-				const challenge = await step(scout, challengerTask(c, draftText, outputOf(preMortem)), {
+				const challenge = await step(advisor, challengerTask(c, draftText, outputOf(preMortem)), {
 					spec: challengerModel(),
 					claimModel: designers.worker(),
 				});

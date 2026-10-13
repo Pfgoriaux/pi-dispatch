@@ -21,7 +21,8 @@
  * checked) — see resolveSessionCwd.
  */
 
-import { TaskThinkingSchema, type TaskThinking } from "./thinking.ts";
+import { TaskThinkingSchema, ThinkingLevelSchema, workflowThinking, type TaskThinking } from "./thinking.ts";
+import type { ThinkingLevel } from "./types.ts";
 import { Type } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
@@ -56,7 +57,7 @@ const MAX_CHAIN_LENGTH = 8;
 const MAX_CONCURRENCY = 4;
 
 interface TaskItem {
-	thinking?: TaskThinking;
+	thinking?: ThinkingLevel;
 	agent: string;
 	task: string;
 	cwd?: string;
@@ -83,7 +84,7 @@ interface DispatchParams {
 }
 
 const TaskItemSchema = Type.Object({
-	thinking: Type.Optional(TaskThinkingSchema),
+	thinking: Type.Optional(ThinkingLevelSchema),
 	agent: Type.String({ description: "Agent name from the Dispatch agents roster" }),
 	task: Type.String({ description: "Self-contained task description" }),
 	cwd: Type.Optional(
@@ -195,7 +196,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"dispatch: Select by required capabilities before model strength. Scout locates code; investigator diagnoses code/runtime; advisor judges decisions. Check the live roster: model choice cannot grant tools.",
 			"dispatch: Use one advisor for consequential trade-offs, stuck work, or unresolved risks. Otherwise delegate 3+ independent tasks, context-heavy work, or explicit requests. Do routine work directly; repeat consultations only with new evidence.",
-			"dispatch: Thinking is independent of model tier: high (default), xhigh, or max. Pass each task contract’s Thinking as thinking; unsupported effort errors before inference.",
+			"dispatch: Thinking is independent of model tier. Invocation thinking (high default, xhigh, max) sets review, planning, judgment and writer roles; scouts default to low and aggregators to medium. A task thinking overrides either, down to its role floor; unsupported effort errors before inference.",
 			"dispatch: Supply goal, paths, constraints, and output shape. Workers do not see this conversation or automatically inherit its instructions.",
 			"dispatch: Worker completion is not task completion. Evaluate returned checks against the user's scope and safety rules. Complete authorized verification; report specific access/approval blockers and what remains unverified.",
 			"dispatch: Writers require tasks with worktree:true and authorization to commit. Set target to a clean feature checkout when needed. Review returned branches, integrate only with authorization, then run dependent tasks. PR merges require user review and authorization.",
@@ -313,7 +314,8 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 			}
 		} else if (params.agent && params.task) {
 			mode = "single";
-			items = [{ agent: params.agent, task: params.task }];
+			// Single mode: invocation thinking targets this one worker.
+			items = [{ agent: params.agent, task: params.task, thinking: params.thinking }];
 		} else {
 			throw new Error(
 				`dispatch: use (agent + task) for single mode, tasks[] for parallel, or chain[] for sequential. Available agents:\n${agentRosterHelp(agents)}`,
@@ -389,10 +391,12 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 		try {
 			await paneSession.open(ctx.cwd, signal);
 
+			// Invocation thinking sets high-floor roles; other roles keep their role default. Omitted: resume keeps its saved request.
+			const invocationThinking = (role: string) => params.thinking ? workflowThinking(role, params.thinking) : undefined;
 			const taskModel = (item: TaskItem) => ({
 				modelSpec: expandModelSpec(item.model),
 				steerByQuota: item.model ? isProfileTier(item.model) : undefined,
-				thinking: item.thinking ?? params.thinking,
+				thinking: item.thinking ?? invocationThinking(item.agent),
 			});
 
 			const runOne = async (
@@ -418,8 +422,8 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 						resumeFile,
 						modelSpec: modelOverride?.modelSpec,
 						steerByQuota: modelOverride?.steerByQuota,
-						thinking: modelOverride?.thinking ?? params.thinking,
-						savedResumeThinking: params.resume ? findWorkerSession(params.resume)?.requestedThinking : undefined,
+						thinking: modelOverride ? modelOverride.thinking : invocationThinking(agent.name),
+						savedResume: params.resume ? findWorkerSession(params.resume) : undefined,
 					});
 				} catch (err) {
 					// Contain per-task failures (bad agent frontmatter, loader/session
@@ -461,12 +465,14 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 					);
 				}
 				// resumeFile opens the persisted worker session with its full history.
+				// Resume: invocation thinking targets this one worker; omitted keeps the saved request.
 				const result = await runOne(
 					agent,
 					params.task,
 					ctx.cwd,
 					0,
 					record.file,
+					{ thinking: params.thinking },
 				);
 				const labeled = labeledOutputs([result]);
 				const resumeDetails: DispatchDetails = {
@@ -606,7 +612,8 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 					undefined,
 					willAggregate ? items.length : undefined,
 					undefined,
-					{ thinking: params.thinking ?? "high" },
+					// The aggregator always runs at its role default; invocation thinking sets high-floor roles only.
+					{},
 				);
 				results = [...results, aggregateResult];
 				if (aggregateResult.status === "ok") {
