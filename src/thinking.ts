@@ -1,18 +1,12 @@
 import { getSupportedThinkingLevels, Type, type Api, type Model } from "@earendil-works/pi-ai";
-import { THINKING_LEVELS, type ThinkingLevel } from "./types.ts";
+import { THINKING_LEVELS, THINKING_LEVEL_ORDER as ORDER, type ThinkingLevel } from "./types.ts";
 
 export const THINKING_REFUSAL = "[dispatch:thinking-refused]";
 
-const ORDER: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const rank = (level: string) => ORDER.indexOf(level as ThinkingLevel);
 const atLeast = (level: string, floor: ThinkingLevel) => rank(level) >= rank(floor);
 
-/**
- * Minimum effort per role. Review, planning, judgment and writing stay at
- * `high`. Discovery (scout) and merging or pattern checks (aggregator,
- * slop-reviewer) spend most of their time in short tool rounds, where
- * reasoning multiplies the cost of every round.
- */
+/** Minimum effort per role; every other role floors at `high`. */
 export const ROLE_FLOORS: Readonly<Record<string, ThinkingLevel>> = {
 	scout: "low",
 	aggregator: "medium",
@@ -27,8 +21,8 @@ export const TASK_THINKING: ReadonlySet<string> = new Set(["high", "xhigh", "max
 export const DEFAULT_TASK_THINKING: TaskThinking = "high";
 export const TaskThinkingSchema = Type.Union([Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")]);
 export const isTaskThinking = (value: unknown): value is TaskThinking => typeof value === "string" && TASK_THINKING.has(value);
-/** Dispatch task items: any level; the role floor is checked at run time. */
-export const ThinkingLevelSchema = Type.Union(ORDER.map((level) => Type.Literal(level)));
+/** Dispatch task items: `low` and above; the item's role floor is checked at run time. */
+export const ThinkingLevelSchema = Type.Union(ORDER.slice(ORDER.indexOf("low")).map((level) => Type.Literal(level)));
 
 export function requireTaskThinking(value: unknown): TaskThinking {
 	if (!isTaskThinking(value)) throw new Error(`${THINKING_REFUSAL} Unsupported thinking ${JSON.stringify(value)}; choose high, xhigh, max.`);
@@ -39,6 +33,14 @@ export function requireTaskThinking(value: unknown): TaskThinking {
 export interface ThinkingRequest {
 	level: ThinkingLevel;
 	explicit: boolean;
+}
+
+/** Any valid level, for child workers whose role floor was checked by the parent. */
+export function requireThinkingLevel(value: unknown): ThinkingLevel {
+	if (typeof value !== "string" || !THINKING_LEVELS.has(value)) {
+		throw new Error(`${THINKING_REFUSAL} Unsupported thinking ${JSON.stringify(value)}; choose one of ${ORDER.join(", ")}.`);
+	}
+	return value as ThinkingLevel;
 }
 
 function requireLevel(value: unknown, floor: ThinkingLevel, role: string | undefined): ThinkingLevel {
@@ -53,11 +55,12 @@ function requireLevel(value: unknown, floor: ThinkingLevel, role: string | undef
 
 /**
  * Precedence: task choice → saved resume → agent/roster configuration → role floor.
- * Task and resume choices are explicit and must meet the role floor.
- * Configuration below the floor is raised to it with a warning.
+ * Task choices are explicit and must meet the role floor. A saved resume request
+ * keeps the explicitness it was recorded with. Configuration below the floor is
+ * raised to it with a warning.
  */
 export function resolveRequest(
-	choices: { task?: string; savedResume?: string; resumeSource?: string; agentConfig?: string },
+	choices: { task?: string; savedResume?: string; savedResumeExplicit?: boolean; resumeSource?: string; agentConfig?: string },
 	role?: string,
 	configSource = "agent configuration",
 	warn?: (message: string) => void,
@@ -68,7 +71,7 @@ export function resolveRequest(
 	const configured = resumed ? choices.savedResume : choices.agentConfig;
 	if (configured === undefined) return { level: floor, explicit: false };
 	if (!THINKING_LEVELS.has(configured)) requireLevel(configured, floor, role);
-	if (atLeast(configured, floor)) return { level: configured as ThinkingLevel, explicit: resumed };
+	if (atLeast(configured, floor)) return { level: configured as ThinkingLevel, explicit: resumed && choices.savedResumeExplicit !== false };
 	const source = resumed ? `Resumed session ${choices.resumeSource ?? "(saved)"}` : configSource;
 	warn?.(`${source}: thinking ${configured} raised to ${floor}.`);
 	return { level: floor, explicit: false };

@@ -423,7 +423,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 						modelSpec: modelOverride?.modelSpec,
 						steerByQuota: modelOverride?.steerByQuota,
 						thinking: modelOverride ? modelOverride.thinking : invocationThinking(agent.name),
-						savedResumeThinking: params.resume ? findWorkerSession(params.resume)?.requestedThinking : undefined,
+						savedResume: params.resume ? findWorkerSession(params.resume) : undefined,
 					});
 				} catch (err) {
 					// Contain per-task failures (bad agent frontmatter, loader/session
@@ -612,7 +612,8 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 					undefined,
 					willAggregate ? items.length : undefined,
 					undefined,
-					{ thinking: invocationThinking("aggregator") },
+					// The aggregator always runs at its role default; invocation thinking sets high-floor roles only.
+					{},
 				);
 				results = [...results, aggregateResult];
 				if (aggregateResult.status === "ok") {

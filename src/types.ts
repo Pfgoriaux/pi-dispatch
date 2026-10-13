@@ -5,25 +5,10 @@
 import type { WorktreeHandoff } from "./handoff.ts";
 import type { Usage } from "@earendil-works/pi-ai";
 
-/** Valid pi thinking levels. */
-export type ThinkingLevel =
-	| "off"
-	| "minimal"
-	| "low"
-	| "medium"
-	| "high"
-	| "xhigh"
-	| "max";
-
-export const THINKING_LEVELS: ReadonlySet<string> = new Set<ThinkingLevel>([
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-]);
+/** Valid pi thinking levels, lowest effort first. */
+export const THINKING_LEVEL_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevel = (typeof THINKING_LEVEL_ORDER)[number];
+export const THINKING_LEVELS: ReadonlySet<string> = new Set<string>(THINKING_LEVEL_ORDER);
 
 /** Parsed agents/*.md definition. Byte-compatible with the official example's format. */
 export interface AgentConfig {

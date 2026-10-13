@@ -18,6 +18,8 @@ fs.writeFileSync(path.join(process.env.PI_CODING_AGENT_DIR!, "settings/subagent-
 		{ provider: "fixture", model: "model", thinking: "medium", weight: 2 },
 		{ provider: "fixture", model: "alternate", thinking: "max", weight: 1 },
 	],
+	"scout": [{ provider: "fixture", model: "model", weight: 1 }],
+	"reviewer": [{ provider: "fixture", model: "model", weight: 1 }],
 }));
 const agent: AgentConfig = { name: "thinking-fixture", description: "fixture", tools: [], model: "fixture/model", thinking: "low", systemPrompt: "fixture", source: "bundled", filePath: "fixture.md" };
 
@@ -72,6 +74,15 @@ test("explicit efforts need exact support; defaults rise to the nearest supporte
 	assert.throws(() => resolveEffective({ level: "max", explicit: false }, { ...glm, thinkingLevelMap: { low: "low", high: "high", max: null } }), /Unsupported thinking max/);
 	assert.equal(effortLabel({ requestedThinking: "xhigh" }), "xhigh→unknown");
 	assert.equal(effortLabel({ requestedThinking: "max", thinking: "max" }), "max");
+});
+
+test("roster entries without thinking default to the role floor", async t => {
+	const { calls, registry } = thinkingFixture(t);
+	for (const [name, expected] of [["scout", "low"], ["reviewer", "high"]] as const) {
+		const result = await runWorker({ ...agent, name, thinking: undefined }, "test", { registry, fallbackModel: undefined });
+		assert.equal(result.status, "ok");
+		assert.deepEqual([result.requestedThinking, result.thinking, calls.at(-1)!.thinking], [expected, expected, expected]);
+	}
 });
 
 test("unsupported SDK efforts make zero inference calls and report supported choices", async t => {

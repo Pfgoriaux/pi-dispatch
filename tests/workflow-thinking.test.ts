@@ -106,6 +106,24 @@ console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content
 	});
 }
 
+test("a resumed role default floats to the nearest supported level; a resumed explicit choice stays exact", async t => {
+	const noLow = (p?: string, id?: string) => ({ ...thinkingModel(p, id), thinkingLevelMap: { low: null, xhigh: "xhigh", max: "max" } });
+	const { registry } = thinkingFixture(t, (p?: string, id?: string) => id === "original" ? thinkingModel(p, id) : noLow(p, id));
+	const ctx = { cwd: process.env.PI_CODING_AGENT_DIR!, isProjectTrusted: () => false, modelRegistry: registry };
+	const tool = tools().get("dispatch")!;
+	const run = async (params: object) => (await tool.execute("test", { ...params, herdr: false }, undefined, undefined, ctx as any)).details as DispatchDetails;
+	const byDefault = (await run({ tasks: [{ agent: "scout", task: "remember", model: "fixture/original" }], persist: true })).items[0];
+	assert.deepEqual([byDefault.requestedThinking, byDefault.thinking, findWorkerSession(byDefault.sessionId!)!.explicitThinking], ["low", "low", false]);
+	const floated = (await run({ resume: byDefault.sessionId!, task: "continue" })).items[0];
+	assert.equal(floated.status, "ok");
+	assert.deepEqual([floated.requestedThinking, floated.thinking], ["low", "medium"]);
+	const explicit = (await run({ tasks: [{ agent: "scout", task: "remember", model: "fixture/original", thinking: "low" }], persist: true })).items[0];
+	assert.equal(findWorkerSession(explicit.sessionId!)!.explicitThinking, true);
+	const refused = (await run({ resume: explicit.sessionId!, task: "continue" })).items[0];
+	assert.equal(refused.status, "error");
+	assert.match(refused.error!, /Unsupported thinking low/);
+});
+
 test("invocation effort schemas accept high, xhigh, max; task items accept any level above their role floor", () => {
 	const registered = tools();
 	for (const name of ["dispatch", "feature_plan", "pr_review", "council"]) {
@@ -114,8 +132,32 @@ test("invocation effort schemas accept high, xhigh, max; task items accept any l
 	}
 	for (const mode of ["tasks", "chain"]) {
 		const schema = registered.get("dispatch")!.parameters as any;
-		assert.deepEqual(schema.properties[mode].items.properties.thinking.anyOf.map((v: any) => v.const), ["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+		assert.deepEqual(schema.properties[mode].items.properties.thinking.anyOf.map((v: any) => v.const), ["low", "medium", "high", "xhigh", "max"]);
 	}
+});
+
+test("a worktree child of a low-floor role is spawned at its role default and passes the child guard", async t => {
+	const { registry } = thinkingFixture(t);
+	const root = fs.mkdtempSync(path.join(process.env.PI_CODING_AGENT_DIR!, "child-floor-"));
+	const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { stdio: "pipe" });
+	git("init", "-b", "feat/fixture"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.invalid");
+	git("config", "commit.gpgsign", "false"); git("config", "core.hooksPath", "/dev/null");
+	fs.writeFileSync(path.join(root, "file"), "before"); git("add", "--", "file"); git("commit", "-m", "fixture");
+	const child = path.join(process.env.PI_CODING_AGENT_DIR!, "child-floor");
+	fs.writeFileSync(child, `#!/usr/bin/env node
+const a=process.argv.slice(2), thinking=a[a.indexOf('--thinking')+1], guard=a[a.indexOf('--dispatch-thinking')+1];
+console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:thinking+'/'+guard}],thinkingLevel:thinking,stopReason:'stop'}}));
+`, { mode: 0o700 });
+	const oldBin = process.env.PI_DISPATCH_PI_BIN;
+	process.env.PI_DISPATCH_PI_BIN = child;
+	t.after(() => { if (oldBin === undefined) delete process.env.PI_DISPATCH_PI_BIN; else process.env.PI_DISPATCH_PI_BIN = oldBin; });
+	const ctx = { cwd: root, isProjectTrusted: () => true, modelRegistry: registry };
+	const result = await tools().get("dispatch")!.execute("test", { herdr: false, aggregate: false, thinking: "max",
+		tasks: [{ agent: "scout", task: "look", worktree: true, model: "fixture/model" }],
+	}, undefined, undefined, ctx as any);
+	const [item] = (result.details as DispatchDetails).items;
+	assert.equal(item.status, "ok", text(result));
+	assert.deepEqual([item.requestedThinking, item.thinking, item.text], ["low", "low", "low/low"]);
 });
 
 test("task efforts below the role floor are refused before inference", async t => {

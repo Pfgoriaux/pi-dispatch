@@ -39,7 +39,7 @@ import {
 	withoutModels,
 	type RankedCandidate,
 } from "./roster.ts";
-import { resolveRequest, resolveEffective, effortLabel, THINKING_REFUSAL } from "./thinking.ts";
+import { resolveRequest, resolveEffective, effortLabel, THINKING_REFUSAL, type ThinkingRequest } from "./thinking.ts";
 import { exhaustedQuotaReason, quotaCandidates } from "./quota.ts";
 import { ToolBudget, ToolHealth } from "./tool-health.ts";
 import { modelIdentity } from "./model-diversity.ts";
@@ -77,7 +77,8 @@ export interface RunWorkerOptions {
 	claimModel?: (spec: string) => boolean;
 	/** Explicit effort; must meet the agent's role floor. Omitted: configuration, then the floor. */
 	thinking?: string;
-	savedResumeThinking?: string;
+	/** Resume: the saved request and whether it was an explicit choice. */
+	savedResume?: Pick<WorkerSessionRecord, "requestedThinking" | "explicitThinking">;
 	/** After this many tool calls the worker is told to answer; at double, the attempt fails. */
 	toolBudget?: number;
 }
@@ -92,6 +93,8 @@ export interface WorkerSessionRecord {
 	agent: string;
 	savedAt: number;
 	requestedThinking?: ThinkingLevel;
+	/** False when `requestedThinking` was a role default, which may float on resume. */
+	explicitThinking?: boolean;
 	model?: string;
 }
 
@@ -120,13 +123,14 @@ export function recordWorkerSession(
 	agent: string,
 	requestedThinking?: ThinkingLevel,
 	model?: string,
+	explicitThinking?: boolean,
 ): void {
 	if (!file) return;
 	try {
 		const index = workerIndex();
 		fs.mkdirSync(workerSessionsDir(), { recursive: true });
 		const map = index.read();
-		map[sessionId] = { file, agent, savedAt: Date.now(), requestedThinking, model };
+		map[sessionId] = { file, agent, savedAt: Date.now(), requestedThinking, explicitThinking, model };
 		fs.writeFileSync(index.path, JSON.stringify(map, null, 2));
 	} catch {
 		// Persistence is best-effort; the dispatch itself must not fail.
@@ -256,10 +260,11 @@ export async function runWorker(
 	const override = options.modelSpec?.trim();
 	// Explicit model choices bypass rosters, including explicit parent inheritance.
 	const selection = override ? undefined : resolveCandidates(agent, await loadRosterConfig());
-	const savedResume = options.savedResumeThinking ?? (options.resumeFile ? SessionManager.open(options.resumeFile).buildSessionContext().thinkingLevel : undefined);
+	const savedResume = options.savedResume?.requestedThinking ?? (options.resumeFile ? SessionManager.open(options.resumeFile).buildSessionContext().thinkingLevel : undefined);
 	// Resolve once before routing/fallback: another candidate cannot change the request.
 	const request = resolveRequest({
-		task: options.thinking, savedResume, resumeSource: options.resumeFile, agentConfig: selection?.candidates[0]?.thinking ?? agent.thinking,
+		task: options.thinking, savedResume, savedResumeExplicit: options.savedResume?.explicitThinking, resumeSource: options.resumeFile,
+		agentConfig: selection?.candidates[0]?.thinking ?? agent.thinking,
 	}, agent.name, `Agent/roster ${agent.name}`, options.onWarning);
 	const thinking = request.level;
 	let candidates: RankedCandidate[] = override
@@ -369,7 +374,7 @@ export async function runWorker(
 		);
 		let attempt: WorkerResult;
 		try {
-			attempt = await runOneCandidate(agent, task, options, candidate, thinking, model, extensionPaths);
+			attempt = await runOneCandidate(agent, task, options, candidate, request, model, extensionPaths);
 		} catch (error) {
 			if (error instanceof ExhaustedQuotaError) {
 				attempts--;
@@ -444,10 +449,11 @@ async function runOneCandidate(
 	task: string,
 	options: RunWorkerOptions,
 	candidate: RankedCandidate,
-	requestedThinking: string,
+	request: ThinkingRequest,
 	model: Model<Api>,
 	extensionPaths: string[],
 ): Promise<WorkerResult> {
+	const requestedThinking = request.level;
 	const started = Date.now();
 	const base = {
 		agent: agent.name,
@@ -561,7 +567,7 @@ async function runOneCandidate(
 			const budget = toolBudget.observe(event);
 			if (budget === "answer") {
 				options.onStream?.(`tool budget used (${options.toolBudget}); asked to answer`);
-				void session.steer(toolBudget.message);
+				session.steer(toolBudget.message).catch((error) => options.onWarning?.(`tool budget steer failed: ${String(error)}`));
 			} else if (budget === "stop") {
 				toolHealth.failure = toolBudget.failure;
 				options.onStream?.(`cutoff: ${toolHealth.failure}`);
@@ -581,7 +587,7 @@ async function runOneCandidate(
 			sessionManager.appendThinkingLevelChange(session.thinkingLevel);
 		}
 		if (options.persist || options.resumeFile) {
-			recordWorkerSession(session.sessionId, session.sessionFile ?? "", agent.name, requestedThinking as ThinkingLevel, `${model.provider}/${model.id}`);
+			recordWorkerSession(session.sessionId, session.sessionFile ?? "", agent.name, requestedThinking, `${model.provider}/${model.id}`, request.explicit);
 		}
 		const budget = startupTimeoutMs();
 		startupTimer = setTimeout(() => {

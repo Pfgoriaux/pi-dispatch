@@ -3,7 +3,7 @@
  * Architect and challenger share one ModelDiversity pool, and the final step excludes
  * the challenger's model, so fallbacks never merge the two roles.
  */
-import { TaskThinkingSchema, requireTaskThinking, workflowThinking } from "../thinking.ts";
+import { TaskThinkingSchema, DEFAULT_TASK_THINKING, requireTaskThinking, workflowThinking } from "../thinking.ts";
 import { PRE_MORTEM_TOOL_BUDGET } from "./pr-review.ts";
 
 import { Type } from "@earendil-works/pi-ai";
@@ -93,7 +93,7 @@ export function registerFeaturePlanTool(pi: ExtensionAPI): void {
 			),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			const thinking = requireTaskThinking(params.thinking ?? "high");
+			const thinking = requireTaskThinking(params.thinking ?? DEFAULT_TASK_THINKING);
 			const { byName, agents } = discoverAgents(ctx);
 			const scout = byName.get("scout");
 			const advisor = byName.get("advisor");

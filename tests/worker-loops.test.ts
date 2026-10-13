@@ -25,7 +25,7 @@ const registry = {
 	getApiKeyForProvider: async () => undefined,
 } as unknown as ModelRegistry;
 
-function setup(t: TestContext, response: (model: Model<Api>, call: number) => string | undefined) {
+function setup(t: TestContext, response: (model: Model<Api>, call: number, context: string) => string | undefined) {
 	const previous = process.env.LINKUP_API_KEY;
 	delete process.env.LINKUP_API_KEY;
 	t.after(() => {
@@ -39,12 +39,12 @@ function setup(t: TestContext, response: (model: Model<Api>, call: number) => st
 	t.mock.method(AgentSession.prototype, "dispose", function (this: AgentSession) {
 		disposed++; dispose.call(this);
 	});
-	t.mock.method(ModelRuntime.prototype, "streamSimple", (model: Model<Api>, _context: unknown, options?: { signal?: AbortSignal }) => {
+	t.mock.method(ModelRuntime.prototype, "streamSimple", (model: Model<Api>, context: unknown, options?: { signal?: AbortSignal }) => {
 		// Like a real provider, do not issue a request once its signal is aborted.
 		const aborted = options?.signal?.aborted === true;
 		if (!aborted) calls++;
 		// Hard fixture ceiling prevents a broken guard from hanging the test process.
-		const toolName = aborted || calls > 12 ? undefined : response(model, calls);
+		const toolName = aborted || calls > 12 ? undefined : response(model, calls, JSON.stringify(context));
 		const message: AssistantMessage = {
 			role: "assistant", api: model.api, provider: model.provider, model: model.id,
 			content: toolName ? [
@@ -155,4 +155,28 @@ for (const started of [false, true]) test(`SDK startup budget only bounds absent
 	const result = await runWorker(agent, "fixture", { registry, fallbackModel: undefined, modelSpec: "fake/startup" });
 	assert.equal(result.status, started ? "ok" : "error");
 	if (!started) assert.match(result.error!, /no model output/);
+});
+
+const lister: AgentConfig = { ...agent, tools: ["ls"] };
+
+test("tool budget steers the worker to answer, and the answer counts as success", { timeout: 10000 }, async (t) => {
+	// Keep listing until the steer message is in the context, then answer.
+	const state = setup(t, (_model, _call, context) => context.includes("Tool budget used (2 calls)") ? undefined : "ls");
+	const logs: string[] = [];
+	const result = await runWorker(lister, "fixture", {
+		registry, fallbackModel: undefined, modelSpec: "fake/loop", toolBudget: 2, onStream: (line) => logs.push(line),
+	});
+	assert.equal(result.status, "ok", result.error);
+	assert.equal(result.text, "RECOVERED");
+	assert.equal(state.calls(), 3);
+	assert.ok(logs.some((line) => line.startsWith("tool budget used (2)")));
+});
+
+test("a worker that ignores the steer fails at twice its tool budget", { timeout: 10000 }, async (t) => {
+	const state = setup(t, () => "ls");
+	const result = await runWorker(lister, "fixture", { registry, fallbackModel: undefined, modelSpec: "fake/loop", toolBudget: 2 });
+	assert.equal(result.status, "error");
+	assert.match(result.error!, /after 4 tool calls, twice its budget/);
+	assert.equal(result.text, "");
+	assert.equal(state.calls(), 4);
 });

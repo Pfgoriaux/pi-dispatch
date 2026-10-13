@@ -13,7 +13,7 @@
  * Diff resolution: GitHub PR number (gh), a git rev-range, a branch compared
  * against HEAD, or the default origin base...HEAD.
  */
-import { TaskThinkingSchema, requireTaskThinking, workflowThinking, effortLabel } from "../thinking.ts";
+import { TaskThinkingSchema, DEFAULT_TASK_THINKING, requireTaskThinking, workflowThinking, effortLabel } from "../thinking.ts";
 
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -230,7 +230,7 @@ const STEPS = [
 	{ agent: "reviewer", task: "Spec + reuse: requirements, edge cases, overlaps, duplicates" },
 	{ agent: "reviewer", task: "Verify and aggregate" },
 ];
-/** The pre-mortem answers from the diff and its neighbours; 35-call runs produced no better findings. */
+/** Pre-mortem scouts are told to answer at this many tool calls and fail at double. */
 export const PRE_MORTEM_TOOL_BUDGET = 12;
 const FIX_STEP = { agent: "writer", task: "Fix explicitly authorized findings" };
 
@@ -296,7 +296,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 			),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			const thinking = requireTaskThinking(params.thinking ?? "high");
+			const thinking = requireTaskThinking(params.thinking ?? DEFAULT_TASK_THINKING);
 			const started = Date.now();
 			let truncated = false;
 			const cap = (text: string, maxBytes?: number) => {

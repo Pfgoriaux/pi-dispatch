@@ -187,7 +187,7 @@ export async function runWorkerProc(
 			continue;
 		}
 		try {
-			resolveEffective(request, options.registry ? resolveChildModel(options.registry, candidate.modelSpec) : undefined);
+			candidate.thinking = resolveEffective(request, options.registry ? resolveChildModel(options.registry, candidate.modelSpec) : undefined).effective;
 		} catch (error) {
 			const reason = (error as Error).message;
 			options.onWarning?.(reason);

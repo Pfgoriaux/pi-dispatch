@@ -66,16 +66,18 @@ Precedence for a worker is task choice → invocation choice (high-floor roles)
 below the floor is raised to it with a warning. Resume retains the last request
 unless overridden and records changes in the session history.
 
-Explicit choices (task, invocation, resume) run exactly: a model without that
-level is refused before inference, with its supported levels listed. Role
-defaults run at the lowest supported level at or above the floor, so a
-`medium` default becomes `high` on GLM 5.3, which has no `medium`. Non-reasoning
-and virtual models are refused. Nothing reruns a task to change effort. Child
-workers also load a guard that checks their actual model before provider requests.
+Explicit choices (task, invocation, resumed explicit choice) run exactly: a
+model without that level is refused before inference, with its supported levels
+listed. Role defaults, including a resumed default, run at the lowest supported
+level at or above the floor, so a `medium` default becomes `high` on a model
+without `medium`. Supported levels come from Pi's model metadata at run time.
+Non-reasoning and virtual models are refused. Nothing reruns a task to change
+effort. Child workers also load a guard that checks their actual model before
+provider requests.
 
-Levels mean the same thing on every model only for `low`, `high` and `max`.
-`medium` exists on Anthropic and OpenAI models; DeepSeek, GLM and Kimi treat it
-as `high`. `off` exists on DeepSeek and Kimi; GLM always reasons.
+The floors use `low`, `medium` and `high` because the Neuralwatt and Synthetic
+model catalogs (`/v1/models`) accept `low`, `high` and `max` on every model
+they serve and alias `medium` to `high` where it is missing.
 
 Reports show requested and effective effort. Child effective effort comes from
 assistant-message metadata, or `unknown` when it is absent; argv is not evidence
@@ -165,6 +167,9 @@ parallel
 reviewer → verify findings against diff and code → report
 ```
 
+The pre-mortem scout has a tool budget: at 12 tool calls it is told to answer
+from what it has, and at 24 the attempt fails. `feature_plan` uses the same budget.
+
 The spec + reuse reviewer checks the diff against `intent` and, for a PR number,
 the PR description fetched with `gh pr view` and saved next to the diff. Only this
 reviewer and the verifier read that file. It reports missing or unrequested
@@ -250,9 +255,6 @@ frontmatter, then the parent model. Rosters live in
   ]
 }
 ```
-
-Pre-mortem scouts have a tool budget: after 12 tool calls the worker is told to
-answer from what it has, and at 24 the attempt fails.
 
 Weights are positive and ordered descending, not sampled. A task model override
 bypasses the roster. Worktree/review-fix children do not read in-process rosters
