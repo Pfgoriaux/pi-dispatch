@@ -55,6 +55,8 @@ export interface RunWorkerOptions {
 	onBoundary?: () => void;
 	/** Actual resolved model for each attempt, UI-only. */
 	onAttempt?: (model: string, thinking: string, attempt: number, requestedThinking?: string) => void;
+	/** Effective thinking of the running attempt once its session exists, UI-only. */
+	onThinking?: (thinking: string) => void;
 	/** Bounded activity metadata; no tool arguments/results or thinking text. */
 	onStream?: (line: string) => void;
 	/** Non-fatal capability setup warnings, UI-only. */
@@ -532,6 +534,7 @@ async function runOneCandidate(
 	});
 
 	effectiveThinking = session.thinkingLevel;
+	options.onThinking?.(effectiveThinking);
 
 	// Abort propagation: parent signal -> worker session.
 	const onAbort = () => session.abort();
