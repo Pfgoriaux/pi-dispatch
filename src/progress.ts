@@ -92,6 +92,12 @@ export class DispatchProgress {
 				void this.spaces?.update(this.spaceWorkers());
 				this.emit(true);
 			},
+			onThinking: (thinking: string) => {
+				const row = this.activity[index];
+				if (!row || row.thinking === thinking) return;
+				row.thinking = thinking;
+				this.emit(true);
+			},
 		};
 	}
 

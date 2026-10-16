@@ -48,6 +48,8 @@ export interface RunWorkerProcOptions {
 	onStream?: (line: string) => void;
 	onWarning?: (warning: string) => void;
 	onAttempt?: (model: string, thinking: string, attempt: number, requestedThinking?: string) => void;
+	/** Effective thinking reported by the running attempt, UI-only. */
+	onThinking?: (thinking: string) => void;
 	thinking?: string;
 	/** Parent registry resolves bare IDs before the child can choose a provider. */
 	registry?: ModelRegistry;
@@ -492,6 +494,7 @@ async function runOneProc(
 						}
 						if (message.model) lastModel = message.model;
 						base.thinking = typeof message.thinkingLevel === "string" ? message.thinkingLevel : "unknown";
+						options.onThinking?.(base.thinking);
 						base.providerThinkingLevel = message.providerThinkingLevel;
 						if (message.stopReason || message.errorMessage) {
 							lastError = {

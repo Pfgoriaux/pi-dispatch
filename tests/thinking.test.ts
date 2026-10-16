@@ -106,7 +106,9 @@ test("legacy floor warns once and every explicit fallback retains the exact effo
 	const floored = await runWorker(agent, "test", { registry, fallbackModel: undefined, onWarning: w => warnings.push(w) });
 	assert.equal(floored.thinking, "high");
 	assert.equal(warnings.filter(w => w.includes("raised to high")).length, 1);
-	const result = await runWorker(agent, "test", { registry, fallbackModel: undefined, modelSpec: "anthropic/claude-opus-5-5", thinking: "xhigh" });
+	const live: string[] = [];
+	const result = await runWorker(agent, "test", { registry, fallbackModel: undefined, modelSpec: "anthropic/claude-opus-5-5", thinking: "xhigh", onThinking: level => live.push(level) });
+	assert.deepEqual(live, ["xhigh"]);
 	assert.equal(result.status, "ok");
 	assert.equal(result.model, "openai-codex/gpt-6-astra");
 	assert.equal(result.requestedThinking, "xhigh");
@@ -137,8 +139,10 @@ console.log(JSON.stringify({type:'message_end', message:{role:'assistant', conte
 	process.env.PI_DISPATCH_PI_BIN = bin;
 	const { registry } = thinkingFixture(t, (p, id) => ({ ...thinkingModel(p, id), reasoning: p !== "anthropic" }));
 	const starts: string[] = [];
-	const result = await runWorkerProc(agent, "test", { cwd: root, registry, modelOverride: "anthropic/claude-opus-5-5", thinking: "xhigh", onAttempt: model => starts.push(model) });
+	const live: string[] = [];
+	const result = await runWorkerProc(agent, "test", { cwd: root, registry, modelOverride: "anthropic/claude-opus-5-5", thinking: "xhigh", onAttempt: model => starts.push(model), onThinking: level => live.push(level) });
 	assert.deepEqual(starts, ["openai-codex/gpt-6-astra"]);
+	assert.deepEqual(live, ["xhigh"]);
 	assert.equal(result.status, "ok");
 	assert.equal(result.thinking, "xhigh");
 	assert.equal(result.providerThinkingLevel, "native-extra");

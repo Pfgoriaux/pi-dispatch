@@ -84,6 +84,20 @@ test("queued, selected model, failover and completion are visible without expans
 	await progress.end();
 });
 
+test("running rows replace the unknown effort once the worker reports it", async () => {
+	const updates: { content: { type: "text"; text: string }[]; details: DispatchDetails }[] = [];
+	const progress = new DispatchProgress("single", [{ agent: "writer", task: "edit", herdr: false }], (update) => updates.push(update));
+	const label = () => renderDispatchResult(updates.at(-1)!, { expanded: false }, theme, {}).render(120).join("\n");
+	try {
+		progress.start(0);
+		progress.options(0).onAttempt("vendor/model-a", "unknown", 1, "xhigh");
+		assert.match(label(), /xhigh→unknown/);
+		progress.options(0).onThinking("xhigh");
+		assert.doesNotMatch(label(), /unknown/);
+		assert.match(label(), /model-a · xhigh · running/);
+	} finally { await progress.end(); }
+});
+
 test("thrown worker failures preserve the last selected model and retry count", async () => {
 	const progress = new DispatchProgress("single", [{ agent: "scout", task: "inspect", herdr: false }]);
 	try {
