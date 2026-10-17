@@ -103,14 +103,13 @@ export function steerByQuota(
 	const reasons: string[] = [];
 	for (const [family, indices] of groups.entries()) {
 		// An unknown reading is neither free capacity nor an exhausted subscription: it keeps its slot.
-		const known = indices.map(index => {
+		const peers = indices.map(index => {
 			const candidate = candidates[index];
 			const provider = quotaProvider(candidate.modelSpec);
 			return { index, candidate, provider, headroom: quotaHeadroom(snapshots.get(provider), now, candidate.modelSpec) };
 		}).filter(p => p.headroom !== undefined);
-		if (known.length < 2) continue;
-		const slots = known.map(p => p.index);
-		const peers = [...known];
+		if (peers.length < 2) continue;
+		const slots = peers.map(p => p.index);
 		peers.sort((a, b) => b.headroom! - a.headroom!
 			// For NeuralWatt/Synthetic: spend Synthetic first on a healthy tie.
 			// For Anthropic/Codex peers (Opus/Astra, Sonnet/Sol): spend Codex first on a healthy tie.

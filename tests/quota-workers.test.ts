@@ -78,7 +78,7 @@ const writeQuotas = (entries: readonly (readonly [string, number])[]) => {
 	}
 };
 
-test("exhausted Claude routes Opus to Claude 2 before Astra, in both worker tiers", async () => {
+test("exhausted Claude reaches Claude 2 with steering off; steering may prefer Astra", async () => {
 	const opus = "anthropic/claude-opus-5-5", opus2 = "anthropic-2/claude-opus-5-5";
 	writeQuotas([["claude", 0], ["claude2", 30], ["codex", 90]]);
 	const warnings: string[] = [];

@@ -170,6 +170,10 @@ test("explicit top-tier counterpart effort survives fallback expansion", () => {
 	}
 });
 
+test("Aperture-prefixed Claude specs keep their single route", () => {
+	assert.deepEqual(withProviderFallbacks([candidate(`aperture/${opus}`)]).map(c => c.modelSpec), [`aperture/${opus}`]);
+});
+
 test("a Claude 2 pin falls back to the first account before cross-provider peers", () => {
 	const configured = { ...candidate(opus), thinking: "off", entry: { ...candidate(opus).entry, thinking: "off" } };
 	const routes = withProviderFallbacks([candidate(opus2), candidate(astra), configured]);

@@ -138,9 +138,23 @@ for (const source of ["frontmatter", "pin", "inherit"] as const) {
 	});
 }
 
+test("child moves an exhausted first-account pin to Claude 2", async () => {
+	quota("claude", 0);
+	quota("claude2", 30);
+	quota("codex", 90);
+	const calls: string[] = [];
+	const result = await runWorkerProc(agent, "test", { cwd: root, registry, modelOverride: opus, steerByQuota: false,
+		onAttempt: model => calls.push(model),
+	});
+	assert.deepEqual(calls, [opus2]);
+	assert.equal(result.status, "ok");
+	assert.equal(result.model, opus2);
+});
+
 test("child resolves bare IDs before quota checks and pins the actual provider", async () => {
 	const bareRegistry = { ...registry, getAll: () => [{ provider: "anthropic", id: "claude-opus-5-5", reasoning: true }] } as any;
 	quota("claude", 0);
+	quota("claude2", 0);
 	quota("codex", 40);
 	const result = await runWorkerProc(agent, "test", { cwd: root, modelOverride: "claude-opus-5-5", registry: bareRegistry });
 	assert.equal(result.status, "ok");

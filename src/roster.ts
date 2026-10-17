@@ -161,11 +161,15 @@ function accountRoutes(spec: string): string[] {
 	return [spec, ...CLAUDE_ACCOUNTS.map((account) => `${account}/${id}`).filter((route) => route !== spec)];
 }
 
+/** The first-account spec for a direct Claude route; other specs map to themselves. */
+function primaryAccount(spec: string): string {
+	const id = claudeModel(spec);
+	return id ? `anthropic/${id}` : spec;
+}
+
 /** Model identity across Claude accounts and the Aperture prefix. */
 export function sameModelId(spec: string): string {
-	const route = routeId(spec);
-	const id = claudeModel(route);
-	return id ? `anthropic/${id}` : route;
+	return primaryAccount(routeId(spec));
 }
 
 /** Drop candidates naming an excluded model, on any Claude account, with or without the Aperture prefix. */
@@ -195,7 +199,7 @@ export function quotaFamily(spec: string): string | undefined {
 		if ([...SYNTHETIC_COUNTERPARTS.values()].includes(id)) return id;
 	}
 	// Cross-provider peers (Opus 5.5 ↔ Astra 6, Sonnet 5.5 ↔ Sol 6.1), then other Claude models across accounts
-	const id = sameModelId(spec);
+	const id = primaryAccount(spec);
 	return CROSS_PROVIDER_PEERS.get(id)?.family ?? (claudeModel(id) ? id : undefined);
 }
 
@@ -223,7 +227,7 @@ export function withProviderFallbacks(candidates: RankedCandidate[]): RankedCand
 		const route = routeId(candidate.modelSpec);
 		let counterpart: string | undefined;
 		// Cross-provider peers (Opus 5.5 ↔ Astra 6, Sonnet 5.5 → Sol 6.1)
-		const crossPeer = CROSS_PROVIDER_PEERS.get(sameModelId(candidate.modelSpec))?.peer;
+		const crossPeer = CROSS_PROVIDER_PEERS.get(primaryAccount(candidate.modelSpec))?.peer;
 		if (crossPeer) {
 			append(candidate);
 			// Prefer an explicit counterpart configuration if present

@@ -270,10 +270,11 @@ before spawn.
 - Kimi, GLM 5.3 and DeepSeek retry their Neuralwatt/Synthetic counterparts
   (direct and Aperture routes supported). Kimi and GLM 5.3 retain a terminal
   Codex Sol 6.1 fallback; DeepSeek falls back through Haiku 5.5 then Sol.
-- Every Claude route (`anthropic/<id>`) retries the same model on the second
-  Claude account (`anthropic-2/<id>`, registered by pi-ant) before any other
-  provider, and the reverse for `anthropic-2` pins. Both accounts count as one
-  model for exclusions, council seats and duplicate guards.
+- Every direct Claude route (`anthropic/<id>`) is followed by the same model on
+  the second Claude account (`anthropic-2/<id>`, registered by pi-ant), and the
+  reverse for `anthropic-2` pins, ahead of cross-provider peers. Quota steering
+  can still move a higher-headroom peer ahead of either account. Both accounts
+  count as one model for exclusions, council seats and duplicate guards.
 - Opus and Astra retry each other and end with Sol; Sonnet also falls back to Sol.
 - `feature_plan` and `pr_review` exclude Sol and end their chains with GLM 5.3
   on Neuralwatt, then on Aperture Synthetic. Model-identity guards prevent duplicates.
