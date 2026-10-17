@@ -79,17 +79,24 @@ export const PROFILE_TIERS: ReadonlySet<string> = new Set(
 	Object.keys(PROFILES),
 );
 
-/** PR review models. Opus and Astra exclude each other on failover. */
+/**
+ * PR review models. Opus and Astra exclude each other on failover. Every step
+ * names its model, so agent rosters cannot route pr_review elsewhere.
+ */
 export const REVIEW_MODELS = {
 	opus: envModel("DISPATCH_REVIEW_OPUS_MODEL") ?? "anthropic/claude-opus-5-5",
 	astra: envModel("DISPATCH_REVIEW_ASTRA_MODEL") ?? "openai-codex/gpt-6-astra",
-	preMortem: envModel("DISPATCH_REVIEW_PREMORTEM_MODEL") ?? "aperture/neuralwatt/deepseek-v4.1-flash",
-	specReuse: envModel("DISPATCH_REVIEW_SPEC_MODEL") ?? GLM_MODEL,
+	preMortem: envModel("DISPATCH_REVIEW_PREMORTEM_MODEL") ?? "anthropic/claude-sonnet-5-5",
+	slop: envModel("DISPATCH_REVIEW_SLOP_MODEL") ?? "anthropic/claude-sonnet-5-5",
+	verify: envModel("DISPATCH_REVIEW_VERIFY_MODEL") ?? "anthropic/claude-sonnet-5-5",
 } as const;
 
+/** Last resort for every pr_review step: Anthropic and OpenAI only. */
+export const REVIEW_FALLBACK_MODELS: readonly string[] = ["anthropic/claude-sonnet-5-5"];
+
 /**
- * Last resort for every pr_review and feature_plan step, tried after the
- * step's own chain: GLM 5.3 on Neuralwatt, then on Synthetic.
+ * Last resort for every feature_plan step, tried after the step's own chain:
+ * GLM 5.3 on Neuralwatt, then on Synthetic.
  */
 export const WORKFLOW_FALLBACK_MODELS: readonly string[] = [
 	GLM_MODEL,
