@@ -72,9 +72,33 @@ test("SDK rereads cache for subsequent spawns and skips unavailable routes", asy
 	assert.equal(result.model, nw);
 });
 
+const writeQuotas = (entries: readonly (readonly [string, number])[]) => {
+	for (const [provider, remaining] of entries) {
+		fs.writeFileSync(path.join(cache, `${provider}-v3.json`), JSON.stringify({ updatedAt: Date.now(), limits: [{ label: "week", remaining, unit: "%" }] }));
+	}
+};
+
+test("exhausted Claude reaches Claude 2 with steering off; steering may prefer Astra", async () => {
+	const opus = "anthropic/claude-opus-5-5", opus2 = "anthropic-2/claude-opus-5-5";
+	writeQuotas([["claude", 0], ["claude2", 30], ["codex", 90]]);
+	const warnings: string[] = [];
+	for (const steerByQuota of [false, true]) {
+		const controller = new AbortController();
+		const calls: string[] = [];
+		await runWorker(agent, "test", {
+			registry, fallbackModel: undefined, modelSpec: opus, steerByQuota, signal: controller.signal,
+			onWarning: w => warnings.push(w), onAttempt: model => { calls.push(model); controller.abort(); },
+		});
+		// Steering may prefer Astra by headroom; hard eligibility alone must reach Claude 2.
+		assert.deepEqual(calls, [steerByQuota ? "openai-codex/gpt-6-astra" : opus2]);
+	}
+	assert.ok(warnings.some(w => w.includes(`Skipped ${opus}: claude quota exhausted`)));
+	for (const provider of ["claude", "claude2", "codex"]) fs.rmSync(path.join(cache, `${provider}-v3.json`));
+});
+
 test("Claude exhaustion cannot route a second worker to an already claimed Astra", async () => {
 	const opus = "anthropic/claude-opus-5-5", astra = "openai-codex/gpt-6-astra", sol = "openai-codex/gpt-6.1-sol";
-	for (const [provider, remaining] of [["claude", 0], ["codex", 39]] as const) {
+	for (const [provider, remaining] of [["claude", 0], ["claude2", 0], ["codex", 39]] as const) {
 		fs.writeFileSync(path.join(cache, `${provider}-v3.json`), JSON.stringify({ updatedAt: Date.now(), limits: [{ label: "week", remaining, unit: "%" }] }));
 	}
 	const diversity = new ModelDiversity();
@@ -91,9 +115,10 @@ test("Claude exhaustion cannot route a second worker to an already claimed Astra
 	assert.ok(warnings.some(w => w.startsWith("Quota routing:")));
 	assert.ok(warnings.some(w => w.includes(`Skipped ${astra}`)));
 	assert.ok(warnings.some(w => w.includes(`Skipped ${opus}: claude quota exhausted`)));
+	assert.ok(warnings.some(w => w.includes("Skipped anthropic-2/claude-opus-5-5: claude2 quota exhausted")));
 	assert.equal(result.status, "error");
 	assert.equal(result.attempts, 0);
-	for (const provider of ["claude", "codex"]) fs.rmSync(path.join(cache, `${provider}-v3.json`));
+	for (const provider of ["claude", "claude2", "codex"]) fs.rmSync(path.join(cache, `${provider}-v3.json`));
 });
 
 test("child workers route tier choices but preserve concrete pins and direct Codex", async () => {

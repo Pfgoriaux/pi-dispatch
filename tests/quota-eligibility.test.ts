@@ -24,12 +24,13 @@ after(() => {
 const cache = join(root, "cache", "usage-bar");
 mkdirSync(cache, { recursive: true });
 const opus = "anthropic/claude-opus-5-5";
+const opus2 = "anthropic-2/claude-opus-5-5";
 const astra = "openai-codex/gpt-6-astra";
 const sol = "openai-codex/gpt-6.1-sol";
 const nw = "aperture/neuralwatt/kimi-k3";
 const sy = "aperture/synthetic/hf:moonshotai/Kimi-K3";
 const agent: AgentConfig = { name: "eligibility-fixture", description: "test", model: opus, tools: [], thinking: "high", systemPrompt: "fixture", source: "bundled", filePath: "fixture" };
-const catalog = [opus, astra, sol, nw, sy].map(spec => {
+const catalog = [opus, opus2, astra, sol, nw, sy].map(spec => {
 	const slash = spec.indexOf("/");
 	return { provider: spec.slice(0, slash), id: spec.slice(slash + 1), reasoning: true };
 });
@@ -45,19 +46,21 @@ function quota(provider: string, remaining: number, updatedAt = Date.now()) {
 for (const source of ["frontmatter", "pin", "inherit", "bare-pin"] as const) {
 	test(`SDK rejects exhausted Claude for ${source} without routing`, async () => {
 		quota("claude", 0);
+		quota("claude2", 0);
 		quota("codex", 40);
 		const controller = new AbortController();
 		const calls: string[] = [];
 		const result = await runWorker(agent, "test", {
-			registry: source === "bare-pin" ? { getAll: () => [{ provider: "anthropic", id: "claude-opus-5-5", reasoning: true }], getAvailable: () => [] } as any : registry,
+			registry,
 			fallbackModel: { provider: "anthropic", id: "claude-opus-5-5", reasoning: true } as any,
 			modelSpec: source === "inherit" ? "inherit" : source === "pin" ? opus : source === "bare-pin" ? "claude-opus-5-5" : undefined,
 			steerByQuota: false, signal: controller.signal,
 			onAttempt: model => { calls.push(model); controller.abort(); },
 		});
-		assert.deepEqual(calls, source === "bare-pin" ? [] : [astra]);
-		assert.equal(result.attempts, calls.length);
-		assert.equal(result.status, source === "bare-pin" ? "error" : "aborted");
+		// Both Claude accounts are skipped; a bare ID resolves like a pin.
+		assert.deepEqual(calls, [astra]);
+		assert.equal(result.attempts, 1);
+		assert.equal(result.status, "aborted");
 	});
 }
 
@@ -73,6 +76,26 @@ test("exhausted peers and terminal fallback make zero SDK attempts", async () =>
 	assert.equal(result.status, "error");
 	assert.equal(result.attempts, 0);
 	assert.match(result.error!, /quota exhausted/);
+});
+
+test("Claude accounts have separate caches, and per-model windows bind only their model", () => {
+	quota("claude", 0);
+	quota("claude2", 50);
+	assert.match(exhaustedQuotaReason(opus)!, /claude quota exhausted/);
+	assert.equal(exhaustedQuotaReason(opus2), undefined);
+	assert.match(exhaustedQuotaReason(opus)!, /\(week at 0%\)$/);
+	const scoped = (label: string) => writeFileSync(join(cache, "claude-v3.json"), JSON.stringify({ updatedAt: Date.now(), limits: [
+		{ label: "5h", remaining: 100, unit: "%" }, { label: "week", remaining: 32, unit: "%" }, { label, remaining: 0, unit: "%" },
+	] }));
+	scoped("fableweek");
+	assert.equal(exhaustedQuotaReason(opus), undefined);
+	assert.match(exhaustedQuotaReason("anthropic/claude-fable-5-1")!, /claude quota exhausted \(fableweek at 0%\)/);
+	for (const label of ["opus55week", "opusweek"]) {
+		scoped(label);
+		assert.match(exhaustedQuotaReason(opus)!, /claude quota exhausted/);
+		assert.equal(exhaustedQuotaReason("anthropic/claude-sonnet-5-5"), undefined);
+	}
+	rmSync(join(cache, "claude2-v3.json"));
 });
 
 test("eligibility rereads caches and only blocks fresh, known exhaustion", () => {
@@ -105,6 +128,7 @@ process.env.PI_DISPATCH_PI_BIN = bin;
 for (const source of ["frontmatter", "pin", "inherit"] as const) {
 	test(`child rejects exhausted Claude for ${source} without routing`, async () => {
 		quota("claude", 0);
+		quota("claude2", 0);
 		quota("codex", 40);
 		const result = await runWorkerProc(agent, "test", { cwd: root, model: opus,
 			modelOverride: source === "inherit" ? "inherit" : source === "pin" ? opus : undefined,
@@ -116,9 +140,38 @@ for (const source of ["frontmatter", "pin", "inherit"] as const) {
 	});
 }
 
+test("child moves an exhausted first-account pin to Claude 2", async () => {
+	quota("claude", 0);
+	quota("claude2", 30);
+	quota("codex", 90);
+	const calls: string[] = [];
+	const result = await runWorkerProc(agent, "test", { cwd: root, registry, modelOverride: opus, steerByQuota: false,
+		onAttempt: model => calls.push(model),
+	});
+	assert.deepEqual(calls, [opus2]);
+	assert.equal(result.status, "ok");
+	assert.equal(result.model, opus2);
+});
+
+test("a bare Claude ID on both accounts resolves to the first account in both tiers", async () => {
+	const both = { ...registry, getAll: () => catalog } as ModelRegistry;
+	quota("claude", 50);
+	quota("claude2", 50);
+	const controller = new AbortController();
+	const sdkCalls: string[] = [];
+	await runWorker(agent, "test", { registry: both, fallbackModel: undefined, modelSpec: "claude-opus-5-5", steerByQuota: false,
+		signal: controller.signal, onAttempt: model => { sdkCalls.push(model); controller.abort(); },
+	});
+	assert.deepEqual(sdkCalls, [opus]);
+	const child = await runWorkerProc(agent, "test", { cwd: root, registry: both, modelOverride: "claude-opus-5-5", steerByQuota: false });
+	assert.equal(child.status, "ok");
+	assert.equal(child.model, opus);
+});
+
 test("child resolves bare IDs before quota checks and pins the actual provider", async () => {
 	const bareRegistry = { ...registry, getAll: () => [{ provider: "anthropic", id: "claude-opus-5-5", reasoning: true }] } as any;
 	quota("claude", 0);
+	quota("claude2", 0);
 	quota("codex", 40);
 	const result = await runWorkerProc(agent, "test", { cwd: root, modelOverride: "claude-opus-5-5", registry: bareRegistry });
 	assert.equal(result.status, "ok");

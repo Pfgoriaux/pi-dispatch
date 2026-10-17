@@ -262,14 +262,20 @@ frontmatter, then the parent model. Rosters live in
 Weights are positive and ordered descending, not sampled. A task model override
 bypasses the roster. Worktree/review-fix children do not read in-process rosters
 or cooldowns: they use the task override or frontmatter, then parent for `inherit`.
-Child IDs resolve through the parent registry; ambiguous or unpinnable IDs fail
-before spawn.
+Bare IDs resolve through the parent registry in both tiers, then get the same
+fallbacks as a `provider/id` pin. The same model on both Claude accounts resolves
+to `anthropic`; other ambiguous or unpinnable IDs fail before spawn.
 
 ### Routing and failure
 
 - Kimi, GLM 5.3 and DeepSeek retry their Neuralwatt/Synthetic counterparts
   (direct and Aperture routes supported). Kimi and GLM 5.3 retain a terminal
   Codex Sol 6.1 fallback; DeepSeek falls back through Haiku 5.5 then Sol.
+- Every direct Claude route (`anthropic/<id>`) is followed by the same model on
+  the second Claude account (`anthropic-2/<id>`, registered by pi-ant), and the
+  reverse for `anthropic-2` pins, ahead of cross-provider peers. Quota steering
+  can still move a higher-headroom peer ahead of either account. Both accounts
+  count as one model for exclusions, council seats and duplicate guards.
 - Opus and Astra retry each other and end with Sol; Sonnet also falls back to Sol.
 - `feature_plan` and `pr_review` exclude Sol and end their chains with GLM 5.3
   on Neuralwatt, then on Aperture Synthetic. Model-identity guards prevent duplicates.
@@ -278,9 +284,14 @@ before spawn.
   Tiers/rosters opt in; concrete pins and `inherit` keep provider order.
   Every attempt still skips fresh, known exhausted providers.
 - Snapshots come from `<agentDir>/cache/usage-bar/<provider>-v3.json` written by
-  pi-usage-bar. Use the lowest remaining percentage across reported windows.
-  Missing, invalid, older-than-three-minute or expired-reset readings do not
-  predict capacity. Dispatch neither polls providers nor reserves quota.
+  pi-usage-bar (`claude` for `anthropic`, `claude2` for `anthropic-2`). Use the
+  lowest remaining percentage across the windows that bind the model. Claude
+  per-model windows (`<model>week`, such as `fableweek` or `opusweek`) bind only
+  model IDs containing that name. A skip names the empty windows, for example
+  `Skipped anthropic/claude-fable-5-1: claude quota exhausted (fableweek at 0%)`.
+  Missing, invalid, older-than-three-minute or
+  expired-reset readings do not predict capacity; steering leaves those
+  candidates in place. Dispatch neither polls providers nor reserves quota.
 - In-process failures, blank final responses and internal cutoffs can try the
   next candidate. Usage includes all attempts. Cooldowns last 60 seconds per
   provider/model. Cutoffs occur after 3 unavailable-tool calls or 5 consecutive

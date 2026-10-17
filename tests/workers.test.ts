@@ -125,7 +125,7 @@ test("DeepSeek 4.1 Flash pairs NeuralWatt with Synthetic, then Haiku 5.5, then 6
 	const sy = "aperture/synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash";
 	for (const [modelSpec, peer] of [["neuralwatt/deepseek-v4.1-flash", sy], [nw, sy], [sy, nw]]) {
 		const routes = withProviderFallbacks([{ modelSpec, thinking: "off", entry: { provider: "test", model: modelSpec, thinking: "off", weight: 1 } }]);
-		assert.deepEqual(routes.map((c) => c.modelSpec), [modelSpec, peer, "anthropic/claude-haiku-5-5", "openai-codex/gpt-6.1-sol"]);
+		assert.deepEqual(routes.map((c) => c.modelSpec), [modelSpec, peer, "anthropic/claude-haiku-5-5", "anthropic-2/claude-haiku-5-5", "openai-codex/gpt-6.1-sol"]);
 		assert.deepEqual(withProviderFallbacks(routes), routes, "expansion is idempotent");
 	}
 });

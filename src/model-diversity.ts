@@ -1,8 +1,8 @@
-import { quotaFamily } from "./roster.ts";
+import { quotaFamily, sameModelId } from "./roster.ts";
 
-/** Provider aliases for the same model count as one voice; Opus and Astra do not. */
+/** Provider aliases and Claude accounts for the same model count as one voice; Opus and Astra do not. */
 export function modelIdentity(spec: string): string {
-	const route = spec.replace(/^aperture\//, "");
+	const route = sameModelId(spec);
 	if (route.startsWith("neuralwatt/") || route.startsWith("synthetic/")) {
 		return quotaFamily(spec) ?? route;
 	}

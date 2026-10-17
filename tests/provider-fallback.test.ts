@@ -144,18 +144,19 @@ process.exitCode = failed ? 1 : 0;
 
 // Top-tier model pairing tests (Opus 5.5 ↔ Astra 6)
 const opus = "anthropic/claude-opus-5-5";
+const opus2 = "anthropic-2/claude-opus-5-5";
 const astra = "openai-codex/gpt-6-astra";
 
-test("top-tier Opus 5.5 adds Astra counterpart then 6.1 Sol fallback", () => {
+test("top-tier Opus 5.5 tries Claude 2, then Astra, then 6.1 Sol", () => {
 	const routes = withProviderFallbacks([candidate(opus)]);
-	assert.deepEqual(routes.map(c => c.modelSpec), [opus, astra, codexSol]);
+	assert.deepEqual(routes.map(c => c.modelSpec), [opus, opus2, astra, codexSol]);
 	assert.ok(routes.every(c => c.thinking === "high"));
 	assert.deepEqual(withProviderFallbacks(routes), routes);
 });
 
-test("top-tier Astra adds Opus counterpart then 6.1 Sol fallback", () => {
+test("top-tier Astra adds Opus on both Claude accounts, then 6.1 Sol", () => {
 	const routes = withProviderFallbacks([candidate(astra)]);
-	assert.deepEqual(routes.map(c => c.modelSpec), [astra, opus, codexSol]);
+	assert.deepEqual(routes.map(c => c.modelSpec), [astra, opus, opus2, codexSol]);
 	assert.ok(routes.every(c => c.thinking === "high"));
 	assert.deepEqual(withProviderFallbacks(routes), routes);
 });
@@ -164,25 +165,38 @@ test("explicit top-tier counterpart effort survives fallback expansion", () => {
 	for (const [first, second] of [[opus, astra], [astra, opus]]) {
 		const configured = { ...candidate(second), thinking: "off", entry: { ...candidate(second).entry, thinking: "off" } };
 		const routes = withProviderFallbacks([candidate(first), configured]);
-		assert.equal(routes[1], configured);
+		assert.equal(routes.find(c => c.modelSpec === second), configured);
 		assert.deepEqual(withProviderFallbacks(routes), routes);
 	}
+});
+
+test("Aperture-prefixed Claude specs keep their single route", () => {
+	assert.deepEqual(withProviderFallbacks([candidate(`aperture/${opus}`)]).map(c => c.modelSpec), [`aperture/${opus}`]);
+});
+
+test("a Claude 2 pin falls back to the first account before cross-provider peers", () => {
+	const configured = { ...candidate(opus), thinking: "off", entry: { ...candidate(opus).entry, thinking: "off" } };
+	const routes = withProviderFallbacks([candidate(opus2), candidate(astra), configured]);
+	assert.deepEqual(routes.map(c => c.modelSpec), [opus2, opus, astra, codexSol]);
+	assert.equal(routes[1], configured);
+	assert.deepEqual(withProviderFallbacks(routes), routes);
 });
 
 // Mid-tier pairing (Sonnet 5.5 → Sol 6.1)
 
 const sonnet = "anthropic/claude-sonnet-5-5";
+const sonnet2 = "anthropic-2/claude-sonnet-5-5";
 
-test("mid-tier Sonnet 5.5 adds Sol 6.1 once; Sol never expands to Sonnet", () => {
+test("mid-tier Sonnet 5.5 tries Claude 2, then Sol 6.1 once; Sol never expands to Sonnet", () => {
 	const routes = withProviderFallbacks([candidate(sonnet)]);
-	assert.deepEqual(routes.map(c => c.modelSpec), [sonnet, codexSol]);
+	assert.deepEqual(routes.map(c => c.modelSpec), [sonnet, sonnet2, codexSol]);
 	assert.deepEqual(withProviderFallbacks(routes), routes);
 	assert.deepEqual(withProviderFallbacks([candidate(codexSol)]).map(c => c.modelSpec), [codexSol]);
 });
 
 test("Sonnet ahead of other families keeps Sol as the single last fallback", () => {
 	const routes = withProviderFallbacks([candidate(sonnet), candidate(opus)]);
-	assert.deepEqual(routes.map(c => c.modelSpec), [sonnet, opus, astra, codexSol]);
+	assert.deepEqual(routes.map(c => c.modelSpec), [sonnet, sonnet2, opus, opus2, astra, codexSol]);
 });
 
 test("mixed top-tier and NeuralWatt/Synthetic get appropriate counterparts", () => {
@@ -228,21 +242,22 @@ function mockModels(t: { mock: typeof test.mock }, failing: string[], calls: str
 for (const [pinned, peer] of [[astra, opus], [opus, astra]]) {
 	test(`${pinned} failover skips excluded peer and reports the failed attempt`, { timeout: 10000 }, async (t) => {
 		const calls: string[] = [];
-		const registry = mockModels(t, [pinned], calls);
-		// The Aperture prefix must not let the peer slip through.
+		const registry = mockModels(t, [pinned, opus2], calls);
+		// Neither the Aperture prefix nor the second Claude account lets the peer slip through.
 		const result = await runWorker(agent, "test", {
 			registry, fallbackModel: undefined, modelSpec: pinned, excludeModels: [`aperture/${peer}`],
 		});
-		assert.deepEqual(calls, [pinned, codexSol]);
+		const failed = pinned === opus ? [opus, opus2] : [astra];
+		assert.deepEqual(calls, [...failed, codexSol]);
 		assert.equal(result.status, "ok");
 		assert.equal(result.model, codexSol);
-		assert.deepEqual(result.failedAttempts, [`${pinned}: 402 insufficient\ncredits`]);
+		assert.deepEqual(result.failedAttempts, failed.map(model => `${model}: 402 insufficient\ncredits`));
 	});
 }
 
 test("parallel credit fallbacks use Sol only once, then continue with fewer workers", async (t) => {
 	const calls: string[] = [];
-	const registry = mockModels(t, [opus, astra, neuralwatt, synthetic], calls);
+	const registry = mockModels(t, [opus, opus2, astra, neuralwatt, synthetic], calls);
 	const diversity = new ModelDiversity();
 	const results = await Promise.all([opus, astra, neuralwatt].map(modelSpec => runWorker(agent, "test", {
 		registry, fallbackModel: undefined, modelSpec, claimModel: diversity.worker(),
@@ -250,6 +265,7 @@ test("parallel credit fallbacks use Sol only once, then continue with fewer work
 	assert.equal(results.filter(r => r.status === "ok").length, 1);
 	assert.equal(calls.filter(model => model === codexSol).length, 1);
 	assert.equal(calls.filter(model => model === opus).length, 1);
+	assert.equal(calls.filter(model => model === opus2).length, 1, "same owner can retry the other Claude account");
 	assert.equal(calls.filter(model => model === astra).length, 1);
 	assert.equal(calls.filter(model => model === neuralwatt).length, 1);
 	assert.equal(calls.filter(model => model === synthetic).length, 1, "same owner can retry the other provider");
@@ -296,11 +312,11 @@ const lastResorts = [glmNeuralwatt, glmSynthetic];
 
 test("workflow last resorts run GLM on Neuralwatt, then Synthetic, with Sol excluded", async (t) => {
 	const calls: string[] = [];
-	const registry = mockModels(t, [opus, glmNeuralwatt], calls);
+	const registry = mockModels(t, [opus, opus2, glmNeuralwatt], calls);
 	const result = await runWorker(agent, "test", {
 		registry, fallbackModel: undefined, modelSpec: opus, excludeModels: [astra, codexSol], fallbackModels: lastResorts,
 	});
-	assert.deepEqual(calls, [opus, glmNeuralwatt, glmSynthetic]);
+	assert.deepEqual(calls, [opus, opus2, glmNeuralwatt, glmSynthetic]);
 	assert.equal(result.status, "ok");
 	assert.equal(result.model, glmSynthetic);
 });
@@ -316,7 +332,7 @@ test("workflow last resorts are not retried when already in the chain", async (t
 
 test("parallel reviewers cannot both fall back to GLM through different providers", async (t) => {
 	const calls: string[] = [];
-	const registry = mockModels(t, [opus, astra, codexSol], calls);
+	const registry = mockModels(t, [opus, opus2, astra, codexSol], calls);
 	const pool = new ModelDiversity();
 	const [first, second] = await Promise.all([[opus, astra], [astra, opus]].map(([modelSpec, peer]) => runWorker(agent, "test", {
 		registry, fallbackModel: undefined, modelSpec, excludeModels: [peer],

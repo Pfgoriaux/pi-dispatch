@@ -175,7 +175,7 @@ test("task efforts below the role floor are refused before inference", async t =
 
 
 test("successful fallback keeps unsupported choices visible after aggregation", async t => {
-	const { registry, calls } = thinkingFixture(t, (p, id) => ({ ...thinkingModel(p, id), reasoning: p !== "anthropic" }));
+	const { registry, calls } = thinkingFixture(t, (p, id) => ({ ...thinkingModel(p, id), reasoning: !p?.startsWith("anthropic") }));
 	const ctx = { cwd: process.env.PI_CODING_AGENT_DIR!, isProjectTrusted: () => false, modelRegistry: registry };
 	const result = await tools().get("dispatch")!.execute("test", { herdr: false, aggregate: true,
 		tasks: [{ agent: "scout", task: "test", model: "anthropic/claude-opus-5-5", thinking: "xhigh" }],
