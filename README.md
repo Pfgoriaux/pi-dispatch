@@ -161,35 +161,28 @@ review any of them.
 parallel
 ├─ Opus reviewer: correctness/security
 ├─ Astra reviewer: correctness
-├─ DeepSeek scout: pre-mortem (low thinking, 12 tool calls)
-├─ slop-reviewer: unnecessary code/docs (medium thinking)
-└─ GLM reviewer: spec gaps, reachable edge cases, overlaps, reuse
+├─ Sonnet scout: pre-mortem (low thinking, 12 tool calls)
+└─ slop-reviewer: unnecessary code/docs (medium thinking)
 reviewer → verify findings against diff and code → report
 ```
 
 The pre-mortem scout has a tool budget: at 12 tool calls it is told to answer
 from what it has, and at 24 the attempt fails. `feature_plan` uses the same budget.
 
-The spec + reuse reviewer checks the diff against `intent` and, for a PR number,
-the PR description fetched with `gh pr view` and saved next to the diff. Only this
-reviewer and the verifier read that file. It reports missing or unrequested
-behaviour, edge cases the diff makes reachable, other readers and writers of
-changed tables, statuses, events and shared functions, and new code that
-duplicates an existing equivalent. With neither `intent` nor a PR description,
-it skips the spec check.
+Every `pr_review` step runs on Anthropic or OpenAI models. Steps fall back to
+Sonnet 5.5, never to Neuralwatt or Synthetic.
 
 Reviewers tag a finding `[decision]` when its fix is a choice between valid
 designs. The verifier keeps severity, options and a recommendation under
-Decisions for bugs, security and slop findings. Spec gaps, overlaps and reuse
-stay in their own sections. Fix writers act only on Findings and Slop and skip
-`[decision]` findings in any section. Decisions, spec gaps, overlaps and reuse
-stay for the user, including when fixes are dispatched manually. Recommendations
+Decisions for bugs, security and slop findings. Fix writers act only on Findings
+and Slop and skip `[decision]` findings in any section. Decisions stay for the
+user, including when fixes are dispatched manually. Recommendations
 do not authorize those choices.
 
 The two code reviewers cannot share a model after fallback. If both fail, review
 stops; failed verification returns unverified reports. Configure the models with
-`DISPATCH_REVIEW_OPUS_MODEL`, `DISPATCH_REVIEW_ASTRA_MODEL`,
-`DISPATCH_REVIEW_PREMORTEM_MODEL` and `DISPATCH_REVIEW_SPEC_MODEL`.
+`DISPATCH_REVIEW_OPUS_MODEL`, `DISPATCH_REVIEW_ASTRA_MODEL` and
+`DISPATCH_REVIEW_PREMORTEM_MODEL`.
 
 `fix` defaults to false. Authorized fixes require the session cwd to be a trusted,
 clean feature repo root matching the reviewed head; `cwd` cannot point fixes at a
@@ -277,8 +270,9 @@ to `anthropic`; other ambiguous or unpinnable IDs fail before spawn.
   can still move a higher-headroom peer ahead of either account. Both accounts
   count as one model for exclusions, council seats and duplicate guards.
 - Opus and Astra retry each other and end with Sol; Sonnet also falls back to Sol.
-- `feature_plan` and `pr_review` exclude Sol and end their chains with GLM 5.3
-  on Neuralwatt, then on Aperture Synthetic. Model-identity guards prevent duplicates.
+- `feature_plan` and `pr_review` exclude Sol. `feature_plan` ends its chains with
+  GLM 5.3 on Neuralwatt, then on Aperture Synthetic; `pr_review` ends them with
+  Sonnet 5.5. Model-identity guards prevent duplicates.
   Council instead restricts each seat to its assigned model.
 - Quota steering ranks existing peer candidates without inserting a top model.
   Tiers/rosters opt in; concrete pins and `inherit` keep provider order.
