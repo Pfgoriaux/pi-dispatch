@@ -150,16 +150,34 @@ const CROSS_PROVIDER_PEERS = new Map<string, { peer?: string; family: "top-tier"
 
 const routeId = (spec: string) => spec.replace(/^aperture\//, "");
 
-/** Drop candidates naming an excluded model, with or without the Aperture prefix. */
+// Claude subscription accounts registered by pi-ant: same model IDs, separate quotas.
+const CLAUDE_ACCOUNTS = ["anthropic", "anthropic-2"];
+const claudeModel = (spec: string) => /^anthropic(?:-2)?\/(.+)$/.exec(spec)?.[1];
+
+/** One spec per Claude account for the same model; other specs map to themselves. */
+function accountRoutes(spec: string): string[] {
+	const id = claudeModel(spec);
+	if (!id) return [spec];
+	return [spec, ...CLAUDE_ACCOUNTS.map((account) => `${account}/${id}`).filter((route) => route !== spec)];
+}
+
+/** Model identity across Claude accounts and the Aperture prefix. */
+export function sameModelId(spec: string): string {
+	const route = routeId(spec);
+	const id = claudeModel(route);
+	return id ? `anthropic/${id}` : route;
+}
+
+/** Drop candidates naming an excluded model, on any Claude account, with or without the Aperture prefix. */
 export function withoutModels(candidates: RankedCandidate[], excluded: readonly string[] = []): RankedCandidate[] {
-	const ids = new Set(excluded.map(routeId));
-	return candidates.filter((c) => !ids.has(routeId(c.modelSpec)));
+	const ids = new Set(excluded.map(sameModelId));
+	return candidates.filter((c) => !ids.has(sameModelId(c.modelSpec)));
 }
 
 /** Append last-resort specs not already in the chain, keeping their order. */
 export function withLastResorts(candidates: RankedCandidate[], specs: readonly string[] = [], thinking: string): RankedCandidate[] {
-	const present = new Set(candidates.map((c) => routeId(c.modelSpec)));
-	const extra = specs.filter((spec) => !present.has(routeId(spec))).map((modelSpec) => ({
+	const present = new Set(candidates.map((c) => sameModelId(c.modelSpec)));
+	const extra = specs.filter((spec) => !present.has(sameModelId(spec))).map((modelSpec) => ({
 		modelSpec,
 		thinking,
 		entry: { provider: modelSpec.slice(0, modelSpec.indexOf("/")), model: modelSpec.slice(modelSpec.indexOf("/") + 1), thinking, weight: 1 },
@@ -176,30 +194,36 @@ export function quotaFamily(spec: string): string | undefined {
 		const id = route.slice("synthetic/".length);
 		if ([...SYNTHETIC_COUNTERPARTS.values()].includes(id)) return id;
 	}
-	// Cross-provider peers (Opus 5.5 ↔ Astra 6, Sonnet 5.5 ↔ Sol 6.1)
-	return CROSS_PROVIDER_PEERS.get(spec)?.family;
+	// Cross-provider peers (Opus 5.5 ↔ Astra 6, Sonnet 5.5 ↔ Sol 6.1), then other Claude models across accounts
+	const id = sameModelId(spec);
+	return CROSS_PROVIDER_PEERS.get(id)?.family ?? (claudeModel(id) ? id : undefined);
 }
 
-/** Known provider counterparts in either direction, then Codex 6.1 Sol once, last. */
+/**
+ * Known provider counterparts in either direction, then Codex 6.1 Sol once, last.
+ * Every Claude route is followed by the same model on the other Claude account.
+ */
 export function withProviderFallbacks(candidates: RankedCandidate[]): RankedCandidate[] {
 	const seen = new Set<string>();
 	const result: RankedCandidate[] = [];
 	let terminal: RankedCandidate | undefined;
-	const append = (candidate: RankedCandidate) => {
-		if (seen.has(candidate.modelSpec)) return;
-		seen.add(candidate.modelSpec);
-		result.push(candidate);
-	};
 	const at = (candidate: RankedCandidate, modelSpec: string): RankedCandidate => ({
 		...candidate,
 		modelSpec,
 		entry: { ...candidate.entry, provider: modelSpec.slice(0, modelSpec.indexOf("/")), model: modelSpec.slice(modelSpec.indexOf("/") + 1) },
 	});
+	const append = (candidate: RankedCandidate) => {
+		for (const route of accountRoutes(candidate.modelSpec)) {
+			if (seen.has(route)) continue;
+			seen.add(route);
+			result.push(route === candidate.modelSpec ? candidate : candidates.find(c => c.modelSpec === route) ?? at(candidate, route));
+		}
+	};
 	for (const candidate of candidates) {
 		const route = routeId(candidate.modelSpec);
 		let counterpart: string | undefined;
 		// Cross-provider peers (Opus 5.5 ↔ Astra 6, Sonnet 5.5 → Sol 6.1)
-		const crossPeer = CROSS_PROVIDER_PEERS.get(candidate.modelSpec)?.peer;
+		const crossPeer = CROSS_PROVIDER_PEERS.get(sameModelId(candidate.modelSpec))?.peer;
 		if (crossPeer) {
 			append(candidate);
 			// Prefer an explicit counterpart configuration if present

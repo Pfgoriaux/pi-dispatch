@@ -49,7 +49,7 @@ test("DeepSeek 4.1 Flash steers between NeuralWatt and Synthetic; Haiku stays be
 	const deepseek = withProviderFallbacks([candidate(dnw)]);
 	for (const [synthetic, neuralwatt, first, second] of [[100, 60, dsy, dnw], [5, 60, dnw, dsy]] as const) {
 		const result = steerByQuota(deepseek, new Map([["synthetic", snapshot(synthetic)], ["neuralwatt", snapshot(neuralwatt)]]), now);
-		assert.deepEqual(specs(result.candidates), [first, second, "anthropic/claude-haiku-5-5", codexSol]);
+		assert.deepEqual(specs(result.candidates), [first, second, "anthropic/claude-haiku-5-5", "anthropic-2/claude-haiku-5-5", codexSol]);
 	}
 });
 
@@ -114,14 +114,14 @@ test("v3 reader rejects corrupt or malformed data and does not require known pro
 // Top-tier model routing tests
 const opus = "anthropic/claude-opus-5-5";
 const astra = "openai-codex/gpt-6-astra";
+const opus2 = "anthropic-2/claude-opus-5-5";
 const topTierRoutes = withProviderFallbacks([candidate(opus)]);
 
 test("top-tier models steer by quota headroom (Opus 5.5 vs Astra 6)", () => {
 	const quotas = new Map([["claude", snapshot(80)], ["codex", snapshot(30)]]);
 	const result = steerByQuota(topTierRoutes, quotas, now);
-	// Claude has more headroom, so Opus should be preferred
-	assert.equal(result.candidates[0].modelSpec, opus);
-	assert.equal(result.candidates[1].modelSpec, astra);
+	// Claude has more headroom, so Opus should be preferred; Claude 2 has no reading and keeps its slot.
+	assert.deepEqual(specs(result.candidates), [opus, opus2, astra, codexSol]);
 	assert.equal(result.reasons.length, 0); // no change from original order
 });
 
@@ -129,10 +129,17 @@ test("top-tier models switch when counterpart has more headroom", () => {
 	const quotas = new Map([["claude", snapshot(10)], ["codex", snapshot(90)]]);
 	const result = steerByQuota(topTierRoutes, quotas, now);
 	// Codex has more headroom, so Astra should be preferred
-	assert.equal(result.candidates[0].modelSpec, astra);
-	assert.equal(result.candidates[1].modelSpec, opus);
+	assert.deepEqual(specs(result.candidates), [astra, opus2, opus, codexSol]);
 	assert.equal(result.reasons.length, 1);
 	assert.match(result.reasons[0], /Quota routing:.*gpt-6-astra.*preferred/);
+});
+
+test("Claude 2 headroom outranks an exhausted first account and a lower Codex reading", () => {
+	const quotas = new Map([["claude", snapshot(0)], ["claude2", snapshot(72)], ["codex", snapshot(40)]]);
+	const result = steerByQuota(topTierRoutes, quotas, now);
+	assert.deepEqual(specs(result.candidates), [opus2, astra, opus, codexSol]);
+	assert.match(result.reasons[0], /anthropic-2\/claude-opus-5-5 preferred.*claude2 72%/);
+	assert.equal(quotaProvider(opus2), "claude2");
 });
 
 test("healthy top-tier tie spends Codex first", () => {

@@ -24,12 +24,13 @@ after(() => {
 const cache = join(root, "cache", "usage-bar");
 mkdirSync(cache, { recursive: true });
 const opus = "anthropic/claude-opus-5-5";
+const opus2 = "anthropic-2/claude-opus-5-5";
 const astra = "openai-codex/gpt-6-astra";
 const sol = "openai-codex/gpt-6.1-sol";
 const nw = "aperture/neuralwatt/kimi-k3";
 const sy = "aperture/synthetic/hf:moonshotai/Kimi-K3";
 const agent: AgentConfig = { name: "eligibility-fixture", description: "test", model: opus, tools: [], thinking: "high", systemPrompt: "fixture", source: "bundled", filePath: "fixture" };
-const catalog = [opus, astra, sol, nw, sy].map(spec => {
+const catalog = [opus, opus2, astra, sol, nw, sy].map(spec => {
 	const slash = spec.indexOf("/");
 	return { provider: spec.slice(0, slash), id: spec.slice(slash + 1), reasoning: true };
 });
@@ -45,6 +46,7 @@ function quota(provider: string, remaining: number, updatedAt = Date.now()) {
 for (const source of ["frontmatter", "pin", "inherit", "bare-pin"] as const) {
 	test(`SDK rejects exhausted Claude for ${source} without routing`, async () => {
 		quota("claude", 0);
+		quota("claude2", 0);
 		quota("codex", 40);
 		const controller = new AbortController();
 		const calls: string[] = [];
@@ -73,6 +75,25 @@ test("exhausted peers and terminal fallback make zero SDK attempts", async () =>
 	assert.equal(result.status, "error");
 	assert.equal(result.attempts, 0);
 	assert.match(result.error!, /quota exhausted/);
+});
+
+test("Claude accounts have separate caches, and per-model windows bind only their model", () => {
+	quota("claude", 0);
+	quota("claude2", 50);
+	assert.match(exhaustedQuotaReason(opus)!, /claude quota exhausted/);
+	assert.equal(exhaustedQuotaReason(opus2), undefined);
+	const scoped = (label: string) => writeFileSync(join(cache, "claude-v3.json"), JSON.stringify({ updatedAt: Date.now(), limits: [
+		{ label: "5h", remaining: 100, unit: "%" }, { label: "week", remaining: 32, unit: "%" }, { label, remaining: 0, unit: "%" },
+	] }));
+	scoped("fableweek");
+	assert.equal(exhaustedQuotaReason(opus), undefined);
+	assert.match(exhaustedQuotaReason("anthropic/claude-fable-5-1")!, /claude quota exhausted/);
+	for (const label of ["opus55week", "opusweek"]) {
+		scoped(label);
+		assert.match(exhaustedQuotaReason(opus)!, /claude quota exhausted/);
+		assert.equal(exhaustedQuotaReason("anthropic/claude-sonnet-5-5"), undefined);
+	}
+	rmSync(join(cache, "claude2-v3.json"));
 });
 
 test("eligibility rereads caches and only blocks fresh, known exhaustion", () => {
@@ -105,6 +126,7 @@ process.env.PI_DISPATCH_PI_BIN = bin;
 for (const source of ["frontmatter", "pin", "inherit"] as const) {
 	test(`child rejects exhausted Claude for ${source} without routing`, async () => {
 		quota("claude", 0);
+		quota("claude2", 0);
 		quota("codex", 40);
 		const result = await runWorkerProc(agent, "test", { cwd: root, model: opus,
 			modelOverride: source === "inherit" ? "inherit" : source === "pin" ? opus : undefined,

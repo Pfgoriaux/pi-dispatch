@@ -100,7 +100,7 @@ test("unsupported SDK efforts make zero inference calls and report supported cho
 test("legacy floor warns once and every explicit fallback retains the exact effort", async t => {
 	const { calls, registry } = thinkingFixture(t, (p, id) => {
 		const model = thinkingModel(p, id);
-		return p === "anthropic" ? { ...model, thinkingLevelMap: { xhigh: null, max: "max" } } : model;
+		return p?.startsWith("anthropic") ? { ...model, thinkingLevelMap: { xhigh: null, max: "max" } } : model;
 	});
 	const warnings: string[] = [];
 	const floored = await runWorker(agent, "test", { registry, fallbackModel: undefined, onWarning: w => warnings.push(w) });
@@ -123,7 +123,8 @@ test("explicit effort also survives provider failures and workflow last resorts"
 	const result = await runWorker(agent, "test", { registry, fallbackModel: undefined, modelSpec: "anthropic/claude-opus-5-5", thinking: "max", fallbackModels: ["fixture/last"] });
 	assert.equal(result.status, "ok");
 	assert.equal(result.model, "fixture/last");
-	assert.equal(calls.length, 4);
+	// Opus on both Claude accounts, Astra, Sol, then the last resort.
+	assert.equal(calls.length, 5);
 	assert.ok(calls.every(c => c.thinking === "max"));
 });
 
@@ -137,7 +138,7 @@ const args=process.argv.slice(2);
 console.log(JSON.stringify({type:'message_end', message:{role:'assistant', content:[{type:'text',text:JSON.stringify(args)}], thinkingLevel:'xhigh', providerThinkingLevel:'native-extra', stopReason:'stop'}}));
 `, { mode: 0o700 });
 	process.env.PI_DISPATCH_PI_BIN = bin;
-	const { registry } = thinkingFixture(t, (p, id) => ({ ...thinkingModel(p, id), reasoning: p !== "anthropic" }));
+	const { registry } = thinkingFixture(t, (p, id) => ({ ...thinkingModel(p, id), reasoning: !p?.startsWith("anthropic") }));
 	const starts: string[] = [];
 	const live: string[] = [];
 	const result = await runWorkerProc(agent, "test", { cwd: root, registry, modelOverride: "anthropic/claude-opus-5-5", thinking: "xhigh", onAttempt: model => starts.push(model), onThinking: level => live.push(level) });

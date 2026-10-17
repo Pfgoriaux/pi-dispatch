@@ -94,11 +94,12 @@ test("three distinct opinions see the same task, not each other's answers; no fo
 test("failed seats never borrow another seat or Sol; GLM may retry its other provider", async (t) => {
 	const { calls, run } = setup(t, spec => spec === "aperture/synthetic/hf:zai-org/GLM-5.3" ? "Only GLM answered" : undefined);
 	const result = await run();
-	assert.equal(calls.length, 4);
+	// Opus on both Claude accounts, Astra, then GLM on both providers.
+	assert.equal(calls.length, 5);
 	assert.equal(result.details.items.filter(item => item.status === "ok").length, 1);
 	assert.equal(result.details.items[2].model, "aperture/synthetic/hf:zai-org/GLM-5.3");
 	assert.equal(result.details.items[2].attempts, 2);
-	assert.equal(result.usage?.cost.total, 0.04);
+	assert.equal(result.usage?.cost.total, 0.05);
 	const text = JSON.stringify(result.content);
 	assert.match(text, /1\/3 opinions/);
 	assert.match(text, /Failed attempts/);
@@ -170,12 +171,27 @@ test("cancellation during a model request settles every seat without new fallbac
 	assert.ok(!calls.some(call => call.spec.includes("synthetic")));
 });
 
-test("a quota-exhausted Opus seat remains unavailable rather than borrowing Astra", async (t) => {
+function claudeQuotas(t: TestContext, claude: number, claude2: number) {
 	const cache = path.join(process.env.PI_CODING_AGENT_DIR!, "cache", "usage-bar");
 	fs.mkdirSync(cache, { recursive: true });
-	const file = path.join(cache, "claude-v3.json");
-	fs.writeFileSync(file, JSON.stringify({ updatedAt: Date.now(), limits: [{ label: "week", remaining: 0, unit: "%" }] }));
-	t.after(() => fs.rmSync(file));
+	for (const [provider, remaining] of [["claude", claude], ["claude2", claude2]] as const) {
+		const file = path.join(cache, `${provider}-v3.json`);
+		fs.writeFileSync(file, JSON.stringify({ updatedAt: Date.now(), limits: [{ label: "week", remaining, unit: "%" }] }));
+		t.after(() => fs.rmSync(file));
+	}
+}
+
+test("an exhausted first Claude account moves the Opus seat to Claude 2", async (t) => {
+	claudeQuotas(t, 0, 60);
+	const { run, calls } = setup(t);
+	const result = await run();
+	assert.equal(calls.length, 3);
+	assert.equal(result.details.items[0].model, "anthropic-2/claude-opus-5-5");
+	assert.match(JSON.stringify(result.content), /3\/3 opinions/);
+});
+
+test("a quota-exhausted Opus seat remains unavailable rather than borrowing Astra", async (t) => {
+	claudeQuotas(t, 0, 0);
 	const { run, calls } = setup(t);
 	const result = await run();
 	assert.equal(calls.length, 2);

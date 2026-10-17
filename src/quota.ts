@@ -6,7 +6,7 @@ import { quotaFamily, type RankedCandidate } from "./roster.ts";
 
 
 /** Providers whose quota snapshots are read. */
-const ALL_PROVIDERS = ["codex", "synthetic", "neuralwatt", "claude"] as const;
+const ALL_PROVIDERS = ["codex", "synthetic", "neuralwatt", "claude", "claude2"] as const;
 
 interface Limit {
 	label: string;
@@ -42,7 +42,20 @@ export function quotaProvider(spec: string): string {
 	const provider = spec.replace(/^aperture\//i, "").split("/")[0].toLowerCase();
 	if (provider === "openai-codex") return "codex";
 	if (provider === "anthropic") return "claude";
+	// pi-usage-bar names the second Claude account's cache "claude2".
+	if (provider === "anthropic-2") return "claude2";
 	return provider;
+}
+
+/**
+ * Claude reports per-model weekly windows as `<model>week` (fableweek, opus55week,
+ * sonnetweek). They bind only the model whose ID contains that name. Without a
+ * spec, or for other providers, every window counts.
+ */
+function bindsModel(limit: Limit, spec?: string): boolean {
+	const scope = /^(.+)week$/.exec(limit.label)?.[1];
+	if (!scope || !spec || !quotaProvider(spec).startsWith("claude")) return true;
+	return spec.slice(spec.lastIndexOf("/") + 1).toLowerCase().replace(/[^a-z0-9]/g, "").includes(scope);
 }
 
 export function readQuotaSnapshot(provider: string, directory: string, now = Date.now()): QuotaSnapshot | undefined {
@@ -55,11 +68,12 @@ export function readQuotaSnapshot(provider: string, directory: string, now = Dat
 	} catch { return undefined; }
 }
 
-/** Bottleneck across ALL reported windows. Never forecast capacity from a future refill. */
-export function quotaHeadroom(snapshot: QuotaSnapshot | undefined, now = Date.now()): number | undefined {
-	if (!snapshot || !validQuotaSnapshot(snapshot, now) || now - snapshot.updatedAt > 180_000
-		|| snapshot.limits.some(l => l.renewal !== "refill" && l.at !== undefined && l.at <= now)) return undefined;
-	const percentages = snapshot.limits.flatMap(l => {
+/** Bottleneck across every window that binds `spec`. Never forecast capacity from a future refill. */
+export function quotaHeadroom(snapshot: QuotaSnapshot | undefined, now = Date.now(), spec?: string): number | undefined {
+	if (!snapshot || !validQuotaSnapshot(snapshot, now) || now - snapshot.updatedAt > 180_000) return undefined;
+	const limits = snapshot.limits.filter(l => bindsModel(l, spec));
+	if (limits.some(l => l.renewal !== "refill" && l.at !== undefined && l.at <= now)) return undefined;
+	const percentages = limits.flatMap(l => {
 		const percent = l.unit === "%" ? l.remaining : l.percentRemaining;
 		if (percent !== undefined) return [percent];
 		// Optional paid Codex credits are not a subscription quota window.
@@ -69,7 +83,7 @@ export function quotaHeadroom(snapshot: QuotaSnapshot | undefined, now = Date.no
 	const headroom = Math.min(...percentages);
 	// A positive physical balance without its total is not comparable headroom.
 	// A known exhausted window still proves the provider has no headroom.
-	if (headroom > 0 && snapshot.limits.some(l => l.unit !== "%" && l.unit !== "credits"
+	if (headroom > 0 && limits.some(l => l.unit !== "%" && l.unit !== "credits"
 		&& l.percentRemaining === undefined && l.remaining > 0)) return undefined;
 	return headroom;
 }
@@ -88,14 +102,15 @@ export function steerByQuota(
 	}
 	const reasons: string[] = [];
 	for (const [family, indices] of groups.entries()) {
-		if (indices.length < 2) continue;
-		const peers = indices.map(index => {
+		// An unknown reading is neither free capacity nor an exhausted subscription: it keeps its slot.
+		const known = indices.map(index => {
 			const candidate = candidates[index];
 			const provider = quotaProvider(candidate.modelSpec);
-			return { candidate, provider, headroom: quotaHeadroom(snapshots.get(provider), now) };
-		});
-		// An unknown reading is neither free capacity nor an exhausted subscription.
-		if (peers.some(p => p.headroom === undefined)) continue;
+			return { index, candidate, provider, headroom: quotaHeadroom(snapshots.get(provider), now, candidate.modelSpec) };
+		}).filter(p => p.headroom !== undefined);
+		if (known.length < 2) continue;
+		const slots = known.map(p => p.index);
+		const peers = [...known];
 		peers.sort((a, b) => b.headroom! - a.headroom!
 			// For NeuralWatt/Synthetic: spend Synthetic first on a healthy tie.
 			// For Anthropic/Codex peers (Opus/Astra, Sonnet/Sol): spend Codex first on a healthy tie.
@@ -104,8 +119,8 @@ export function steerByQuota(
 					? Number(b.provider === "codex") - Number(a.provider === "codex")
 					: Number(b.provider === "synthetic") - Number(a.provider === "synthetic")
 			) : 0));
-		if (peers.every((p, i) => p.candidate === candidates[indices[i]])) continue;
-		indices.forEach((index, i) => { ordered[index] = peers[i].candidate; });
+		if (peers.every((p, i) => p.index === slots[i])) continue;
+		slots.forEach((index, i) => { ordered[index] = peers[i].candidate; });
 		reasons.push(`Quota routing: ${peers[0].candidate.modelSpec} preferred (${peers.map(p => `${p.provider} ${Math.floor(p.headroom!)}% bottleneck remaining`).join("; ")}).`);
 	}
 	return { candidates: ordered, reasons };
@@ -116,7 +131,7 @@ export function exhaustedQuotaReason(spec: string): string | undefined {
 	const provider = quotaProvider(spec);
 	const now = Date.now();
 	const snapshot = readQuotaSnapshot(provider, join(getAgentDir(), "cache", "usage-bar"), now);
-	if (quotaHeadroom(snapshot, now) !== 0) return undefined;
+	if (quotaHeadroom(snapshot, now, spec) !== 0) return undefined;
 	return `Skipped ${spec}: ${provider} quota exhausted (0% bottleneck remaining)`;
 }
 
