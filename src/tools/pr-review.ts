@@ -398,7 +398,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 							spec: REVIEW_MODELS.preMortem,
 							toolBudget: PRE_MORTEM_TOOL_BUDGET,
 						}),
-						runStep(3, slopTask(reviewerCtx), {}),
+						runStep(3, slopTask(reviewerCtx), { spec: REVIEW_MODELS.slop }),
 					]);
 					const reviews = [opus, astra, preMortem, slop];
 
@@ -435,7 +435,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					const aggregateResult = await runStep(
 						4,
 						verifyAggregateTask({ cwd, label, diffFile, reports, intent: params.intent }),
-						{},
+						{ spec: REVIEW_MODELS.verify },
 					);
 					const findings =
 						aggregateResult.status === "ok"

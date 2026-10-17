@@ -169,8 +169,9 @@ reviewer → verify findings against diff and code → report
 The pre-mortem scout has a tool budget: at 12 tool calls it is told to answer
 from what it has, and at 24 the attempt fails. `feature_plan` uses the same budget.
 
-Every `pr_review` step runs on Anthropic or OpenAI models. Steps fall back to
-Sonnet 5.5, never to Neuralwatt or Synthetic.
+Every `pr_review` step names its model, so agent rosters do not apply. By default
+every step runs on Anthropic or OpenAI models and falls back to Sonnet 5.5,
+never to Neuralwatt or Synthetic.
 
 Reviewers tag a finding `[decision]` when its fix is a choice between valid
 designs. The verifier keeps severity, options and a recommendation under
@@ -181,8 +182,9 @@ do not authorize those choices.
 
 The two code reviewers cannot share a model after fallback. If both fail, review
 stops; failed verification returns unverified reports. Configure the models with
-`DISPATCH_REVIEW_OPUS_MODEL`, `DISPATCH_REVIEW_ASTRA_MODEL` and
-`DISPATCH_REVIEW_PREMORTEM_MODEL`.
+`DISPATCH_REVIEW_OPUS_MODEL`, `DISPATCH_REVIEW_ASTRA_MODEL`,
+`DISPATCH_REVIEW_PREMORTEM_MODEL`, `DISPATCH_REVIEW_SLOP_MODEL` and
+`DISPATCH_REVIEW_VERIFY_MODEL`.
 
 `fix` defaults to false. Authorized fixes require the session cwd to be a trusted,
 clean feature repo root matching the reviewed head; `cwd` cannot point fixes at a

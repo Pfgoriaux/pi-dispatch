@@ -79,11 +79,16 @@ export const PROFILE_TIERS: ReadonlySet<string> = new Set(
 	Object.keys(PROFILES),
 );
 
-/** PR review models. Opus and Astra exclude each other on failover. */
+/**
+ * PR review models. Opus and Astra exclude each other on failover. Every step
+ * names its model, so agent rosters cannot route pr_review elsewhere.
+ */
 export const REVIEW_MODELS = {
 	opus: envModel("DISPATCH_REVIEW_OPUS_MODEL") ?? "anthropic/claude-opus-5-5",
 	astra: envModel("DISPATCH_REVIEW_ASTRA_MODEL") ?? "openai-codex/gpt-6-astra",
 	preMortem: envModel("DISPATCH_REVIEW_PREMORTEM_MODEL") ?? "anthropic/claude-sonnet-5-5",
+	slop: envModel("DISPATCH_REVIEW_SLOP_MODEL") ?? "anthropic/claude-sonnet-5-5",
+	verify: envModel("DISPATCH_REVIEW_VERIFY_MODEL") ?? "anthropic/claude-sonnet-5-5",
 } as const;
 
 /** Last resort for every pr_review step: Anthropic and OpenAI only. */

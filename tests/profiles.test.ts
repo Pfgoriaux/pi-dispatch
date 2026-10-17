@@ -42,7 +42,7 @@ test("bundled roles resolve to Kimi for writing and precise for planning", t => 
 test("profile and review overrides still apply but cannot rewrite Hetzner guidance", () => {
 	const env = { ...process.env };
 	for (const tier of ["CHEAP", "BALANCED", "PRECISE", "LONG"]) env[`DISPATCH_PROFILE_${tier}_MODEL`] = `override/${tier.toLowerCase()}`;
-	for (const role of ["OPUS", "ASTRA", "PREMORTEM"]) env[`DISPATCH_REVIEW_${role}_MODEL`] = `override/${role.toLowerCase()}`;
+	for (const role of ["OPUS", "ASTRA", "PREMORTEM", "SLOP", "VERIFY"]) env[`DISPATCH_REVIEW_${role}_MODEL`] = `override/${role.toLowerCase()}`;
 	const profilesUrl = new URL("../src/profiles.ts", import.meta.url).href;
 	const promptsUrl = new URL("../src/tools/feature-plan-prompts.ts", import.meta.url).href;
 	const { profiles, reviews, guidance } = JSON.parse(execFileSync(process.execPath, [
@@ -52,6 +52,6 @@ test("profile and review overrides still apply but cannot rewrite Hetzner guidan
 		console.log(JSON.stringify({ profiles: PROFILES, reviews: REVIEW_MODELS, guidance: HETZNER_DRAFT_GUIDANCE }));`,
 	], { env, encoding: "utf8" }));
 	for (const tier of ["cheap", "balanced", "precise", "long"]) assert.equal(profiles[tier].model, `override/${tier}`);
-	assert.deepEqual(reviews, { opus: "override/opus", astra: "override/astra", preMortem: "override/premortem" });
+	assert.deepEqual(reviews, { opus: "override/opus", astra: "override/astra", preMortem: "override/premortem", slop: "override/slop", verify: "override/verify" });
 	assert.doesNotMatch(guidance, /override\//);
 });
