@@ -3,9 +3,10 @@
  * aliou/pi-harness agent-kit (createSubagentModelRuntime):
  *
  * A fresh ModelRuntime does not know providers that were registered by
- * extensions in the *parent* pi process (proxies, custom gateways). To let
- * in-process workers use those models we copy the native provider
- * registration and the resolved credential into the worker runtime.
+ * extensions in the *parent* pi process (proxies, custom gateways, a second
+ * Claude account). To let in-process workers use those models we copy the
+ * provider registration (native or config) and the resolved credential into
+ * the worker runtime.
  */
 
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -26,10 +27,12 @@ export function sharedModelRuntime(
 
 	const created = (async () => {
 		const runtime = await ModelRuntime.create();
+		// Extensions register a provider natively or as a config. A config can
+		// carry the provider's OAuth (pi-ant's anthropic-2), so copy it as well.
 		const nativeProvider = registry.getRegisteredNativeProvider(model.provider);
-		if (nativeProvider) {
-			runtime.registerNativeProvider(nativeProvider);
-		}
+		const config = nativeProvider ? undefined : registry.getRegisteredProviderConfig?.(model.provider);
+		if (nativeProvider) runtime.registerNativeProvider(nativeProvider);
+		if (config) runtime.registerProvider(model.provider, config);
 		const apiKey = await registry.getApiKeyForProvider(model.provider);
 		if (apiKey && !registry.isUsingOAuth(model)) {
 			try {
