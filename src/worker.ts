@@ -28,6 +28,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { resolveWorkerModel, sharedModelRuntime } from "./model.ts";
+import { qualifiedSpec } from "./child-model.ts";
 import { LinkupSetupError, workerTools, requestedLinkupTools } from "./linkup.ts";
 import { workerSystemPrompt } from "./worker-prompt.ts";
 import {
@@ -259,7 +260,8 @@ export async function runWorker(
 		systemPrompt: workerSystemPrompt(agent, web.warning),
 	};
 
-	const override = options.modelSpec?.trim();
+	// Bare IDs resolve first, as in child workers, so they get the same fallbacks.
+	const override = options.modelSpec?.trim() && qualifiedSpec(options.registry, options.modelSpec.trim());
 	// Explicit model choices bypass rosters, including explicit parent inheritance.
 	const selection = override ? undefined : resolveCandidates(agent, await loadRosterConfig());
 	const savedResume = options.savedResume?.requestedThinking ?? (options.resumeFile ? SessionManager.open(options.resumeFile).buildSessionContext().thinkingLevel : undefined);

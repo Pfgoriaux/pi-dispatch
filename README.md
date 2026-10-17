@@ -262,8 +262,9 @@ frontmatter, then the parent model. Rosters live in
 Weights are positive and ordered descending, not sampled. A task model override
 bypasses the roster. Worktree/review-fix children do not read in-process rosters
 or cooldowns: they use the task override or frontmatter, then parent for `inherit`.
-Child IDs resolve through the parent registry; ambiguous or unpinnable IDs fail
-before spawn.
+Bare IDs resolve through the parent registry in both tiers, then get the same
+fallbacks as a `provider/id` pin. The same model on both Claude accounts resolves
+to `anthropic`; other ambiguous or unpinnable IDs fail before spawn.
 
 ### Routing and failure
 
@@ -286,7 +287,9 @@ before spawn.
   pi-usage-bar (`claude` for `anthropic`, `claude2` for `anthropic-2`). Use the
   lowest remaining percentage across the windows that bind the model. Claude
   per-model windows (`<model>week`, such as `fableweek` or `opusweek`) bind only
-  model IDs containing that name. Missing, invalid, older-than-three-minute or
+  model IDs containing that name. A skip names the empty windows, for example
+  `Skipped anthropic/claude-fable-5-1: claude quota exhausted (fableweek at 0%)`.
+  Missing, invalid, older-than-three-minute or
   expired-reset readings do not predict capacity; steering leaves those
   candidates in place. Dispatch neither polls providers nor reserves quota.
 - In-process failures, blank final responses and internal cutoffs can try the

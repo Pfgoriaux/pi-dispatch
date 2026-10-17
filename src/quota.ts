@@ -68,17 +68,20 @@ export function readQuotaSnapshot(provider: string, directory: string, now = Dat
 	} catch { return undefined; }
 }
 
+/** Percent left in one window; a physical balance at or below zero counts as 0%. */
+function percentLeft(l: Limit): number | undefined {
+	const percent = l.unit === "%" ? l.remaining : l.percentRemaining;
+	if (percent !== undefined) return percent;
+	// Optional paid Codex credits are not a subscription quota window.
+	return l.unit !== "credits" && l.remaining <= 0 ? 0 : undefined;
+}
+
 /** Bottleneck across every window that binds `spec`. Never forecast capacity from a future refill. */
 export function quotaHeadroom(snapshot: QuotaSnapshot | undefined, now = Date.now(), spec?: string): number | undefined {
 	if (!snapshot || !validQuotaSnapshot(snapshot, now) || now - snapshot.updatedAt > 180_000) return undefined;
 	const limits = snapshot.limits.filter(l => bindsModel(l, spec));
 	if (limits.some(l => l.renewal !== "refill" && l.at !== undefined && l.at <= now)) return undefined;
-	const percentages = limits.flatMap(l => {
-		const percent = l.unit === "%" ? l.remaining : l.percentRemaining;
-		if (percent !== undefined) return [percent];
-		// Optional paid Codex credits are not a subscription quota window.
-		return l.unit !== "credits" && l.remaining <= 0 ? [0] : [];
-	});
+	const percentages = limits.map(percentLeft).filter((p): p is number => p !== undefined);
 	if (!percentages.length) return undefined;
 	const headroom = Math.min(...percentages);
 	// A positive physical balance without its total is not comparable headroom.
@@ -131,7 +134,8 @@ export function exhaustedQuotaReason(spec: string): string | undefined {
 	const now = Date.now();
 	const snapshot = readQuotaSnapshot(provider, join(getAgentDir(), "cache", "usage-bar"), now);
 	if (quotaHeadroom(snapshot, now, spec) !== 0) return undefined;
-	return `Skipped ${spec}: ${provider} quota exhausted (0% bottleneck remaining)`;
+	const empty = snapshot!.limits.filter(l => bindsModel(l, spec) && percentLeft(l) === 0).map(l => l.label);
+	return `Skipped ${spec}: ${provider} quota exhausted (${empty.join(", ")} at 0%)`;
 }
 
 /** Called once before attempts; parallel workers never mutate snapshots or reserve invented token costs. */
