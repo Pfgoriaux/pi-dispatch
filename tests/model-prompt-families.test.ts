@@ -23,6 +23,7 @@ const recognized: [provider: string, id: string, family: KnownModelFamily][] = [
 	["neuralwatt", "glm-5.3", "glm-5.3"],
 	["neuralwatt", "glm-5.3-flash", "glm-5.3"],
 	["neuralwatt", "glm-5.3-flash-flex", "glm-5.3"],
+	["huggingface", "hf:zai-org/GLM-5.3", "glm-5.3"],
 	["neuralwatt", "kimi-k3", "kimi-k3"],
 	["neuralwatt", "kimi-k3-fast", "kimi-k3"],
 	["aperture", "neuralwatt/kimi-k3", "kimi-k3"],

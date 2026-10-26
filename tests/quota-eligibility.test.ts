@@ -235,7 +235,8 @@ test("child skips all exhausted routes without spawning or inheriting", async ()
 	assert.match(result.error!, /quota exhausted/);
 });
 
-test("child fallback checks updated quota before its next attempt", async () => {
+test("child fallback checks updated quota before its next attempt", async t => {
+	t.after(() => rmSync(join(cache, "claude2-v3.json"), { force: true }));
 	quota("claude", 50);
 	quota("claude2", 50);
 	quota("codex", 50);
@@ -253,7 +254,6 @@ console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content
 	assert.equal(result.status, "ok");
 	assert.deepEqual(calls, [opus, astra], `must skip ${opus2}`);
 	assert.equal(result.attempts, 2);
-	rmSync(join(cache, "claude2-v3.json"));
 });
 
 test("SDK rechecks quotas after asynchronous setup without counting a skipped prompt", async t => {
