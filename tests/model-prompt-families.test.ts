@@ -23,13 +23,11 @@ const recognized: [provider: string, id: string, family: KnownModelFamily][] = [
 	["neuralwatt", "glm-5.3", "glm-5.3"],
 	["neuralwatt", "glm-5.3-flash", "glm-5.3"],
 	["neuralwatt", "glm-5.3-flash-flex", "glm-5.3"],
-	["synthetic", "hf:zai-org/GLM-5.3-Flash", "glm-5.3"],
+	["huggingface", "hf:zai-org/GLM-5.3", "glm-5.3"],
 	["neuralwatt", "kimi-k3", "kimi-k3"],
 	["neuralwatt", "kimi-k3-fast", "kimi-k3"],
-	["synthetic", "hf:moonshotai/Kimi-K3", "kimi-k3"],
 	["aperture", "neuralwatt/kimi-k3", "kimi-k3"],
 	["aperture", "neuralwatt/deepseek-v4.1-flash", "deepseek-v4.1"],
-	["synthetic", "hf:deepseek-ai/DeepSeek-V4.1-Flash", "deepseek-v4.1"],
 	["openrouter", "deepseek/deepseek-v4.1", "deepseek-v4.1"],
 ];
 

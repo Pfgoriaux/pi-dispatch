@@ -120,18 +120,13 @@ export function loadRosterConfig(): Promise<Map<string, RosterEntry[]> | undefin
 	return cachedConfig;
 }
 
-// Model counterparts in Aperture's Synthetic catalog. Do not guess IDs.
+// Neuralwatt models whose failures fall back to Codex 6.1 Sol. Do not guess IDs.
 // GLM Flash and Kimi fast variants are not used.
-// Keep the requested provider first; quota routing may reorder exact peers.
-const SYNTHETIC_COUNTERPARTS = new Map([
-	["kimi-k3", "hf:moonshotai/Kimi-K3"],
-	["glm-5.3", "hf:zai-org/GLM-5.3"],
-	["deepseek-v4.1-flash", "hf:deepseek-ai/DeepSeek-V4.1-Flash"],
-]);
+const NEURALWATT_ROUTES = new Set(["neuralwatt/kimi-k3", "neuralwatt/glm-5.3", "neuralwatt/deepseek-v4.1-flash"]);
 
-// DeepSeek 4.1 (either route) falls back to Haiku 5.5, then the terminal 6.1 Sol.
-// Paid Neuralwatt/Synthetic routes come first; Haiku spends Anthropic quota only when both fail.
-const DEEPSEEK_ROUTES = new Set(["neuralwatt/deepseek-v4.1-flash", "synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash"]);
+// DeepSeek 4.1 falls back to Haiku 5.5, then the terminal 6.1 Sol.
+// Haiku spends Anthropic quota only when Neuralwatt fails.
+const DEEPSEEK_ROUTE = "neuralwatt/deepseek-v4.1-flash";
 const DEEPSEEK_FALLBACK = "anthropic/claude-haiku-5-5";
 
 const OPENAI_FALLBACK = "openai-codex/gpt-6.1-sol";
@@ -191,20 +186,13 @@ export function withLastResorts(candidates: RankedCandidate[], specs: readonly s
 
 /** Exact-model equivalence only; unknown models must never be guessed. */
 export function quotaFamily(spec: string): string | undefined {
-	const route = routeId(spec);
-	// NeuralWatt ↔ Synthetic counterparts
-	if (route.startsWith("neuralwatt/")) return SYNTHETIC_COUNTERPARTS.get(route.slice("neuralwatt/".length));
-	if (route.startsWith("synthetic/")) {
-		const id = route.slice("synthetic/".length);
-		if ([...SYNTHETIC_COUNTERPARTS.values()].includes(id)) return id;
-	}
 	// Cross-provider peers (Opus 5.5 ↔ Astra 6, Sonnet 5.5 ↔ Sol 6.1), then other Claude models across accounts
 	const id = primaryAccount(spec);
 	return CROSS_PROVIDER_PEERS.get(id)?.family ?? (claudeModel(id) ? id : undefined);
 }
 
 /**
- * Known provider counterparts in either direction, then Codex 6.1 Sol once, last.
+ * Known cross-provider peers, then Codex 6.1 Sol once, last.
  * Every Claude route is followed by the same model on the other Claude account.
  */
 export function withProviderFallbacks(candidates: RankedCandidate[]): RankedCandidate[] {
@@ -224,12 +212,10 @@ export function withProviderFallbacks(candidates: RankedCandidate[]): RankedCand
 		}
 	};
 	for (const candidate of candidates) {
-		const route = routeId(candidate.modelSpec);
-		let counterpart: string | undefined;
 		// Cross-provider peers (Opus 5.5 ↔ Astra 6, Sonnet 5.5 → Sol 6.1)
 		const crossPeer = CROSS_PROVIDER_PEERS.get(primaryAccount(candidate.modelSpec))?.peer;
+		append(candidate);
 		if (crossPeer) {
-			append(candidate);
 			// Prefer an explicit counterpart configuration if present
 			const existingPeer = candidates.find(c => c.modelSpec === crossPeer);
 			append(existingPeer ?? at(candidate, crossPeer));
@@ -237,25 +223,9 @@ export function withProviderFallbacks(candidates: RankedCandidate[]): RankedCand
 			if (crossPeer !== OPENAI_FALLBACK) terminal ??= at(candidate, OPENAI_FALLBACK);
 			continue;
 		}
-		// NeuralWatt ↔ Synthetic counterparts
-		if (route.startsWith("neuralwatt/")) {
-			const synthetic = SYNTHETIC_COUNTERPARTS.get(route.slice("neuralwatt/".length));
-			if (synthetic) counterpart = `synthetic/${synthetic}`;
-		} else if (route.startsWith("synthetic/")) {
-			const synthetic = route.slice("synthetic/".length);
-			// Prefer an already specified Neuralwatt route for the same model.
-			const existing = candidates.find(c => {
-				const id = routeId(c.modelSpec);
-				return id.startsWith("neuralwatt/") && SYNTHETIC_COUNTERPARTS.get(id.slice("neuralwatt/".length)) === synthetic;
-			});
-			const id = [...SYNTHETIC_COUNTERPARTS].reverse().find(([, value]) => value === synthetic)?.[0];
-			if (id) counterpart = existing ? routeId(existing.modelSpec) : `neuralwatt/${id}`;
-		}
-		append(candidate);
-		if (!counterpart) continue;
-		const existing = candidates.find(c => routeId(c.modelSpec) === counterpart);
-		append(existing ?? at(candidate, `aperture/${counterpart}`));
-		if (DEEPSEEK_ROUTES.has(route)) {
+		const route = routeId(candidate.modelSpec);
+		if (!NEURALWATT_ROUTES.has(route)) continue;
+		if (route === DEEPSEEK_ROUTE) {
 			append(candidates.find(c => c.modelSpec === DEEPSEEK_FALLBACK) ?? at(candidate, DEEPSEEK_FALLBACK));
 		}
 		terminal ??= at(candidate, OPENAI_FALLBACK);

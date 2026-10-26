@@ -10,8 +10,8 @@ import { runWorker, sumWorkerUsage, truncateText } from "../worker.ts";
 const OPUS = "anthropic/claude-opus-5-5";
 const ASTRA = "openai-codex/gpt-6-astra";
 const THIRD = {
-	"glm-5.3": ["aperture/neuralwatt/glm-5.3", "aperture/synthetic/hf:zai-org/GLM-5.3"],
-	"kimi-k3": ["aperture/neuralwatt/kimi-k3", "aperture/synthetic/hf:moonshotai/Kimi-K3"],
+	"glm-5.3": ["aperture/neuralwatt/glm-5.3"],
+	"kimi-k3": ["aperture/neuralwatt/kimi-k3"],
 } as const;
 
 function report(result: WorkerResult, requested: string) {

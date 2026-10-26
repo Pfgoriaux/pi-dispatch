@@ -28,9 +28,8 @@ const opus2 = "anthropic-2/claude-opus-5-5";
 const astra = "openai-codex/gpt-6-astra";
 const sol = "openai-codex/gpt-6.1-sol";
 const nw = "aperture/neuralwatt/kimi-k3";
-const sy = "aperture/synthetic/hf:moonshotai/Kimi-K3";
 const agent: AgentConfig = { name: "eligibility-fixture", description: "test", model: opus, tools: [], thinking: "high", systemPrompt: "fixture", source: "bundled", filePath: "fixture" };
-const catalog = [opus, opus2, astra, sol, nw, sy].map(spec => {
+const catalog = [opus, opus2, astra, sol, nw].map(spec => {
 	const slash = spec.indexOf("/");
 	return { provider: spec.slice(0, slash), id: spec.slice(slash + 1), reasoning: true };
 });
@@ -66,7 +65,6 @@ for (const source of ["frontmatter", "pin", "inherit", "bare-pin"] as const) {
 
 test("exhausted peers and terminal fallback make zero SDK attempts", async () => {
 	quota("neuralwatt", 0);
-	quota("synthetic", 0);
 	quota("codex", 0);
 	const claimed: string[] = [];
 	const result = await runWorker(agent, "test", { registry, fallbackModel: undefined, modelSpec: nw, steerByQuota: true,
@@ -113,7 +111,7 @@ test("eligibility rereads caches and only blocks fresh, known exhaustion", () =>
 });
 
 test("low quotas never inject a model outside the configured candidates", () => {
- for (const provider of ["claude","codex","neuralwatt","synthetic"]) quota(provider, 5);
+ for (const provider of ["claude","codex","neuralwatt"]) quota(provider, 5);
  const candidates = [{ modelSpec: "fake/small", thinking: "off", entry: { provider: "fake", model: "small", thinking: "off", weight: 1 } }];
  assert.deepEqual(quotaCandidates(candidates), candidates);
 });
@@ -226,7 +224,6 @@ test("child refuses unknown provider identity instead of using CLI defaults", as
 
 test("child skips all exhausted routes without spawning or inheriting", async () => {
 	quota("neuralwatt", 0);
-	quota("synthetic", 0);
 	quota("codex", 0);
 	const calls: string[] = [];
 	const result = await runWorkerProc(agent, "test", { cwd: root, modelOverride: nw, steerByQuota: true,
@@ -238,28 +235,29 @@ test("child skips all exhausted routes without spawning or inheriting", async ()
 	assert.match(result.error!, /quota exhausted/);
 });
 
-test("child fallback checks updated quota before its next attempt", async () => {
-	quota("neuralwatt", 50);
-	quota("synthetic", 50);
+test("child fallback checks updated quota before its next attempt", async t => {
+	t.after(() => rmSync(join(cache, "claude2-v3.json"), { force: true }));
+	quota("claude", 50);
+	quota("claude2", 50);
 	quota("codex", 50);
 	writeFileSync(bin, `#!/usr/bin/env node
 const fs = require('node:fs');
 const model = process.argv[process.argv.indexOf('--model') + 1];
-if (model === ${JSON.stringify(nw)}) {
-  fs.writeFileSync(${JSON.stringify(join(cache, "synthetic-v3.json"))}, JSON.stringify({updatedAt:Date.now(),limits:[{label:'week',remaining:0,unit:'%'}]}));
+if (model.includes('claude-opus-5-5')) {
+  fs.writeFileSync(${JSON.stringify(join(cache, "claude2-v3.json"))}, JSON.stringify({updatedAt:Date.now(),limits:[{label:'week',remaining:0,unit:'%'}]}));
   process.exit(1);
 }
 console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:model}],stopReason:'stop'}}));
 `, { mode: 0o700 });
-	const result = await runWorkerProc(agent, "test", { cwd: root, modelOverride: nw, steerByQuota: false });
+	const calls: string[] = [];
+	const result = await runWorkerProc(agent, "test", { cwd: root, registry, modelOverride: opus, steerByQuota: false, onAttempt: model => calls.push(model) });
 	assert.equal(result.status, "ok");
-	assert.equal(result.text, sol);
-	assert.equal(result.attempts, 2, `must skip ${sy}`);
+	assert.deepEqual(calls, [opus, astra], `must skip ${opus2}`);
+	assert.equal(result.attempts, 2);
 });
 
 test("SDK rechecks quotas after asynchronous setup without counting a skipped prompt", async t => {
 	quota("neuralwatt", 50);
-	quota("synthetic", 50);
 	quota("codex", 50);
 	const reload = DefaultResourceLoader.prototype.reload;
 	t.mock.method(DefaultResourceLoader.prototype, "reload", async function (this: DefaultResourceLoader) {
@@ -279,7 +277,7 @@ test("SDK rechecks quotas after asynchronous setup without counting a skipped pr
 		getRegisteredNativeProvider: () => undefined, getApiKeyForProvider: async () => undefined,
 	} as unknown as ModelRegistry;
 	const result = await runWorker(agent, "test", { registry: setupRegistry, fallbackModel: undefined, modelSpec: nw });
-	assert.deepEqual(prompts, [sy]);
+	assert.deepEqual(prompts, [sol]);
 	assert.equal(result.status, "ok");
 	assert.equal(result.attempts, 1);
 	assert.equal(result.failedAttempts, undefined);

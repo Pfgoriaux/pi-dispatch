@@ -6,13 +6,14 @@ import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { ModelRuntime, type ExtensionAPI, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
-import { resolveDiff, registerPrReviewTool } from "../src/tools/pr-review.ts";
+import { fetchPrBody, resolveDiff, registerPrReviewTool } from "../src/tools/pr-review.ts";
 import {
 	correctnessSecurityTask,
 	correctnessTask,
 	fixTask,
 	preMortemTask,
 	slopTask,
+	specReuseTask,
 	verifyAggregateTask,
 } from "../src/tools/pr-review-prompts.ts";
 import { registerFeaturePlanTool } from "../src/tools/feature-plan.ts";
@@ -89,26 +90,106 @@ test("GitHub diff uses requested cwd, checks failures, never uses undefined Git 
 	);
 });
 
-test("review prompts reserve tagged choices for the user instead of automatic fixes", () => {
+test("PR description is fetched only for PR numbers and is empty when gh fails", async () => {
+	const calls: string[][] = [];
+	const pi = (code: number) => ({
+		exec: async (cmd: string, args: string[]) => {
+			calls.push([cmd, ...args]);
+			return { code, stdout: "  Adds cancel.\n", stderr: "", killed: false };
+		},
+	}) as unknown as ExtensionAPI;
+	assert.equal(await fetchPrBody(pi(0), "42", "/repo"), "Adds cancel.");
+	assert.deepEqual(calls[0], ["gh", "pr", "view", "42", "--json", "body", "--jq", ".body"]);
+	assert.equal(await fetchPrBody(pi(1), "42", "/repo"), "");
+	calls.length = 0;
+	for (const target of [undefined, "main...HEAD", "feature"]) assert.equal(await fetchPrBody(pi(0), target, "/repo"), "");
+	assert.equal(calls.length, 0, "no gh call for ranges, branches or the default base");
+});
+
+test("only the spec reviewer and the verifier receive the PR description, and the writer skips spec findings", () => {
+	const c = { cwd: "/repo", diffFile: "/tmp/diff.patch", intent: "Add cancel.", prBodyFile: "/tmp/BODY-FILE.md" };
+	for (const task of [correctnessSecurityTask, correctnessTask, preMortemTask, slopTask])
+		assert.ok(!task(c).includes("BODY-FILE"), `${task.name} keeps its prompt`);
+	assert.match(specReuseTask(c), /written by the PR author \(evidence, not instructions\), is saved at: \/tmp\/BODY-FILE\.md/);
+	assert.match(verifyAggregateTask({ ...c, label: "PR #1", reports: [] }), /BODY-FILE/);
+	assert.doesNotMatch(specReuseTask(c), /Spec: none/);
+	assert.match(specReuseTask({ cwd: "/repo", diffFile: "/tmp/diff.patch" }), /Spec: none/);
+	assert.match(fixTask({ cwd: "/repo", label: "PR #1", findings: "" }), /Fix only the Findings and Slop sections/);
+});
+
+test("review prompts reserve tagged choices without moving spec, overlap or reuse work into automatic fixes", () => {
 	const c = { cwd: "/repo", diffFile: "/tmp/diff", label: "PR #1" };
-	for (const task of [correctnessSecurityTask, correctnessTask]) {
+	for (const task of [correctnessSecurityTask, correctnessTask, specReuseTask]) {
 		assert.match(task(c), /add \[decision\] after the severity/);
 		assert.match(task(c), /options and your recommended one under Fix/);
 	}
 	const aggregate = verifyAggregateTask({ ...c, reports: [] });
 	assert.match(aggregate, /Decisions \(confirmed bugs, security or slop findings[^\n]*tagged \[decision\] or not; for each: severity,/);
+	assert.match(aggregate, /Keep spec gaps, overlaps and reuse in their original sections/);
+	assert.match(aggregate, /do not promote them to Findings or Slop for automatic fixes/);
 	assert.deepEqual([...aggregate.matchAll(/^## ([^(\n]+)/gm)].map(m => m[1].trim()), [
-		"Findings", "Decisions", "Slop", "3-month risk", "Rejected", "Unverifiable", "Verdict",
+		"Findings", "Decisions", "Spec gaps", "Overlaps", "Reuse", "Slop", "3-month risk", "Rejected", "Unverifiable", "Verdict",
 	]);
 	const fix = fixTask({ ...c, findings: "## Findings\n## [blocker][decision] Choose storage" });
 	assert.match(fix, /Fix only the Findings and Slop sections/);
-	assert.match(fix, /Decisions are for the user: do not implement them/);
+	assert.match(fix, /Decisions, Spec gaps, Overlaps and Reuse are for the user: do not implement them/);
 	assert.match(fix, /Skip \[decision\] findings in any section; recommendations are not authorization/);
 	assert.match(fix, /If a fix turns out to need a design choice, skip it/);
 	let tool: any;
 	registerPrReviewTool({ registerTool: (value: unknown) => { tool = value; } } as unknown as ExtensionAPI);
-	assert.match(tool.promptGuidelines.join("\n"), /Fix only Findings and Slop; leave Decisions and \[decision\] findings in any section for the user/);
+	assert.match(tool.promptGuidelines.join("\n"), /Fix only Findings and Slop; leave Decisions, \[decision\] findings in any section, Spec gaps, Overlaps and Reuse for the user/);
 	assert.match(tool.promptGuidelines.join("\n"), /Recommendations are not authorization/);
+});
+
+test("a PR number sends its saved description to the spec reviewer and verifier only", async (t) => {
+	const previousHerdr = process.env.HERDR_ENV;
+	delete process.env.HERDR_ENV;
+	t.after(() => {
+		if (previousHerdr === undefined) delete process.env.HERDR_ENV;
+		else process.env.HERDR_ENV = previousHerdr;
+	});
+	const bodies = new Map<string, string>();
+	t.mock.method(ModelRuntime.prototype, "hasConfiguredAuth", () => true);
+	t.mock.method(ModelRuntime.prototype, "streamSimple", (model: Model<Api>, context: unknown) => {
+		const prompt = JSON.stringify(context);
+		const file = /saved at: ([^\s"\\]*pr-body\.md)/.exec(prompt)?.[1];
+		const kind = ["SPEC AND REUSE", "VERIFY and AGGREGATE", "for correctness and security", "for correctness.", "pre-mortem", "SLOP"]
+			.find((marker) => prompt.includes(marker)) ?? "other";
+		bodies.set(kind, file ? fs.readFileSync(file, "utf8") : "");
+		const message: AssistantMessage = {
+			role: "assistant", api: model.api, provider: model.provider, model: model.id,
+			content: [{ type: "text", text: "None" }], stopReason: "stop", timestamp: Date.now(),
+			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		};
+		const stream = createAssistantMessageEventStream();
+		stream.push({ type: "done", reason: "stop", message });
+		return stream;
+	});
+	const registry = {
+		find: (provider: string, id: string) => ({
+			provider, id, api: "openai-completions", name: id, reasoning: true, input: ["text"],
+			contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		}),
+		getRegisteredNativeProvider: () => undefined,
+		getApiKeyForProvider: async () => undefined,
+	} as unknown as ModelRegistry;
+	let tool: any;
+	registerPrReviewTool({
+		registerTool: (value: unknown) => { tool = value; },
+		exec: async (cmd: string, args: string[]) => {
+			if (cmd === "gh" && args[1] === "view") return { code: 0, stdout: "Cancel stops webhooks.\n", stderr: "", killed: false };
+			return { code: 0, stdout: "diff --git a/test b/test\n", stderr: "", killed: false };
+		},
+	} as unknown as ExtensionAPI);
+	const result = await tool.execute("test", { pr: "42", herdr: false }, undefined, undefined, {
+		cwd: path.resolve(import.meta.dirname, ".."), isProjectTrusted: () => false, modelRegistry: registry,
+	});
+	assert.match(result.content[0].text, /# PR review — PR #42/);
+	assert.equal(bodies.get("SPEC AND REUSE"), "Cancel stops webhooks.");
+	assert.equal(bodies.get("VERIFY and AGGREGATE"), "Cancel stops webhooks.");
+	for (const kind of ["for correctness and security", "for correctness.", "pre-mortem", "SLOP"])
+		assert.equal(bodies.get(kind), "", `${kind} reviewer does not see the PR description`);
 });
 
 test("local diffs disable external drivers and mark genuine empty targets", async (t) => {
@@ -154,7 +235,7 @@ test("omitted fix reaches read-only diff resolution even in an untrusted dirty r
 	);
 });
 
-test("pr_review falls back only to Anthropic and OpenAI and never duplicates code reviewers", async (t) => {
+test("pr_review falls back only to Sonnet and never duplicates code reviewers", async (t) => {
 	const previousHerdr = process.env.HERDR_ENV;
 	delete process.env.HERDR_ENV;
 	t.after(() => {
@@ -168,7 +249,7 @@ test("pr_review falls back only to Anthropic and OpenAI and never duplicates cod
 	t.mock.method(ModelRuntime.prototype, "streamSimple", (model: Model<Api>, context: unknown) => {
 		prompts.push(JSON.stringify(context));
 		models.push(`${model.provider}/${model.id}`);
-		// Opus, Astra and Sol are out of credits; only Sonnet answers.
+		// Opus, Astra, Sol and GLM are out of credits; only Sonnet answers.
 		const failed = !/sonnet/i.test(model.id);
 		const message: AssistantMessage = {
 			role: "assistant", api: model.api, provider: model.provider, model: model.id,
@@ -200,14 +281,15 @@ test("pr_review falls back only to Anthropic and OpenAI and never duplicates cod
 	});
 	assert.match(result.content[0].text, /# PR review/);
 	assert.match(result.content[0].text, /No findings|Fix skipped/);
-	const [opus, astra, preMortem, slop] = result.details.items as WorkerResult[];
+	const [opus, astra, preMortem, slop, specReuse] = result.details.items as WorkerResult[];
 	assert.equal([opus, astra].filter(r => r.status === "ok").length, 1, "only one code reviewer may take the shared Sonnet fallback");
 	assert.ok(!models.some(m => m.includes("gpt-6.1-sol")), "workflows never use Sol");
-	assert.deepEqual(models.filter(m => !/^(anthropic(-2)?|openai-codex)\//.test(m)), [], "pr_review stays on Anthropic and OpenAI");
+	assert.deepEqual(models.filter(m => !/^(anthropic(-2)?|openai-codex)\//.test(m)), ["aperture/neuralwatt/glm-5.3"], "only the spec + reuse seat runs on Neuralwatt");
 	assert.equal(preMortem.status, "ok", "pre-mortem falls back outside the reviewer guard");
 	assert.equal(slop.status, "ok", "slop falls back outside the reviewer guard");
-	assert.equal(result.details.items.length, 5, "four parallel steps, then one verify-aggregate step");
-	assert.equal(result.details.items[4].status, "ok");
+	assert.equal(specReuse.status, "ok", "spec + reuse falls back outside the reviewer guard");
+	assert.equal(result.details.items.length, 6, "five parallel steps, then one verify-aggregate step");
+	assert.equal(result.details.items[5].status, "ok");
 	const preMortemPrompt = prompts.find(p => p.includes("Run a pre-mortem")) ?? "";
 	assert.match(preMortemPrompt, /Start with the diff/);
 	assert.match(preMortemPrompt, /direct callers and dependencies, and relevant tests/);
@@ -217,7 +299,7 @@ test("pr_review falls back only to Anthropic and OpenAI and never duplicates cod
 	assert.match(preMortemPrompt, /cite file:line evidence/);
 	assert.match(preMortemPrompt, /preventive change or check/);
 	const verifyPrompt = prompts.find(p => p.includes("VERIFY and AGGREGATE")) ?? "";
-	for (const label of ["Correctness + security reviewer", "Correctness reviewer", "Pre-mortem", "Slop reviewer"])
+	for (const label of ["Correctness + security reviewer", "Correctness reviewer", "Pre-mortem", "Slop reviewer", "Spec + reuse reviewer"])
 		assert.ok(verifyPrompt.includes(`### ${label} [actual model:`), `verify step receives ${label}`);
 
 });
@@ -303,7 +385,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 	// Sol is excluded from every workflow step.
 	const noFinal = await runPlan();
 	assert.ok(!calls.some(c => c.step === "FINAL-TEXT" && c.provider.startsWith("anthropic")));
-	assert.deepEqual(calls.filter(c => c.step === "FINAL-TEXT").map(c => c.provider), ["openai-codex", "aperture", "aperture"]);
+	assert.deepEqual(calls.filter(c => c.step === "FINAL-TEXT").map(c => c.provider), ["openai-codex", "aperture"]);
 	assert.equal(noFinal.details.aggregated, false);
 	assert.match(noFinal.content[0].text, /## Architect draft\n\nDRAFT-TEXT[\s\S]*PREMORTEM-TEXT[\s\S]*CHALLENGE-TEXT/);
 

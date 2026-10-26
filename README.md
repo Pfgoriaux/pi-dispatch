@@ -75,9 +75,9 @@ Non-reasoning and virtual models are refused. Nothing reruns a task to change
 effort. Child workers also load a guard that checks their actual model before
 provider requests.
 
-The floors use `low`, `medium` and `high` because the Neuralwatt and Synthetic
-model catalogs (`/v1/models`) accept `low`, `high` and `max` on every model
-they serve and alias `medium` to `high` where it is missing.
+The floors use `low`, `medium` and `high` because the Neuralwatt model catalog
+(`/v1/models`) accepts `low`, `high` and `max` on every model it serves and
+aliases `medium` to `high` where it is missing.
 
 Reports show requested and effective effort. Child effective effort comes from
 assistant-message metadata, or `unknown` when it is absent; argv is not evidence
@@ -162,29 +162,38 @@ parallel
 ├─ Opus reviewer: correctness/security
 ├─ Astra reviewer: correctness
 ├─ Sonnet scout: pre-mortem (low thinking, 12 tool calls)
-└─ slop-reviewer: unnecessary code/docs (medium thinking)
+├─ slop-reviewer: unnecessary code/docs (medium thinking)
+└─ GLM 5.3 reviewer on Neuralwatt: spec gaps, reachable edge cases, overlaps, reuse
 reviewer → verify findings against diff and code → report
 ```
 
 The pre-mortem scout has a tool budget: at 12 tool calls it is told to answer
 from what it has, and at 24 the attempt fails. `feature_plan` uses the same budget.
 
-Every `pr_review` step names its model, so agent rosters do not apply. By default
-every step runs on Anthropic or OpenAI models and falls back to Sonnet 5.5,
-never to Neuralwatt or Synthetic.
+The spec + reuse reviewer checks the diff against `intent` and, for a PR number,
+the PR description fetched with `gh pr view` and saved next to the diff. Only this
+reviewer and the verifier read that file. It reports missing or unrequested
+behaviour, edge cases the diff makes reachable, other readers and writers of
+changed tables, statuses, events and shared functions, and new code that
+duplicates an existing equivalent. With neither `intent` nor a PR description,
+it skips the spec check.
+
+Every `pr_review` step names its model, so agent rosters do not apply. Every step
+falls back to Sonnet 5.5, never to Neuralwatt.
 
 Reviewers tag a finding `[decision]` when its fix is a choice between valid
 designs. The verifier keeps severity, options and a recommendation under
-Decisions for bugs, security and slop findings. Fix writers act only on Findings
-and Slop and skip `[decision]` findings in any section. Decisions stay for the
-user, including when fixes are dispatched manually. Recommendations
+Decisions for bugs, security and slop findings. Spec gaps, overlaps and reuse
+stay in their own sections. Fix writers act only on Findings and Slop and skip
+`[decision]` findings in any section. Decisions, spec gaps, overlaps and reuse
+stay for the user, including when fixes are dispatched manually. Recommendations
 do not authorize those choices.
 
 The two code reviewers cannot share a model after fallback. If both fail, review
 stops; failed verification returns unverified reports. Configure the models with
 `DISPATCH_REVIEW_OPUS_MODEL`, `DISPATCH_REVIEW_ASTRA_MODEL`,
-`DISPATCH_REVIEW_PREMORTEM_MODEL`, `DISPATCH_REVIEW_SLOP_MODEL` and
-`DISPATCH_REVIEW_VERIFY_MODEL`.
+`DISPATCH_REVIEW_PREMORTEM_MODEL`, `DISPATCH_REVIEW_SLOP_MODEL`,
+`DISPATCH_REVIEW_SPEC_MODEL` and `DISPATCH_REVIEW_VERIFY_MODEL`.
 
 `fix` defaults to false. Authorized fixes require the session cwd to be a trusted,
 clean feature repo root matching the reviewed head; `cwd` cannot point fixes at a
@@ -200,8 +209,8 @@ by default; `third:"kimi-k3"` replaces GLM. All use the invocation’s thinking 
 role, restricted to local read/search tools even when custom roles grant more.
 Configured Linkup tools remain available.
 
-Seats stay on their assigned model. GLM/Kimi can retry an equivalent provider
-route; unavailable seats are reported, not replaced by another model. No aggregator
+Seats stay on their assigned model; unavailable seats are reported, not replaced
+by another model. No aggregator
 runs. The coordinator summarizes agreement, dissent, its recommendation and the
 smallest next check. Fewer than three successful opinions is not a full council.
 
@@ -263,9 +272,8 @@ to `anthropic`; other ambiguous or unpinnable IDs fail before spawn.
 
 ### Routing and failure
 
-- Kimi, GLM 5.3 and DeepSeek retry their Neuralwatt/Synthetic counterparts
-  (direct and Aperture routes supported). Kimi and GLM 5.3 retain a terminal
-  Codex Sol 6.1 fallback; DeepSeek falls back through Haiku 5.5 then Sol.
+- Kimi and GLM 5.3 on Neuralwatt (direct and Aperture routes) fall back to
+  Codex Sol 6.1; DeepSeek falls back through Haiku 5.5 then Sol.
 - Every direct Claude route (`anthropic/<id>`) is followed by the same model on
   the second Claude account (`anthropic-2/<id>`, registered by pi-ant), and the
   reverse for `anthropic-2` pins, ahead of cross-provider peers. Quota steering
@@ -273,7 +281,7 @@ to `anthropic`; other ambiguous or unpinnable IDs fail before spawn.
   count as one model for exclusions, council seats and duplicate guards.
 - Opus and Astra retry each other and end with Sol; Sonnet also falls back to Sol.
 - `feature_plan` and `pr_review` exclude Sol. `feature_plan` ends its chains with
-  GLM 5.3 on Neuralwatt, then on Aperture Synthetic; `pr_review` ends them with
+  GLM 5.3 on Neuralwatt; `pr_review` ends them with
   Sonnet 5.5. Model-identity guards prevent duplicates.
   Council instead restricts each seat to its assigned model.
 - Quota steering ranks existing peer candidates without inserting a top model.
@@ -497,12 +505,9 @@ Profile environment overrides do not change it.
 
 GLM 5.3 takes text only; a task that needs an image goes to Kimi.
 
-Foreman runs Kimi K3 and GLM 5.3 on Neuralwatt or Synthetic by provider quota and
-retries the other route after a provider refusal without using an attempt. Do not
-list the other route as a fallback. Writer and reviewer thinking
-must be `high` or above: set `worker.thinking`, and any `worker.reviewThinking`,
-task `thinking`, or task `reviewThinking`, to `high` (default), `xhigh`, or
-`max`. This guidance does not rewrite configuration, validate providers, or
+Writer and reviewer thinking must be `high` or above: set `worker.thinking`, and
+any `worker.reviewThinking`, task `thinking`, or task `reviewThinking`, to `high`
+(default), `xhigh`, or `max`. This guidance does not rewrite configuration, validate providers, or
 route tasks automatically.
 
 Give each task one concern and small, bounded `ownedFiles`: exact files or narrow
@@ -575,7 +580,7 @@ and each task’s `thinking` and `reviewThinking`:
             "sessionsRoot": "/abs/sessions", "branchPrefix": "pilot/night-1" },
   "worker": { "piExecutable": "/abs/bin/pi", "model": "aperture/neuralwatt/kimi-k3", "thinking": "high" },
   "reviewer": { "model": "openai-codex/gpt-6-astra",
-                "fallbacks": ["aperture/neuralwatt/glm-5.3", "aperture/synthetic/hf:zai-org/GLM-5.3"] },
+                "fallbacks": ["aperture/neuralwatt/glm-5.3"] },
   "publication": { "remote": "origin", "url": "git@github.com:owner/repo.git",
                    "repo": "owner/repo", "gh": "/abs/bin/gh" }
 }

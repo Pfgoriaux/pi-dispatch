@@ -9,58 +9,27 @@ import type { AgentConfig } from "../src/types.ts";
 
 const now = 2_000_000_000_000;
 const nw = "aperture/neuralwatt/kimi-k3";
-const sy = "aperture/synthetic/hf:moonshotai/Kimi-K3";
 const codexSol = "openai-codex/gpt-6.1-sol";
 const candidate = (modelSpec: string): RankedCandidate => ({ modelSpec, thinking: "high", entry: { provider: "", model: modelSpec, thinking: "high", weight: 1 } });
 const snapshot = (...values: number[]): QuotaSnapshot => ({ updatedAt: now, limits: values.map((remaining, i) => ({ label: i ? "week" : "5h", remaining, unit: "%", renewal: "refill", at: now + 60_000 })) });
-const routes = withProviderFallbacks([candidate(nw)]);
 const specs = (cs: RankedCandidate[]) => cs.map(c => c.modelSpec);
 
-for (const [weekly, expected] of [[100, sy], [5, nw]] as const) {
-	test(`Synthetic 5h full, weekly ${weekly}%: choose ${expected}`, () => {
-		const quotas = new Map([["synthetic", snapshot(100, weekly)], ["neuralwatt", snapshot(60)]]);
-		const result = steerByQuota(routes, quotas, now);
-		assert.equal(result.candidates[0].modelSpec, expected);
-		assert.equal(result.candidates.at(-1)?.modelSpec, codexSol);
-		assert.deepEqual(specs(routes), [nw, sy, codexSol], "input stays untouched");
-		assert.equal(result.reasons.length, expected === sy ? 1 : 0);
-	});
-}
-
-test("healthy tie spends Synthetic first; exhausted tie preserves order", () => {
-	for (const value of [100, 0]) {
-		const result = steerByQuota(routes, new Map([["synthetic", snapshot(value)], ["neuralwatt", snapshot(value)]]), now);
-		assert.equal(result.candidates[0].modelSpec, value ? sy : nw);
-	}
-});
-
 test("unknown, stale, future and expired reset snapshots leave existing ordering alone", () => {
+	const routes = withProviderFallbacks([candidate("anthropic/claude-opus-5-5")]);
 	for (const value of [undefined, { ...snapshot(20), updatedAt: now - 180_001 }, { ...snapshot(20), updatedAt: now + 5001 },
 		{ updatedAt: now, limits: [{ label: "energy", remaining: 20, unit: "%" as const, at: now, renewal: "reset" as const }] }]) {
-		const quotas = new Map([["synthetic", snapshot(100, 100)]]);
-		if (value) quotas.set("neuralwatt", value);
+		const quotas = new Map([["codex", snapshot(100, 100)]]);
+		if (value) quotas.set("claude", value);
 		assert.deepEqual(steerByQuota(routes, quotas, now), { candidates: routes, reasons: [] });
 	}
 });
 
-test("DeepSeek 4.1 Flash steers between NeuralWatt and Synthetic; Haiku stays behind both", () => {
-	const dnw = "aperture/neuralwatt/deepseek-v4.1-flash";
-	const dsy = "aperture/synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash";
-	const deepseek = withProviderFallbacks([candidate(dnw)]);
-	for (const [synthetic, neuralwatt, first, second] of [[100, 60, dsy, dnw], [5, 60, dnw, dsy]] as const) {
-		const result = steerByQuota(deepseek, new Map([["synthetic", snapshot(synthetic)], ["neuralwatt", snapshot(neuralwatt)]]), now);
-		assert.deepEqual(specs(result.candidates), [first, second, "anthropic/claude-haiku-5-5", "anthropic-2/claude-haiku-5-5", codexSol]);
-	}
-});
-
-test("quota never promotes another model family", () => {
+test("Neuralwatt routes keep roster order regardless of quota", () => {
 	const glm = "aperture/neuralwatt/glm-5.3";
-	const glmSy = "aperture/synthetic/hf:zai-org/GLM-5.3";
 	const mixed = withProviderFallbacks([candidate(glm), candidate(nw)]);
-	const result = steerByQuota(mixed, new Map([["synthetic", snapshot(100)], ["neuralwatt", snapshot(0)]]), now);
-	assert.deepEqual(specs(result.candidates), [glmSy, glm, sy, nw, codexSol]);
-	assert.equal(result.candidates[2].thinking, "high");
-	assert.deepEqual(specs(withProviderFallbacks([candidate(glm)])), [glm, glmSy, codexSol]);
+	const result = steerByQuota(mixed, new Map([["neuralwatt", snapshot(0)], ["codex", snapshot(100)]]), now);
+	assert.deepEqual(specs(result.candidates), [glm, nw, codexSol]);
+	assert.deepEqual(result.reasons, []);
 });
 
 test("physical quotas use normalized percentages; zero blocked key dominates", () => {
@@ -106,7 +75,6 @@ test("v3 reader rejects corrupt or malformed data and does not require known pro
 	assert.deepEqual(readQuotaSnapshot("new-provider", dir, now), snapshot(70));
 	assert.equal(readQuotaSnapshot("../new-provider", dir, now), undefined);
 	assert.equal(validQuotaSnapshot({ ...snapshot(50), limits: [{ label: "bad\nlabel", remaining: 50, unit: "%" }] }, now), false);
-	assert.equal(quotaProvider(sy), "synthetic");
 	assert.equal(quotaProvider(nw), "neuralwatt");
 	assert.equal(quotaProvider(codexSol), "codex");
 });

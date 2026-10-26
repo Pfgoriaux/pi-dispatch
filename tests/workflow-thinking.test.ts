@@ -89,7 +89,7 @@ console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content
 		const scenarios = [
 			{ name: "feature_plan", params: { idea: "fixture" }, expected: [inv, "low", inv, inv] },
 			{ name: "council", params: { question: "fixture" }, expected: [inv, inv, inv] },
-			{ name: "pr_review", params: { pr: "HEAD^...HEAD", intent: "fixture", fix: true }, expected: [inv, inv, "low", "medium", inv, inv] },
+			{ name: "pr_review", params: { pr: "HEAD^...HEAD", intent: "fixture", fix: true }, expected: [inv, inv, "low", "medium", inv, inv, inv] },
 		];
 		for (const { name, params, expected } of scenarios) {
 			const result = await registered.get(name)!.execute("test", { ...params, thinking, herdr: false }, undefined, undefined, ctx as any);
@@ -100,7 +100,7 @@ console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content
 			assert.deepEqual(items.map(r => r.thinking), expected, name);
 			assert.match(text(result), /[Ee]ffort:/);
 		}
-		assert.equal(calls.length, 12);
+		assert.equal(calls.length, 13);
 		// The pr_review fix writer is a child process, not an SDK call.
 		assert.deepEqual(calls.map(c => c.thinking).sort(), scenarios.flatMap(s => s.expected).slice(0, -1).sort());
 	});

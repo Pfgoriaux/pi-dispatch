@@ -104,7 +104,7 @@ test("internal cutoff can fail over an explicit route and accounts for both atte
 		registry, fallbackModel: undefined, modelSpec: "aperture/neuralwatt/kimi-k3",
 	});
 	assert.equal(result.status, "ok");
-	assert.equal(result.model, "aperture/synthetic/hf:moonshotai/Kimi-K3");
+	assert.equal(result.model, "openai-codex/gpt-6.1-sol");
 	assert.equal(result.text, "RECOVERED");
 	assert.equal(result.attempts, 2);
 	assert.equal(result.usage?.totalTokens, 8);

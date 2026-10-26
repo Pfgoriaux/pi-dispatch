@@ -37,7 +37,7 @@ test("worker adapts the resolved model on every fallback without changing role o
     getApiKeyForProvider: async () => undefined,
   } as unknown as ModelRegistry;
   // Resolved fallback deliberately differs in family to detect stale adaptation.
-  registry.find = ((provider: string, id: string) => ({provider, reasoning: true, id: id.includes("synthetic") ? "gpt-6-astra" : id})) as ModelRegistry["find"];
+  registry.find = ((provider: string, id: string) => ({provider, reasoning: true, id: id.includes("gpt-6.1-sol") ? "gpt-6-astra" : id})) as ModelRegistry["find"];
   const result = await runWorker({
     name: "scout", description: "fixture", tools: ["read"], model: "inherit",
     systemPrompt: "Read-only scout role", source: "bundled", filePath: "fixture",
