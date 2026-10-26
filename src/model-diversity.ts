@@ -1,13 +1,7 @@
-import { quotaFamily, sameModelId } from "./roster.ts";
+import { sameModelId } from "./roster.ts";
 
-/** Provider aliases and Claude accounts for the same model count as one voice; Opus and Astra do not. */
-export function modelIdentity(spec: string): string {
-	const route = sameModelId(spec);
-	if (route.startsWith("neuralwatt/") || route.startsWith("synthetic/")) {
-		return quotaFamily(spec) ?? route;
-	}
-	return route;
-}
+/** Claude accounts and the Aperture prefix count as one voice; Opus and Astra do not. */
+export const modelIdentity = sameModelId;
 
 /** One pool per parallel phase. Claims remain held after failure or completion. */
 export class ModelDiversity {

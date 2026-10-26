@@ -47,7 +47,6 @@ function envModel(name: string): string | undefined {
 /** Literal defaults; Hetzner drafting guidance must not inherit profile overrides. */
 export const KIMI_MODEL = "aperture/neuralwatt/kimi-k3";
 export const GLM_MODEL = "aperture/neuralwatt/glm-5.3";
-export const GLM_FALLBACK_MODEL = "aperture/synthetic/hf:zai-org/GLM-5.3";
 
 export const PROFILES: Record<ProfileTier, ModelProfile> = {
 	// CHEAP: Simple tasks, file discovery, grep-and-report, boilerplate.
@@ -96,12 +95,9 @@ export const REVIEW_FALLBACK_MODELS: readonly string[] = ["anthropic/claude-sonn
 
 /**
  * Last resort for every feature_plan step, tried after the step's own chain:
- * GLM 5.3 on Neuralwatt, then on Synthetic.
+ * GLM 5.3 on Neuralwatt.
  */
-export const WORKFLOW_FALLBACK_MODELS: readonly string[] = [
-	GLM_MODEL,
-	GLM_FALLBACK_MODEL,
-];
+export const WORKFLOW_FALLBACK_MODELS: readonly string[] = [GLM_MODEL];
 
 /** Never used by pr_review or feature_plan steps, including as Codex's terminal fallback. */
 export const WORKFLOW_EXCLUDED_MODELS: readonly string[] = ["openai-codex/gpt-6.1-sol"];

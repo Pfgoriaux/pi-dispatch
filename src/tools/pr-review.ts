@@ -355,7 +355,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					await progress.open(cwd, signal);
 					// The two code reviewers share one pool so fallback never gives them the same model.
 					// Pre-mortem and slop stay out of it: they must not take a reviewer's last fallback.
-					// Every step stays on Anthropic and OpenAI: no Neuralwatt or Synthetic fallback.
+					// Every step stays on Anthropic and OpenAI: no Neuralwatt fallback.
 					const pool = new ModelDiversity();
 					const runStep = (
 						index: number,

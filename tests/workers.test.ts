@@ -85,29 +85,22 @@ test("ranked roster retains provider/model names containing slashes", () => {
 	);
 });
 
-test("Neuralwatt routes retry the same model via Aperture Synthetic before changing families", () => {
+test("Neuralwatt routes keep roster order, then fall back to Codex 6.1 Sol", () => {
 	const entries = [
 		{ provider: "aperture", model: "neuralwatt/kimi-k3", thinking: "low", weight: 3 },
 		{ provider: "neuralwatt", model: "glm-5.3", thinking: "high", weight: 2 },
-		{ provider: "aperture", model: "synthetic/hf:moonshotai/Kimi-K3", thinking: "low", weight: 1 },
 	];
 	const ranked = rankCandidates(entries);
 	assert.deepEqual(ranked.map(c => c.modelSpec), [
-		"aperture/neuralwatt/kimi-k3", "aperture/synthetic/hf:moonshotai/Kimi-K3",
-		"neuralwatt/glm-5.3", "aperture/synthetic/hf:zai-org/GLM-5.3",
-		"openai-codex/gpt-6.1-sol",
+		"aperture/neuralwatt/kimi-k3", "neuralwatt/glm-5.3", "openai-codex/gpt-6.1-sol",
 	]);
-	assert.equal(ranked[1].thinking, "low");
-	assert.equal(ranked[1].entry.provider, "aperture");
-	assert.equal(ranked[1].entry.model, "synthetic/hf:moonshotai/Kimi-K3");
+	assert.equal(ranked[2].thinking, "low");
 	assert.deepEqual(withProviderFallbacks(ranked), ranked, "expansion is idempotent");
 	markCooldown("aperture", "neuralwatt/kimi-k3");
-	assert.equal(rankCandidates(entries)[0].modelSpec, "aperture/synthetic/hf:moonshotai/Kimi-K3");
-	markCooldown("aperture", "synthetic/hf:moonshotai/Kimi-K3");
 	assert.equal(rankCandidates(entries)[0].modelSpec, "neuralwatt/glm-5.3");
 });
 
-test("GLM 5.3 retries Aperture Synthetic, then the Codex fallback", () => {
+test("GLM 5.3 falls back to Codex 6.1 Sol", () => {
 	const candidates: RankedCandidate[] = [{
 		modelSpec: "aperture/neuralwatt/glm-5.3",
 		thinking: "high",
@@ -115,22 +108,19 @@ test("GLM 5.3 retries Aperture Synthetic, then the Codex fallback", () => {
 	}];
 	assert.deepEqual(withProviderFallbacks(candidates).map((c) => c.modelSpec), [
 		"aperture/neuralwatt/glm-5.3",
-		"aperture/synthetic/hf:zai-org/GLM-5.3",
 		"openai-codex/gpt-6.1-sol",
 	]);
 });
 
-test("DeepSeek 4.1 Flash pairs NeuralWatt with Synthetic, then Haiku 5.5, then 6.1 Sol", () => {
-	const nw = "aperture/neuralwatt/deepseek-v4.1-flash";
-	const sy = "aperture/synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash";
-	for (const [modelSpec, peer] of [["neuralwatt/deepseek-v4.1-flash", sy], [nw, sy], [sy, nw]]) {
+test("DeepSeek 4.1 Flash falls back to Haiku 5.5, then 6.1 Sol", () => {
+	for (const modelSpec of ["neuralwatt/deepseek-v4.1-flash", "aperture/neuralwatt/deepseek-v4.1-flash"]) {
 		const routes = withProviderFallbacks([{ modelSpec, thinking: "off", entry: { provider: "test", model: modelSpec, thinking: "off", weight: 1 } }]);
-		assert.deepEqual(routes.map((c) => c.modelSpec), [modelSpec, peer, "anthropic/claude-haiku-5-5", "anthropic-2/claude-haiku-5-5", "openai-codex/gpt-6.1-sol"]);
+		assert.deepEqual(routes.map((c) => c.modelSpec), [modelSpec, "anthropic/claude-haiku-5-5", "anthropic-2/claude-haiku-5-5", "openai-codex/gpt-6.1-sol"]);
 		assert.deepEqual(withProviderFallbacks(routes), routes, "expansion is idempotent");
 	}
 });
 
-test("unmapped models and other providers do not invent Synthetic routes", () => {
+test("unmapped models and other providers get no fallback routes", () => {
 	for (const modelSpec of ["neuralwatt/unknown", "neuralwatt/glm-5.2", "neuralwatt/glm-5.3-flash", "other/kimi-k3", "aperture/neuralwatt/kimi-k3-fast"]) {
 		const candidates = [{ modelSpec, thinking: "low", entry: { provider: "test", model: modelSpec, thinking: "low", weight: 1 } }];
 		assert.deepEqual(withProviderFallbacks(candidates), candidates);
@@ -138,7 +128,7 @@ test("unmapped models and other providers do not invent Synthetic routes", () =>
 });
 
 for (const source of ["explicit", "inherit", "frontmatter"] as const) {
-	test(`${source} Aperture failure tries Synthetic through Aperture; abort stops further work`, async (t) => {
+	test(`${source} Aperture failure tries Codex 6.1 Sol; abort stops further work`, async (t) => {
 		t.mock.method(ModelRuntime, "create", async () => { throw new Error("402 payment_required"); });
 		const controller = new AbortController();
 		const attempts: string[] = [];
@@ -154,9 +144,9 @@ for (const source of ["explicit", "inherit", "frontmatter"] as const) {
 				if (attempt === 2) controller.abort();
 			},
 		});
-		assert.deepEqual(attempts, ["aperture/neuralwatt/kimi-k3", "aperture/synthetic/hf:moonshotai/Kimi-K3"]);
+		assert.deepEqual(attempts, ["aperture/neuralwatt/kimi-k3", "openai-codex/gpt-6.1-sol"]);
 		assert.equal(result.status, "aborted");
-		assert.equal(result.model, "aperture/synthetic/hf:moonshotai/Kimi-K3");
+		assert.equal(result.model, "openai-codex/gpt-6.1-sol");
 	});
 }
 

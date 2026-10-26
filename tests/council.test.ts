@@ -91,26 +91,27 @@ test("three distinct opinions see the same task, not each other's answers; no fo
 	assert.match(JSON.stringify(result.content), /3\/3 opinions/);
 });
 
-test("failed seats never borrow another seat or Sol; GLM may retry its other provider", async (t) => {
-	const { calls, run } = setup(t, spec => spec === "aperture/synthetic/hf:zai-org/GLM-5.3" ? "Only GLM answered" : undefined);
+test("failed seats never borrow another seat or Sol; GLM runs only on Neuralwatt", async (t) => {
+	const { calls, run } = setup(t, spec => spec === "aperture/neuralwatt/glm-5.3" ? "Only GLM answered" : undefined);
 	const result = await run();
-	// Opus on both Claude accounts, Astra, then GLM on both providers.
-	assert.equal(calls.length, 5);
+	// Opus on both Claude accounts, Astra, then GLM.
+	assert.equal(calls.length, 4);
 	assert.equal(result.details.items.filter(item => item.status === "ok").length, 1);
-	assert.equal(result.details.items[2].model, "aperture/synthetic/hf:zai-org/GLM-5.3");
-	assert.equal(result.details.items[2].attempts, 2);
-	assert.equal(result.usage?.cost.total, 0.05);
+	assert.equal(result.details.items[2].model, "aperture/neuralwatt/glm-5.3");
+	assert.equal(result.details.items[2].attempts, 1);
+	assert.equal(result.usage?.cost.total, 0.04);
 	const text = JSON.stringify(result.content);
 	assert.match(text, /1\/3 opinions/);
 	assert.match(text, /Failed attempts/);
 	assert.ok(!calls.some(call => call.spec.includes("sol")));
 });
 
-test("Kimi replaces GLM and retries only Kimi's provider counterpart", async (t) => {
+test("Kimi replaces GLM and never retries another model", async (t) => {
 	const { calls, run } = setup(t, spec => spec === "aperture/neuralwatt/kimi-k3" ? undefined : "Answer");
 	const result = await run({ third: "kimi-k3" });
-	assert.equal(result.details.items[2].model, "aperture/synthetic/hf:moonshotai/Kimi-K3");
-	assert.equal(calls.length, 4);
+	assert.equal(result.details.items[2].status, "error");
+	assert.equal(result.details.items[2].model, "aperture/neuralwatt/kimi-k3");
+	assert.equal(calls.length, 3);
 	assert.ok(!calls.some(call => /glm|sol/.test(call.spec)));
 });
 
@@ -147,14 +148,14 @@ test("model allowlist checks resolved identity, not just the requested spec", as
 });
 
 test("long fallback errors cannot erase the successful opinion", async (t) => {
-	const { run } = setup(t, spec => spec === "aperture/neuralwatt/glm-5.3" ? undefined : "PRESERVED-OPINION", "x".repeat(20000));
+	const { run } = setup(t, spec => spec === "anthropic/claude-opus-5-5" ? undefined : "PRESERVED-OPINION", "x".repeat(20000));
 	const result = await run();
-	const third = result.content[3];
-	assert.equal(third.type, "text");
-	if (third.type !== "text") return;
-	assert.match(third.text, /PRESERVED-OPINION/);
-	assert.match(third.text, /Failed attempts/);
-	assert.ok(Buffer.byteLength(third.text) < 1500);
+	const opus = result.content[1];
+	assert.equal(opus.type, "text");
+	if (opus.type !== "text") return;
+	assert.match(opus.text, /PRESERVED-OPINION/);
+	assert.match(opus.text, /Failed attempts/);
+	assert.ok(Buffer.byteLength(opus.text) < 1500);
 	assert.equal(result.details.truncated, true);
 });
 
@@ -168,7 +169,6 @@ test("cancellation during a model request settles every seat without new fallbac
 	assert.match(JSON.stringify(result.content), /Council aborted/);
 	assert.ok(result.details.items.every(item => item.status === "aborted"));
 	assert.ok(calls.length > 0 && calls.length <= 3);
-	assert.ok(!calls.some(call => call.spec.includes("synthetic")));
 });
 
 function claudeQuotas(t: TestContext, claude: number, claude2: number) {

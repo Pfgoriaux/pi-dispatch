@@ -16,10 +16,9 @@ import { isolateAgentDir } from "./isolated-agent-dir.ts";
 isolateAgentDir();
 
 const codexSol = "openai-codex/gpt-6.1-sol";
-const synthetic = "aperture/synthetic/hf:moonshotai/Kimi-K3";
 const neuralwatt = "aperture/neuralwatt/kimi-k3";
 const agent: AgentConfig = {
-	name: "fallback-fixture", description: "test", tools: [], model: synthetic,
+	name: "fallback-fixture", description: "test", tools: [], model: neuralwatt,
 	thinking: "high", systemPrompt: "fixture", source: "bundled", filePath: "fixture",
 };
 const candidate = (modelSpec: string): RankedCandidate => ({
@@ -27,73 +26,60 @@ const candidate = (modelSpec: string): RankedCandidate => ({
 });
 
 for (const prefix of ["", "aperture/"]) {
-	for (const [id, counterpart] of [["hf:moonshotai/Kimi-K3", "kimi-k3"]]) {
-		test(`${prefix}Synthetic ${id} retries Neuralwatt then Codex 6.1 Sol once`, () => {
-			const first = `${prefix}synthetic/${id}`;
-			const routes = withProviderFallbacks([candidate(first)]);
-			assert.deepEqual(routes.map(c => c.modelSpec), [first, `aperture/neuralwatt/${counterpart}`, codexSol]);
-			assert.ok(routes.every(c => c.thinking === "high"));
-			assert.deepEqual(withProviderFallbacks(routes), routes);
-		});
-	}
+	test(`${prefix}Neuralwatt Kimi K3 falls back to Codex 6.1 Sol once`, () => {
+		const first = `${prefix}neuralwatt/kimi-k3`;
+		const routes = withProviderFallbacks([candidate(first)]);
+		assert.deepEqual(routes.map(c => c.modelSpec), [first, codexSol]);
+		assert.ok(routes.every(c => c.thinking === "high"));
+		assert.deepEqual(withProviderFallbacks(routes), routes);
+	});
 }
 
-test("explicit counterpart effort survives fallback expansion in either direction", () => {
-	for (const [first, second] of [[neuralwatt, synthetic], [synthetic, neuralwatt]]) {
-		const configured = { ...candidate(second), thinking: "off", entry: { ...candidate(second).entry, thinking: "off" } };
-		const routes = withProviderFallbacks([candidate(first), configured]);
-		assert.equal(routes[1], configured);
-		assert.deepEqual(withProviderFallbacks(routes), routes);
-	}
-});
-
 test("6.1 Sol stays last across model families and explicit duplicates", () => {
-	const routes = withProviderFallbacks([candidate(neuralwatt), candidate(codexSol), candidate("neuralwatt/glm-5.3"), candidate(synthetic)]);
+	const routes = withProviderFallbacks([candidate(neuralwatt), candidate(codexSol), candidate("neuralwatt/glm-5.3")]);
 	assert.equal(routes.at(-1)?.modelSpec, codexSol);
 	assert.equal(routes.filter(c => c.modelSpec === codexSol).length, 1);
 	assert.deepEqual(withProviderFallbacks(routes), routes);
 });
 
-for (const first of [synthetic, neuralwatt]) {
-	for (const allFail of [false, true]) {
-		test(`SDK ${first}: exhausted credits ${allFail ? "stop after 6.1 Sol" : "recover on 6.1 Sol"}`, { timeout: 10000 }, async (t) => {
-			t.mock.method(ModelRuntime.prototype, "hasConfiguredAuth", () => true);
-			const calls: string[] = [];
-			t.mock.method(ModelRuntime.prototype, "streamSimple", (model: Model<Api>) => {
-				const selected = `${model.provider}/${model.id}`;
-				calls.push(selected);
-				const failed = allFail || selected !== codexSol;
-				const message: AssistantMessage = {
-					role: "assistant", api: model.api, provider: model.provider, model: model.id,
-					content: failed ? [] : [{ type: "text", text: "RECOVERED" }],
-					stopReason: failed ? "error" : "stop", errorMessage: failed ? "402 insufficient credits" : undefined,
-					timestamp: Date.now(),
-					usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-				};
-				const stream = createAssistantMessageEventStream();
-				if (failed) stream.push({ type: "error", reason: "error", error: message });
-				else stream.push({ type: "done", reason: "stop", message });
-				return stream;
-			});
-			const registry = {
-				find: (provider: string, id: string) => ({
-					provider, id, api: "openai-completions", name: id, reasoning: true, input: ["text"],
-					contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				}),
-				getRegisteredNativeProvider: () => undefined,
-				getApiKeyForProvider: async () => undefined,
-			} as unknown as ModelRegistry;
-			const result = await runWorker(agent, "test", { registry, fallbackModel: undefined, modelSpec: first });
-			assert.deepEqual(calls, [first, first === synthetic ? neuralwatt : synthetic, codexSol]);
-			assert.equal(result.status, allFail ? "error" : "ok");
-			assert.equal(result.model, codexSol);
-			assert.equal(result.attempts, 3);
-			assert.equal(result.usage?.totalTokens, 6);
-			if (allFail) assert.match(result.error!, /402 insufficient credits/);
-			else assert.equal(result.text, "RECOVERED");
+for (const allFail of [false, true]) {
+	test(`SDK ${neuralwatt}: exhausted credits ${allFail ? "stop after 6.1 Sol" : "recover on 6.1 Sol"}`, { timeout: 10000 }, async (t) => {
+		t.mock.method(ModelRuntime.prototype, "hasConfiguredAuth", () => true);
+		const calls: string[] = [];
+		t.mock.method(ModelRuntime.prototype, "streamSimple", (model: Model<Api>) => {
+			const selected = `${model.provider}/${model.id}`;
+			calls.push(selected);
+			const failed = allFail || selected !== codexSol;
+			const message: AssistantMessage = {
+				role: "assistant", api: model.api, provider: model.provider, model: model.id,
+				content: failed ? [] : [{ type: "text", text: "RECOVERED" }],
+				stopReason: failed ? "error" : "stop", errorMessage: failed ? "402 insufficient credits" : undefined,
+				timestamp: Date.now(),
+				usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			};
+			const stream = createAssistantMessageEventStream();
+			if (failed) stream.push({ type: "error", reason: "error", error: message });
+			else stream.push({ type: "done", reason: "stop", message });
+			return stream;
 		});
-	}
+		const registry = {
+			find: (provider: string, id: string) => ({
+				provider, id, api: "openai-completions", name: id, reasoning: true, input: ["text"],
+				contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			getRegisteredNativeProvider: () => undefined,
+			getApiKeyForProvider: async () => undefined,
+		} as unknown as ModelRegistry;
+		const result = await runWorker(agent, "test", { registry, fallbackModel: undefined, modelSpec: neuralwatt });
+		assert.deepEqual(calls, [neuralwatt, codexSol]);
+		assert.equal(result.status, allFail ? "error" : "ok");
+		assert.equal(result.model, codexSol);
+		assert.equal(result.attempts, 2);
+		assert.equal(result.usage?.totalTokens, 4);
+		if (allFail) assert.match(result.error!, /402 insufficient credits/);
+		else assert.equal(result.text, "RECOVERED");
+	});
 }
 
 for (const scenario of ["recover", "exhaust", "tools-started", "abort", "child-abort"] as const) {
@@ -134,7 +120,7 @@ process.exitCode = failed ? 1 : 0;
 		});
 		const aborted = scenario === "abort" || scenario === "child-abort";
 		const stopsEarly = scenario === "tools-started" || aborted;
-		assert.deepEqual(calls, stopsEarly ? [synthetic] : [synthetic, neuralwatt, codexSol]);
+		assert.deepEqual(calls, stopsEarly ? [neuralwatt] : [neuralwatt, codexSol]);
 		assert.equal(result.attempts, calls.length);
 		assert.equal(result.status, scenario === "recover" ? "ok" : aborted ? "aborted" : "error");
 		assert.equal(result.model, calls.at(-1));
@@ -199,14 +185,10 @@ test("Sonnet ahead of other families keeps Sol as the single last fallback", () 
 	assert.deepEqual(routes.map(c => c.modelSpec), [sonnet, sonnet2, opus, opus2, astra, codexSol]);
 });
 
-test("mixed top-tier and NeuralWatt/Synthetic get appropriate counterparts", () => {
+test("mixed top-tier and Neuralwatt get appropriate fallbacks", () => {
 	const routes = withProviderFallbacks([candidate(opus), candidate(neuralwatt)]);
-	// Opus → Astra, NeuralWatt → Synthetic, then 6.1 Sol
-	assert.ok(routes.some(c => c.modelSpec === opus));
-	assert.ok(routes.some(c => c.modelSpec === astra));
-	assert.ok(routes.some(c => c.modelSpec === neuralwatt));
-	assert.ok(routes.some(c => c.modelSpec === synthetic));
-	assert.equal(routes.at(-1)?.modelSpec, codexSol);
+	// Opus → Claude 2 → Astra, Neuralwatt, then 6.1 Sol
+	assert.deepEqual(routes.map(c => c.modelSpec), [opus, opus2, astra, neuralwatt, codexSol]);
 });
 
 /** Mock the SDK so `failing` models error with a non-retryable credit failure. */
@@ -257,7 +239,7 @@ for (const [pinned, peer] of [[astra, opus], [opus, astra]]) {
 
 test("parallel credit fallbacks use Sol only once, then continue with fewer workers", async (t) => {
 	const calls: string[] = [];
-	const registry = mockModels(t, [opus, opus2, astra, neuralwatt, synthetic], calls);
+	const registry = mockModels(t, [opus, opus2, astra, neuralwatt], calls);
 	const diversity = new ModelDiversity();
 	const results = await Promise.all([opus, astra, neuralwatt].map(modelSpec => runWorker(agent, "test", {
 		registry, fallbackModel: undefined, modelSpec, claimModel: diversity.worker(),
@@ -268,12 +250,12 @@ test("parallel credit fallbacks use Sol only once, then continue with fewer work
 	assert.equal(calls.filter(model => model === opus2).length, 1, "same owner can retry the other Claude account");
 	assert.equal(calls.filter(model => model === astra).length, 1);
 	assert.equal(calls.filter(model => model === neuralwatt).length, 1);
-	assert.equal(calls.filter(model => model === synthetic).length, 1, "same owner can retry the other provider");
 	assert.equal(results.reduce((sum, r) => sum + (r.usage?.totalTokens ?? 0), 0), calls.length * 2);
 	assert.ok(results.filter(r => r.status !== "ok").every(r => r.failedAttempts?.length));
 });
 
-test("provider aliases cannot supply a second voice, but a new phase can reuse models", async (t) => {
+test("gateway aliases cannot supply a second voice, but a new phase can reuse models", async (t) => {
+	const direct = "neuralwatt/kimi-k3";
 	const calls: string[] = [];
 	const registry = mockModels(t, [], calls);
 	const diversity = new ModelDiversity();
@@ -282,17 +264,17 @@ test("provider aliases cannot supply a second voice, but a new phase can reuse m
 	});
 	const warnings: string[] = [];
 	const second = await runWorker(agent, "test", {
-		registry, fallbackModel: undefined, modelSpec: synthetic,
+		registry, fallbackModel: undefined, modelSpec: direct,
 		claimModel: diversity.worker(), onWarning: warning => warnings.push(warning),
 	});
 	assert.equal(first.model, neuralwatt);
 	assert.equal(second.model, codexSol);
 	assert.deepEqual(calls, [neuralwatt, codexSol]);
-	assert.equal(warnings.filter(w => w.includes("already used")).length, 2);
+	assert.equal(warnings.filter(w => w.includes("already used")).length, 1);
 	const council = await runWorker(agent, "test", {
-		registry, fallbackModel: undefined, modelSpec: synthetic, claimModel: new ModelDiversity().worker(),
+		registry, fallbackModel: undefined, modelSpec: direct, claimModel: new ModelDiversity().worker(),
 	});
-	assert.equal(council.model, synthetic);
+	assert.equal(council.model, direct);
 });
 
 test("excluding every candidate fails without calling a model", async (t) => {
@@ -307,30 +289,29 @@ test("excluding every candidate fails without calling a model", async (t) => {
 });
 
 const glmNeuralwatt = "aperture/neuralwatt/glm-5.3";
-const glmSynthetic = "aperture/synthetic/hf:zai-org/GLM-5.3";
-const lastResorts = [glmNeuralwatt, glmSynthetic];
+const lastResorts = [glmNeuralwatt];
 
-test("workflow last resorts run GLM on Neuralwatt, then Synthetic, with Sol excluded", async (t) => {
+test("workflow last resorts run GLM on Neuralwatt with Sol excluded", async (t) => {
 	const calls: string[] = [];
-	const registry = mockModels(t, [opus, opus2, glmNeuralwatt], calls);
+	const registry = mockModels(t, [opus, opus2], calls);
 	const result = await runWorker(agent, "test", {
 		registry, fallbackModel: undefined, modelSpec: opus, excludeModels: [astra, codexSol], fallbackModels: lastResorts,
 	});
-	assert.deepEqual(calls, [opus, opus2, glmNeuralwatt, glmSynthetic]);
+	assert.deepEqual(calls, [opus, opus2, glmNeuralwatt]);
 	assert.equal(result.status, "ok");
-	assert.equal(result.model, glmSynthetic);
+	assert.equal(result.model, glmNeuralwatt);
 });
 
 test("workflow last resorts are not retried when already in the chain", async (t) => {
 	const calls: string[] = [];
-	const registry = mockModels(t, [glmNeuralwatt, glmSynthetic, codexSol], calls);
+	const registry = mockModels(t, [glmNeuralwatt, codexSol], calls);
 	await runWorker(agent, "test", {
 		registry, fallbackModel: undefined, modelSpec: glmNeuralwatt, fallbackModels: lastResorts,
 	});
-	assert.deepEqual(calls, [glmNeuralwatt, glmSynthetic, codexSol]);
+	assert.deepEqual(calls, [glmNeuralwatt, codexSol]);
 });
 
-test("parallel reviewers cannot both fall back to GLM through different providers", async (t) => {
+test("parallel reviewers cannot both fall back to GLM", async (t) => {
 	const calls: string[] = [];
 	const registry = mockModels(t, [opus, opus2, astra, codexSol], calls);
 	const pool = new ModelDiversity();
@@ -340,5 +321,4 @@ test("parallel reviewers cannot both fall back to GLM through different provider
 	})));
 	assert.deepEqual([first.status, second.status].sort(), ["error", "ok"]);
 	assert.equal(calls.filter(model => model === glmNeuralwatt).length, 1);
-	assert.equal(calls.filter(model => model === glmSynthetic).length, 0);
 });

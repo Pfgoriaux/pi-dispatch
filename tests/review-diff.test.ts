@@ -303,7 +303,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 	// Sol is excluded from every workflow step.
 	const noFinal = await runPlan();
 	assert.ok(!calls.some(c => c.step === "FINAL-TEXT" && c.provider.startsWith("anthropic")));
-	assert.deepEqual(calls.filter(c => c.step === "FINAL-TEXT").map(c => c.provider), ["openai-codex", "aperture", "aperture"]);
+	assert.deepEqual(calls.filter(c => c.step === "FINAL-TEXT").map(c => c.provider), ["openai-codex", "aperture"]);
 	assert.equal(noFinal.details.aggregated, false);
 	assert.match(noFinal.content[0].text, /## Architect draft\n\nDRAFT-TEXT[\s\S]*PREMORTEM-TEXT[\s\S]*CHALLENGE-TEXT/);
 

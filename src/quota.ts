@@ -6,7 +6,7 @@ import { quotaFamily, type RankedCandidate } from "./roster.ts";
 
 
 /** Providers whose quota snapshots are read. */
-const ALL_PROVIDERS = ["codex", "synthetic", "neuralwatt", "claude", "claude2"] as const;
+const ALL_PROVIDERS = ["codex", "claude", "claude2"] as const;
 
 interface Limit {
 	label: string;
@@ -104,7 +104,7 @@ export function steerByQuota(
 		if (family) groups.set(family, [...(groups.get(family) ?? []), index]);
 	}
 	const reasons: string[] = [];
-	for (const [family, indices] of groups.entries()) {
+	for (const indices of groups.values()) {
 		// An unknown reading is neither free capacity nor an exhausted subscription: it keeps its slot.
 		const peers = indices.map(index => {
 			const candidate = candidates[index];
@@ -113,14 +113,9 @@ export function steerByQuota(
 		}).filter(p => p.headroom !== undefined);
 		if (peers.length < 2) continue;
 		const slots = peers.map(p => p.index);
+		// Spend Codex first on a healthy tie.
 		peers.sort((a, b) => b.headroom! - a.headroom!
-			// For NeuralWatt/Synthetic: spend Synthetic first on a healthy tie.
-			// For Anthropic/Codex peers (Opus/Astra, Sonnet/Sol): spend Codex first on a healthy tie.
-			|| (a.headroom! >= 50 ? (
-				family === "top-tier" || family === "mid-tier"
-					? Number(b.provider === "codex") - Number(a.provider === "codex")
-					: Number(b.provider === "synthetic") - Number(a.provider === "synthetic")
-			) : 0));
+			|| (a.headroom! >= 50 ? Number(b.provider === "codex") - Number(a.provider === "codex") : 0));
 		if (peers.every((p, i) => p.index === slots[i])) continue;
 		slots.forEach((index, i) => { ordered[index] = peers[i].candidate; });
 		reasons.push(`Quota routing: ${peers[0].candidate.modelSpec} preferred (${peers.map(p => `${p.provider} ${Math.floor(p.headroom!)}% bottleneck remaining`).join("; ")}).`);

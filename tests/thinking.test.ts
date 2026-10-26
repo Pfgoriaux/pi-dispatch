@@ -65,7 +65,7 @@ test("explicit efforts need exact support; defaults rise to the nearest supporte
 	assert.throws(() => resolveEffective("xhigh", { ...model, thinkingLevelMap: { xhigh: null, max: "max" } }), /Unsupported thinking xhigh.*supported choices:.*high, max/);
 	assert.throws(() => resolveEffective("max", { ...model, thinkingLevelMap: undefined }), /supported choices: off, minimal, low, medium, high\./);
 	assert.throws(() => resolveEffective("high", { ...model, thinkingLevelMap: { high: null, max: "max" } }), /Unsupported thinking high/);
-	// A role default crosses a model without that exact level (GLM: medium → high; Synthetic GLM: low → high).
+	// A role default crosses a model without that exact level (GLM: medium → high; a model without low: low → high).
 	const glm = { ...model, thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" } } as typeof model;
 	assert.deepEqual(resolveEffective({ level: "medium", explicit: false }, glm), { effective: "high", verified: true });
 	assert.deepEqual(resolveEffective({ level: "low", explicit: false }, glm), { effective: "low", verified: true });
