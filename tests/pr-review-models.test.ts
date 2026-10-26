@@ -15,7 +15,7 @@ fs.writeFileSync(path.join(process.env.PI_CODING_AGENT_DIR!, "settings/subagent-
 	reviewer: glmFirst, "slop-reviewer": glmFirst, scout: glmFirst,
 }));
 
-test("pr_review ignores agent rosters and calls only Anthropic and OpenAI", async (t) => {
+test("pr_review ignores agent rosters; only the spec + reuse seat runs GLM", async (t) => {
 	const previousHerdr = process.env.HERDR_ENV;
 	delete process.env.HERDR_ENV;
 	t.after(() => {
@@ -52,7 +52,7 @@ test("pr_review ignores agent rosters and calls only Anthropic and OpenAI", asyn
 	const result = await tool.execute("test", { pr: "main...HEAD", herdr: false }, undefined, undefined, {
 		cwd: path.resolve(import.meta.dirname, ".."), isProjectTrusted: () => false, modelRegistry: registry,
 	});
-	assert.equal(result.details.items.length, 5);
-	assert.equal(models.length, 5);
-	assert.deepEqual(models.filter(m => !/^(anthropic|openai-codex)\//.test(m)), []);
+	assert.equal(result.details.items.length, 6);
+	assert.equal(models.length, 6);
+	assert.deepEqual(models.filter(m => !/^(anthropic|openai-codex)\//.test(m)), ["aperture/neuralwatt/glm-5.3"]);
 });

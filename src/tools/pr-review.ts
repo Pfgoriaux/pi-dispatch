@@ -1,11 +1,12 @@
 /**
  * pr_review — multi-model PR review on top of the dispatch engine.
  *
- * Four in-process workers run in parallel, on Anthropic and OpenAI models only:
+ * Five in-process workers run in parallel:
  *   1. Opus 5.5: correctness + security
  *   2. Codex Astra: correctness
  *   3. Sonnet 5.5 (scout: low thinking, bounded tool budget): pre-mortem, "why did this break 3 months later?"
- *   4. slop-reviewer (balanced tier, medium thinking): doc rules and unneeded additions
+ *   4. slop-reviewer (medium thinking): doc rules and unneeded additions
+ *   5. GLM 5.3 on Neuralwatt: spec gaps, reachable edge cases, overlaps and reuse
  * A reviewer on the balanced tier then checks each finding against the code
  * and returns one deduplicated report. fix:true hands it to a worktree writer.
  *
@@ -37,6 +38,7 @@ import {
 	fixTask,
 	preMortemTask,
 	slopTask,
+	specReuseTask,
 	verifyAggregateTask,
 } from "./pr-review-prompts.ts";
 import { pinFixHead, assertFixHead } from "./review-target.ts";
@@ -188,6 +190,34 @@ export async function resolveDiff(
 	return { diffFile, label, empty: !diff.trim() };
 }
 
+/** PR description for the spec reviewer; empty when the target is not a PR number or gh fails. */
+export async function fetchPrBody(
+	pi: ExtensionAPI,
+	prArg: string | undefined,
+	cwd: string,
+	signal?: AbortSignal,
+): Promise<string> {
+	const arg = (prArg ?? "").trim();
+	if (!/^\d+$/.test(arg)) return "";
+	const result = await pi.exec("gh", ["pr", "view", arg, "--json", "body", "--jq", ".body"], { cwd, timeout: 60000, signal });
+	return result.code === 0 && !result.killed ? result.stdout.trim() : "";
+}
+
+/** Saves the PR description next to the diff; undefined when there is none. */
+async function savePrBody(
+	pi: ExtensionAPI,
+	prArg: string | undefined,
+	cwd: string,
+	workdir: string,
+	signal?: AbortSignal,
+): Promise<string | undefined> {
+	const body = await fetchPrBody(pi, prArg, cwd, signal);
+	if (!body) return undefined;
+	const file = path.join(workdir, "pr-body.md");
+	fs.writeFileSync(file, body, "utf8");
+	return file;
+}
+
 // ---------------------------------------------------------------------------
 // review steps
 // ---------------------------------------------------------------------------
@@ -197,6 +227,7 @@ const STEPS = [
 	{ agent: "reviewer", task: "Review: correctness" },
 	{ agent: "scout", task: "Pre-mortem: 3-month failure" },
 	{ agent: "slop-reviewer", task: "Slop: docs rules and unneeded additions" },
+	{ agent: "reviewer", task: "Spec + reuse: requirements, edge cases, overlaps, duplicates" },
 	{ agent: "reviewer", task: "Verify and aggregate" },
 ];
 /** Pre-mortem scouts are told to answer at this many tool calls and fail at double. */
@@ -225,12 +256,12 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 		exposure: "model-only",
 		label: "PR Review",
 		description:
-			"Review a PR or diff with two code reviewers (Opus 5.5, Codex Astra), a 3-month pre-mortem, and a slop review in parallel, then one pass that verifies findings against the code. fix:true commits validated fixes on a retained branch for coordinator review; never merges.",
+			"Review a PR or diff with two code reviewers (Opus 5.5, Codex Astra), a 3-month pre-mortem, a slop review, and a GLM 5.3 spec + reuse review in parallel, then one pass that verifies findings against the code. fix:true commits validated fixes on a retained branch for coordinator review; never merges.",
 		promptSnippet:
 			"Multi-model PR review with optional fixes",
 		promptGuidelines: [
 			"pr_review: Use for requested reviews or PRs you opened with 100+ changed lines, auth, data, migrations, or infrastructure. Self-review smaller PRs. Always pass intent; pass cwd when the repo is not the session cwd.",
-			"pr_review: fix:true requires authorization to edit/commit and a session started at a trusted, clean feature repo root; it uses the default writer. For high-risk fixes, review only, then dispatch an authorized worktree writer with model:'precise'. Fix only Findings and Slop; leave Decisions and [decision] findings in any section for the user. Recommendations are not authorization.",
+			"pr_review: fix:true requires authorization to edit/commit and a session started at a trusted, clean feature repo root; it uses the default writer. For high-risk fixes, review only, then dispatch an authorized worktree writer with model:'precise'. Fix only Findings and Slop; leave Decisions, [decision] findings in any section, Spec gaps, Overlaps and Reuse for the user. Recommendations are not authorization.",
 		],
 		parameters: Type.Object({
 			thinking: Type.Optional(TaskThinkingSchema),
@@ -345,7 +376,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					};
 
 				// ---- review fan-out (context firewall per reviewer) ----
-				emit("pr_review: 2 code reviewers, pre-mortem and slop review, then verification…");
+				emit("pr_review: 2 code reviewers, pre-mortem, slop, and spec + reuse review, then verification…");
 				const progress = new DispatchProgress(
 					"parallel",
 					[...STEPS, ...(wantFix ? [FIX_STEP] : [])].map((item) => ({ ...item, herdr: params.herdr })),
@@ -355,7 +386,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 					await progress.open(cwd, signal);
 					// The two code reviewers share one pool so fallback never gives them the same model.
 					// Pre-mortem and slop stay out of it: they must not take a reviewer's last fallback.
-					// Every step stays on Anthropic and OpenAI: no Neuralwatt fallback.
+					// Every step falls back to Sonnet 5.5, never to Neuralwatt.
 					const pool = new ModelDiversity();
 					const runStep = (
 						index: number,
@@ -381,9 +412,10 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 							signal,
 						);
 
-					const reviewerCtx = { cwd, diffFile, intent: params.intent };
+					const prBodyFile = await savePrBody(pi, params.pr, cwd, workdir, signal);
+					const reviewerCtx = { cwd, diffFile, intent: params.intent, prBodyFile };
 					// Opus and Astra exclude each other so failover never duplicates a reviewer.
-					const [opus, astra, preMortem, slop] = await Promise.all([
+					const [opus, astra, preMortem, slop, specReuse] = await Promise.all([
 						runStep(0, correctnessSecurityTask(reviewerCtx), {
 							spec: REVIEW_MODELS.opus,
 							excludeModels: [REVIEW_MODELS.astra],
@@ -399,8 +431,10 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 							toolBudget: PRE_MORTEM_TOOL_BUDGET,
 						}),
 						runStep(3, slopTask(reviewerCtx), { spec: REVIEW_MODELS.slop }),
+						// Outside the reviewer pool, like pre-mortem and slop.
+						runStep(4, specReuseTask(reviewerCtx), { spec: REVIEW_MODELS.specReuse }),
 					]);
-					const reviews = [opus, astra, preMortem, slop];
+					const reviews = [opus, astra, preMortem, slop, specReuse];
 
 					if (signal?.aborted) {
 						return {
@@ -431,10 +465,11 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 						report(astra, "Correctness reviewer", cap),
 						report(preMortem, "Pre-mortem", cap),
 						report(slop, "Slop reviewer", cap),
+						report(specReuse, "Spec + reuse reviewer", cap),
 					];
 					const aggregateResult = await runStep(
-						4,
-						verifyAggregateTask({ cwd, label, diffFile, reports, intent: params.intent }),
+						5,
+						verifyAggregateTask({ cwd, label, diffFile, reports, intent: params.intent, prBodyFile }),
 						{ spec: REVIEW_MODELS.verify },
 					);
 					const findings =
@@ -494,7 +529,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 							"\n\n" + formatHandoff(repoRoot, worktrees);
 					} else if (!wantFix) {
 						fixReport =
-							"\n\n(Fix skipped: fix=false. For authorized fixes, use dispatch tasks:[{agent:'writer', task:<validated Findings and Slop only>, worktree:true, model:<chosen model>}]. Leave Decisions and [decision] findings in any section for the user. Recommendations are not authorization.)";
+							"\n\n(Fix skipped: fix=false. For authorized fixes, use dispatch tasks:[{agent:'writer', task:<validated Findings and Slop only>, worktree:true, model:<chosen model>}]. Leave Decisions, [decision] findings in any section, Spec gaps, Overlaps and Reuse for the user. Recommendations are not authorization.)";
 					} else if (!fixRequested) {
 						fixReport = truncated
 							? "\n\n(Fix skipped: review material was truncated. Rerun a narrower review before applying fixes.)"

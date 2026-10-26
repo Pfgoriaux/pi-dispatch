@@ -86,11 +86,12 @@ export const REVIEW_MODELS = {
 	opus: envModel("DISPATCH_REVIEW_OPUS_MODEL") ?? "anthropic/claude-opus-5-5",
 	astra: envModel("DISPATCH_REVIEW_ASTRA_MODEL") ?? "openai-codex/gpt-6-astra",
 	preMortem: envModel("DISPATCH_REVIEW_PREMORTEM_MODEL") ?? "anthropic/claude-sonnet-5-5",
+	specReuse: envModel("DISPATCH_REVIEW_SPEC_MODEL") ?? GLM_MODEL,
 	slop: envModel("DISPATCH_REVIEW_SLOP_MODEL") ?? "anthropic/claude-sonnet-5-5",
 	verify: envModel("DISPATCH_REVIEW_VERIFY_MODEL") ?? "anthropic/claude-sonnet-5-5",
 } as const;
 
-/** Last resort for every pr_review step: Anthropic and OpenAI only. */
+/** Last resort for every pr_review step. */
 export const REVIEW_FALLBACK_MODELS: readonly string[] = ["anthropic/claude-sonnet-5-5"];
 
 /**
