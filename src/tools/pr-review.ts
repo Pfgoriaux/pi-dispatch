@@ -508,6 +508,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
 										cwd: worktree.path,
 										registry: ctx.modelRegistry,
 										requireCleanWorktree: true,
+										gateGlm: true,
 										thinking,
 										signal,
 										model: ctx.model

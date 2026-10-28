@@ -25,7 +25,7 @@ import { workerTools } from "./linkup.ts";
 import { workerSystemPrompt } from "./worker-prompt.ts";
 import { ToolHealth } from "./tool-health.ts";
 import { withProviderFallbacks } from "./roster.ts";
-import { exhaustedQuotaReason, quotaCandidates } from "./quota.ts";
+import { exhaustedQuotaReason, glmGateCandidates, quotaCandidates } from "./quota.ts";
 import { dirtyLines } from "./worktree.ts";
 import { startupTimeoutMs } from "./startup.ts";
 import { stopWorker } from "./process-tree.ts";
@@ -59,6 +59,8 @@ export interface RunWorkerProcOptions {
 	modelOverride?: string;
 	/** Opt in for tier/workflow model choices, not explicit per-task pins. */
 	steerByQuota?: boolean;
+	/** Run a GLM-led chain on Opus/Astra first while either has more than 30% quota left. */
+	gateGlm?: boolean;
 }
 
 /**
@@ -174,6 +176,7 @@ export async function runWorkerProc(
 	if (options.steerByQuota ?? (!options.modelOverride?.trim() && agent.quotaRouting === true)) {
 		candidates = quotaCandidates(candidates, options.onWarning);
 	}
+	if (options.gateGlm) candidates = glmGateCandidates(candidates, options.onWarning);
 	const attempts: WorkerResult[] = [];
 	const failedAttempts: string[] = [];
 	let result: WorkerResult = { agent: agent.name, task, status: "error", text: "", error: "No eligible model candidates", ms: 0, attempts: 0 };

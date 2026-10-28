@@ -41,7 +41,7 @@ import {
 	type RankedCandidate,
 } from "./roster.ts";
 import { resolveRequest, resolveEffective, effortLabel, THINKING_REFUSAL, type ThinkingRequest } from "./thinking.ts";
-import { exhaustedQuotaReason, quotaCandidates } from "./quota.ts";
+import { exhaustedQuotaReason, glmGateCandidates, quotaCandidates } from "./quota.ts";
 import { ToolBudget, ToolHealth } from "./tool-health.ts";
 import { modelIdentity } from "./model-diversity.ts";
 import type { AgentConfig, ThinkingLevel, WorkerResult } from "./types.ts";
@@ -70,6 +70,8 @@ export interface RunWorkerOptions {
 	modelSpec?: string;
 	/** Opt in for tier/workflow model choices; explicit per-task pins default off. */
 	steerByQuota?: boolean;
+	/** Run a GLM-led chain on Opus/Astra first while either has more than 30% quota left. */
+	gateGlm?: boolean;
 	/** Model specs never tried, not even as failover (keeps parallel workers on distinct models). */
 	excludeModels?: readonly string[];
 	/** Only these model identities may run, including after provider failover. */
@@ -291,6 +293,7 @@ export async function runWorker(
 	if (options.steerByQuota ?? selection?.quotaRouting) {
 		candidates = quotaCandidates(candidates, options.onWarning);
 	}
+	if (options.gateGlm) candidates = glmGateCandidates(candidates, options.onWarning);
 
 	if (candidates.length === 0) {
 		// No roster/frontmatter override: inherit the parent and its provider fallback.

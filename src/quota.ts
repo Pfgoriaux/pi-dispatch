@@ -2,7 +2,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { quotaFamily, type RankedCandidate } from "./roster.ts";
+import { GLM_MODEL } from "./profiles.ts";
+import { quotaFamily, sameModelId, withProviderFallbacks, type RankedCandidate } from "./roster.ts";
 
 
 /** Providers whose quota snapshots are read. */
@@ -133,19 +134,55 @@ export function exhaustedQuotaReason(spec: string): string | undefined {
 	return `Skipped ${spec}: ${provider} quota exhausted (${empty.join(", ")} at 0%)`;
 }
 
-/** Called once before attempts; parallel workers never mutate snapshots or reserve invented token costs. */
-export function quotaCandidates(candidates: RankedCandidate[], onWarning?: (reason: string) => void): RankedCandidate[] {
-	const directory = join(getAgentDir(), "cache", "usage-bar");
-	const now = Date.now();
-	const snapshots = new Map<string, QuotaSnapshot>();
+/** GLM 5.3 leads a dispatch chain only while no Opus/Astra route has more than this percentage left. */
+export const GLM_GATE_PERCENT = 30;
+const OPUS = "anthropic/claude-opus-5-5";
+const TOP_TIER_ROUTES = [OPUS, "anthropic-2/claude-opus-5-5", "openai-codex/gpt-6-astra"];
 
-	// Read snapshots only to rank existing peer candidates
+/**
+ * Put Opus/Astra ahead of a GLM-led chain while one has more than GLM_GATE_PERCENT left.
+ * GLM stays next in the chain. Unknown readings do not count as headroom.
+ */
+export function gateGlm(
+	candidates: RankedCandidate[],
+	snapshots: ReadonlyMap<string, QuotaSnapshot>,
+	now = Date.now(),
+): { candidates: RankedCandidate[]; reasons: string[] } {
+	const lead = candidates[0];
+	if (!lead || sameModelId(lead.modelSpec) !== sameModelId(GLM_MODEL)) return { candidates, reasons: [] };
+	const best = Math.max(...TOP_TIER_ROUTES.map(spec => quotaHeadroom(snapshots.get(quotaProvider(spec)), now, spec) ?? 0));
+	if (best <= GLM_GATE_PERCENT) return { candidates, reasons: [] };
+	const opus = { ...lead, modelSpec: OPUS, entry: { ...lead.entry, provider: "anthropic", model: "claude-opus-5-5" } };
+	const steered = steerByQuota(withProviderFallbacks([opus, ...candidates]), snapshots, now);
+	return {
+		candidates: steered.candidates,
+		reasons: [`GLM gate: Opus/Astra lead (${Math.floor(best)}% best remaining > ${GLM_GATE_PERCENT}%); ${lead.modelSpec} follows.`, ...steered.reasons],
+	};
+}
+
+function readSnapshots(now: number): Map<string, QuotaSnapshot> {
+	const directory = join(getAgentDir(), "cache", "usage-bar");
+	const snapshots = new Map<string, QuotaSnapshot>();
 	for (const provider of ALL_PROVIDERS) {
 		const snapshot = readQuotaSnapshot(provider, directory, now);
 		if (snapshot) snapshots.set(provider, snapshot);
 	}
+	return snapshots;
+}
 
-	const result = steerByQuota(candidates, snapshots, now);
+function report(result: { candidates: RankedCandidate[]; reasons: string[] }, onWarning?: (reason: string) => void): RankedCandidate[] {
 	for (const reason of result.reasons) onWarning?.(reason);
 	return result.candidates;
+}
+
+/** Called once before attempts; parallel workers never mutate snapshots or reserve invented token costs. */
+export function quotaCandidates(candidates: RankedCandidate[], onWarning?: (reason: string) => void): RankedCandidate[] {
+	const now = Date.now();
+	return report(steerByQuota(candidates, readSnapshots(now), now), onWarning);
+}
+
+/** Applies gateGlm to fresh snapshots, once before attempts. */
+export function glmGateCandidates(candidates: RankedCandidate[], onWarning?: (reason: string) => void): RankedCandidate[] {
+	const now = Date.now();
+	return report(gateGlm(candidates, readSnapshots(now), now), onWarning);
 }

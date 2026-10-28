@@ -230,7 +230,7 @@ receives current role names and tools before each turn, not all role prompts.
 | security-reviewer | read/search, bash (read-only inspection) | precise |
 | slop-reviewer | read/search, bash (read-only inspection) | balanced |
 | aggregator | none | balanced |
-| writer | read, edit, write, bash | long |
+| writer | read, edit, write, bash | `aperture/neuralwatt/glm-5.3`, gated |
 
 | Tier | Default model |
 |---|---|
@@ -239,13 +239,19 @@ receives current role names and tools before each turn, not all role prompts.
 | precise | Anthropic Opus 5.5 |
 | long | Aperture Neuralwatt Kimi K3 |
 
-Writers split by work, not size. `long` (Kimi K3) takes frontend and UI, design
-systems, data visualization, image inputs, and end-to-end feature builds.
-Explicit `aperture/neuralwatt/glm-5.3` takes backend changes, refactors and
-migrations, bug fixes, scripts and infra, and terminal-heavy work; it takes text
-only. `precise` takes high-risk coding. Override a tier with
-`DISPATCH_PROFILE_<TIER>_MODEL` or a task's `model` with a tier or `provider/id`.
-Model choice never grants additional tools or authorization.
+Writers split by work, not size. The default writer model takes backend changes,
+refactors and migrations, bug fixes, scripts and infra, and terminal-heavy work.
+`long` (Kimi K3) takes frontend and UI, design systems, data visualization, image
+inputs, and end-to-end feature builds. `precise` takes high-risk coding. Override
+a tier with `DISPATCH_PROFILE_<TIER>_MODEL` or a task's `model` with a tier or
+`provider/id`. Model choice never grants additional tools or authorization.
+
+`dispatch` workers and the `pr_review` fix writer gate GLM 5.3. When a chain
+starts with GLM and Opus 5.5 or Astra has more than 30% quota left, Opus and
+Astra go first, ordered by quota steering; GLM follows them. At 30% or less, or
+without a fresh reading, GLM keeps the lead; it takes text only. The writer
+default and explicit GLM pins both pass through the gate; `council`,
+`feature_plan` and other `pr_review` steps do not.
 
 In-process selection uses a task override, otherwise an agent roster, then
 frontmatter, then the parent model. Rosters live in
@@ -285,7 +291,8 @@ to `anthropic`; other ambiguous or unpinnable IDs fail before spawn.
   Sonnet 5.5. Model-identity guards prevent duplicates.
   Council instead restricts each seat to its assigned model.
 - Quota steering ranks existing peer candidates without inserting a top model.
-  Tiers/rosters opt in; concrete pins and `inherit` keep provider order.
+  Tiers/rosters opt in; concrete pins and `inherit` keep provider order. The
+  GLM gate is the only step that inserts Opus and Astra.
   Every attempt still skips fresh, known exhausted providers.
 - Snapshots come from `<agentDir>/cache/usage-bar/<provider>-v3.json` written by
   pi-usage-bar (`claude` for `anthropic`, `claude2` for `anthropic-2`). Use the

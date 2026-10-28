@@ -20,9 +20,8 @@
  *              with quota-aware routing between them.
  *
  *   long     — Frontend and UI, design, data visualization, image inputs,
- *              end-to-end feature builds. Kimi K3. Backend changes, refactors,
- *              code migrations, bug fixes, scripts and terminal-heavy work name
- *              GLM_MODEL explicitly.
+ *              end-to-end feature builds. Kimi K3. The writer defaults to
+ *              GLM_MODEL, which dispatch gates onto Opus/Astra (see gateGlm).
  *
  * Tiers choose model strength, not thinking effort. Pick a tier by how hard
  * a task is, not by who does it. Cross-check scouting and duplicate code review need
@@ -67,8 +66,7 @@ export const PROFILES: Record<ProfileTier, ModelProfile> = {
 		model:
 			envModel("DISPATCH_PROFILE_PRECISE_MODEL") ?? "anthropic/claude-opus-5-5",
 	},
-	// LONG: Default writer model, multi-file refactors, codebase research.
-	// Kimi K3
+	// LONG: Frontend, design, image inputs, end-to-end feature builds. Kimi K3.
 	long: {
 		model: envModel("DISPATCH_PROFILE_LONG_MODEL") ?? KIMI_MODEL,
 	},

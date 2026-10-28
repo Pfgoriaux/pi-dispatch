@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { quotaHeadroom, quotaProvider, readQuotaSnapshot, steerByQuota, validQuotaSnapshot, type QuotaSnapshot } from "../src/quota.ts";
+import { gateGlm, quotaHeadroom, quotaProvider, readQuotaSnapshot, steerByQuota, validQuotaSnapshot, type QuotaSnapshot } from "../src/quota.ts";
 import { markCooldown, resolveCandidates, withProviderFallbacks, type RankedCandidate } from "../src/roster.ts";
 import type { AgentConfig } from "../src/types.ts";
 
@@ -132,4 +132,27 @@ test("exhausted top-tier tie preserves roster order", () => {
 	const result = steerByQuota(topTierRoutes, quotas, now);
 	// On exhausted tie, preserve original order (Opus first)
 	assert.equal(result.candidates[0].modelSpec, opus);
+});
+
+test("GLM gate: Opus/Astra lead a GLM chain above 30% and GLM leads at or below it", () => {
+	const glm = "aperture/neuralwatt/glm-5.3";
+	const opus = "anthropic/claude-opus-5-5", opus2 = "anthropic-2/claude-opus-5-5", astra = "openai-codex/gpt-6-astra";
+	const chain = withProviderFallbacks([candidate(glm)]);
+	const gate = (claude?: number, claude2?: number, codex?: number) => {
+		const quotas = new Map<string, QuotaSnapshot>();
+		for (const [provider, value] of [["claude", claude], ["claude2", claude2], ["codex", codex]] as const) {
+			if (value !== undefined) quotas.set(provider, snapshot(value));
+		}
+		return gateGlm(chain, quotas, now);
+	};
+	assert.deepEqual(specs(gate(80, 70, 60).candidates), [opus, opus2, astra, glm, codexSol]);
+	assert.match(gate(80, 70, 60).reasons[0], /^GLM gate: Opus\/Astra lead \(80% best remaining > 30%\)/);
+	// The best route decides; quota steering then orders Opus and Astra.
+	assert.deepEqual(specs(gate(10, 0, 31).candidates), [astra, opus, opus2, glm, codexSol]);
+	assert.deepEqual(specs(gate(0, 31, 10).candidates)[0], opus2);
+	for (const low of [gate(30, 30, 30), gate(5, 0, 20), gate()]) {
+		assert.deepEqual(low, { candidates: chain, reasons: [] });
+	}
+	const kimi = withProviderFallbacks([candidate(nw)]);
+	assert.deepEqual(gateGlm(kimi, new Map([["claude", snapshot(100)]]), now), { candidates: kimi, reasons: [] });
 });

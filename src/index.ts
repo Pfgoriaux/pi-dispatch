@@ -30,6 +30,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { agentRosterHelp, discoverAgents } from "./agents.ts";
 import { expandModelSpec, GLM_MODEL, isProfileTier } from "./profiles.ts";
+import { GLM_GATE_PERCENT } from "./quota.ts";
 import { renderDispatchCall, renderDispatchResult } from "./render.ts";
 import { findWorkerSession, runWorker, effortSummary, truncateText } from "./worker.ts";
 import { notifyDispatchDone } from "./herdr.ts";
@@ -201,7 +202,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 			"dispatch: Worker completion is not task completion. Evaluate returned checks against the user's scope and safety rules. Complete authorized verification; report specific access/approval blockers and what remains unverified.",
 			"dispatch: Writers require tasks with worktree:true and authorization to commit. Set target to a clean feature checkout when needed. Review returned branches, integrate only with authorization, then run dependent tasks. PR merges require user review and authorization.",
 			"dispatch: In-session writers run on this machine. Tell them to run only the checks their change touches, push, and wait for the repository's CI to run full suites.",
-			`dispatch: Writers: long (Kimi K3) for frontend and UI, design, data visualization, image inputs, and end-to-end feature builds; ${GLM_MODEL} for backend changes, refactors and code migrations, bug fixes, scripts and infra, and terminal-heavy work; precise for auth, migrations touching data, concurrency, or shared interfaces.`,
+			`dispatch: Writers: omit model for backend changes, refactors and code migrations, bug fixes, scripts and infra, and terminal-heavy work; long (Kimi K3) for frontend and UI, design, data visualization, image inputs, and end-to-end feature builds; precise for auth, migrations touching data, concurrency, or shared interfaces. Workers that would start on ${GLM_MODEL} (the writer default) start on Opus 5.5 or Astra while either has more than ${GLM_GATE_PERCENT}% quota left.`,
 			"dispatch: Never launch agent CLIs through bash to bypass rejected requests, depth limits, or tool restrictions; report the blocker.",
 		],
 		parameters: Type.Object({
@@ -422,6 +423,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 						resumeFile,
 						modelSpec: modelOverride?.modelSpec,
 						steerByQuota: modelOverride?.steerByQuota,
+						gateGlm: true,
 						thinking: modelOverride ? modelOverride.thinking : invocationThinking(agent.name),
 						savedResume: params.resume ? findWorkerSession(params.resume) : undefined,
 					});
@@ -558,6 +560,7 @@ export default function dispatchExtension(pi: ExtensionAPI): void {
 						model: parentModel, registry: ctx.modelRegistry,
 						modelOverride: taskModel(item)?.modelSpec,
 						steerByQuota: taskModel(item)?.steerByQuota,
+						gateGlm: true,
 						thinking: taskModel(item)?.thinking,
 						...paneSession.options(i),
 					}), signal);

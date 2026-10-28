@@ -19,7 +19,7 @@ test("tier defaults use Aperture for Neuralwatt and direct Pi for Codex", () => 
 	assert.equal(profiles.precise.model, "anthropic/claude-opus-5-5");
 });
 
-test("bundled roles resolve to Kimi for writing and precise for planning", t => {
+test("bundled roles resolve to GLM for writing and precise for planning", t => {
 	const dir = mkdtempSync(join(tmpdir(), "dispatch-role-defaults-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const env: NodeJS.ProcessEnv = { ...process.env, PI_CODING_AGENT_DIR: dir };
@@ -34,7 +34,7 @@ test("bundled roles resolve to Kimi for writing and precise for planning", t => 
 		})));`,
 	], { env, encoding: "utf8" }));
 	assert.deepEqual(roles, [
-		{ name: "writer", model: "aperture/neuralwatt/kimi-k3" },
+		{ name: "writer", model: "aperture/neuralwatt/glm-5.3" },
 		{ name: "planner", model: "anthropic/claude-opus-5-5" },
 	]);
 });
