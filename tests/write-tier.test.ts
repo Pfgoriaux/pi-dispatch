@@ -65,18 +65,30 @@ test('writer requests without worktree isolation fail before selecting a model',
  assert.equal(git(dir,'branch','--list','dispatch/*'),'');
 });
 
-test('default writer selects Kimi; GLM and precise remain explicit choices',async()=>{
+test('default writer runs GLM without Opus/Astra headroom and Opus above 30%; long and precise remain explicit choices',async()=>{
  const dir=repo();
  fake(`const args=process.argv.slice(2); console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:JSON.stringify({model:args[args.indexOf('--model')+1],thinking:args[args.indexOf('--thinking')+1]})}],stopReason:'stop'}}));`);
- for(const [model,expected] of [
-  [undefined,PROFILES.long.model],
-  ['aperture/neuralwatt/glm-5.3','aperture/neuralwatt/glm-5.3'],
-  ['precise',PROFILES.precise.model],
- ]) {
+ const cache=path.join(process.env.PI_CODING_AGENT_DIR!,'cache','usage-bar');
+ const quota=(remaining:number)=>{
+  fs.mkdirSync(cache,{recursive:true});
+  for(const provider of ['claude','codex']) fs.writeFileSync(path.join(cache,`${provider}-v3.json`),JSON.stringify({updatedAt:Date.now(),limits:[{label:'week',remaining:provider==='claude'?remaining:remaining-10,unit:'%'}]}));
+ };
+ const glm='aperture/neuralwatt/glm-5.3';
+ for(const [model,remaining,expected] of [
+  [undefined,undefined,glm],
+  [undefined,30,glm],
+  [undefined,80,PROFILES.precise.model],
+  [glm,80,PROFILES.precise.model],
+  ['long',80,PROFILES.long.model],
+  ['precise',undefined,PROFILES.precise.model],
+ ] as const) {
+  fs.rmSync(cache,{recursive:true,force:true});
+  if(remaining!==undefined) quota(remaining);
   const result=await call(dir,{tasks:[{agent:'writer',task:'fixture',model,worktree:true}],aggregate:false});
   assert.equal(result.details.items[0].status,'ok');
   assert.deepEqual(JSON.parse(result.details.items[0].text),{model:expected,thinking:'high'});
  }
+ fs.rmSync(cache,{recursive:true,force:true});
 });
 test('reject traversal and symlink cwd escapes', async()=>{
  const dir=repo(); fs.symlinkSync(root,path.join(dir,'escape'));

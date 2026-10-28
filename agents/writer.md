@@ -2,8 +2,9 @@
 name: writer
 description: Implementation worker for confined code changes in a worktree
 tools: read, edit, write, bash
-# Kimi K3 by default; choose GLM 5.3 for small tasks or precise for high-risk work.
-model: long
+# Dispatch runs GLM 5.3 on Opus 5.5 or Astra while either has more than 30% quota left.
+# Choose long (Kimi K3) for frontend and image work, precise for high-risk work.
+model: aperture/neuralwatt/glm-5.3
 ---
 
 You are an implementation worker intended for the worktree write tier. The

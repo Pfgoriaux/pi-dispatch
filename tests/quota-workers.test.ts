@@ -160,3 +160,37 @@ test("dispatch per-task tier opts into routing; explicit per-task provider does 
 		assert.equal(selected, model === "precise" ? astra : opus);
 	}
 });
+
+test("child and in-process workers gate GLM on Opus/Astra quota", async () => {
+	const glm = "aperture/neuralwatt/glm-5.3";
+	process.env.PI_DISPATCH_PI_BIN = path.join(root, "fake-pi");
+	for (const [claude, codex, gateGlm, expected] of [
+		[80, 20, true, opus], [20, 80, true, astra], [30, 30, true, glm], [80, 80, false, glm],
+	] as const) {
+		quotas(claude, codex);
+		const proc = await runWorkerProc(agent, "test", { cwd: root, modelOverride: glm, gateGlm });
+		assert.equal(proc.text, expected);
+		const controller = new AbortController();
+		const calls: string[] = [];
+		await runWorker(agent, "test", {
+			registry, fallbackModel: undefined, modelSpec: glm, gateGlm, signal: controller.signal,
+			onAttempt: model => { calls.push(model); controller.abort(); },
+		});
+		assert.deepEqual(calls, [expected]);
+	}
+});
+
+test("dispatch gates explicit GLM tasks", async () => {
+	quotas(80, 20);
+	const tools: any[] = [];
+	extension({ on() {}, registerTool: (tool: any) => tools.push(tool) } as any);
+	const dispatch = tools.find(t => t.name === "dispatch");
+	const controller = new AbortController();
+	let selected: string | undefined;
+	await dispatch.execute("test", { tasks: [{ agent: "planner", task: "test", model: "aperture/neuralwatt/glm-5.3" }], aggregate: false, herdr: false }, controller.signal,
+		(update: any) => {
+			const row = update.details?.activity?.[0];
+			if (row?.model && row.attempts > 0) { selected = row.model; controller.abort(); }
+		}, { cwd: root, modelRegistry: registry, isProjectTrusted: () => false });
+	assert.equal(selected, opus);
+});
