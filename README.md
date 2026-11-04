@@ -507,7 +507,7 @@ GLM 5.3 takes text only; a task that needs an image goes to Kimi.
 
 Writer and reviewer thinking must be `high` or above: set `worker.thinking`, and
 any `worker.reviewThinking`, task `thinking`, or task `reviewThinking`, to `high`
-(default), `xhigh`, or `max`. This guidance does not rewrite configuration, validate providers, or
+(default) or `max`. Kimi K3 and GLM 5.3 have no xhigh level, so workers refuse it. This guidance does not rewrite configuration, validate providers, or
 route tasks automatically.
 
 Give each task one concern and small, bounded `ownedFiles`: exact files or narrow

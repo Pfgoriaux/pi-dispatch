@@ -87,7 +87,7 @@ test("tool and architect prompts share the exact self-contained Hetzner drafting
 	const thinking = HETZNER_MODEL_GUIDANCE.split("\n").find((line) => line.startsWith("Writer and reviewer thinking"));
 	assert.match(thinking ?? "", /must be `high` or above/);
 	const levels = [...(thinking ?? "").matchAll(/`([a-z]+)`/g)].map((match) => match[1]);
-	assert.deepEqual(levels, ["high", "high", "xhigh", "max"]);
+	assert.deepEqual(levels, ["high", "high", "max"]);
 	assert.ok(levels.every(isTaskThinking), "drafted efforts pass the below-high guard");
 	assert.match(draft, /```\nReturn a concise draft design \(Markdown; omit empty sections\):\n## Goal\n## Scope/);
 	assert.match(final, /# Feature plan: <short title>\n## Goal\n## Decisions for you/);
