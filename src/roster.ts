@@ -147,7 +147,7 @@ const routeId = (spec: string) => spec.replace(/^aperture\//, "");
 
 /** Route retired first-account pins through the remaining Claude 2 login. */
 export function activeAccountSpec(spec: string): string {
-	return spec.replace(/^anthropic\//, "anthropic-2/");
+	return spec.replace(/^anthropic\//i, "anthropic-2/");
 }
 
 /** Model identity across Claude accounts and the Aperture prefix. */
@@ -155,7 +155,7 @@ export function sameModelId(spec: string): string {
 	return activeAccountSpec(routeId(spec));
 }
 
-/** Drop candidates naming an excluded model, on any Claude account, with or without the Aperture prefix. */
+/** Exclusions share identity across retired Claude pins and the Aperture prefix. */
 export function withoutModels(candidates: RankedCandidate[], excluded: readonly string[] = []): RankedCandidate[] {
 	const ids = new Set(excluded.map(sameModelId));
 	return candidates.filter((c) => !ids.has(sameModelId(c.modelSpec)));

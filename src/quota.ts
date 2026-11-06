@@ -41,7 +41,7 @@ export function validQuotaSnapshot(value: unknown, now = Date.now()): value is Q
 export function quotaProvider(spec: string): string {
 	const provider = activeAccountSpec(spec.replace(/^aperture\//i, "").toLowerCase()).split("/")[0];
 	if (provider === "openai-codex") return "codex";
-	// pi-usage-bar names the second Claude account's cache "claude2".
+	// pi-ui keeps the Claude 2 cache under "claude2".
 	if (provider === "anthropic-2") return "claude2";
 	return provider;
 }

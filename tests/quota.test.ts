@@ -102,7 +102,6 @@ test("top-tier models switch when counterpart has more headroom", () => {
 });
 
 
-
 test("healthy top-tier tie spends Codex first", () => {
 	const quotas = new Map([["claude2", snapshot(80)], ["codex", snapshot(80)]]);
 	const result = steerByQuota(topTierRoutes, quotas, now);

@@ -290,7 +290,7 @@ const SESSION_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 export const PILOT_EVENTS_FILE = "events.log";
 
 function pilotPreflight(options: PilotProcOptions): string | undefined {
-	if (options.model.startsWith("anthropic/")) return "The first Claude account is retired; use anthropic-2 and reapprove the batch.";
+	if (/^anthropic\//i.test(options.model)) return "The first Claude account is retired; use anthropic-2 and reapprove the batch.";
 	if (!path.isAbsolute(options.piExecutable) || !fs.statSync(options.piExecutable, { throwIfNoEntry: false })?.isFile()) {
 		return `Pilot requires an absolute Pi executable; got ${JSON.stringify(options.piExecutable)}`;
 	}

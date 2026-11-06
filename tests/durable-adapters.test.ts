@@ -105,10 +105,12 @@ test('pilot child: explicit executable, documented session flags, stripped coord
   assert.equal(refused.status, 'error'); assert.equal(refused.launched, false); assert.match(refused.error!, /absolute Pi executable/);
  }
  assert.equal(noFallback.spawns().length, 0, 'PI_DISPATCH_PI_BIN is never used');
- const retired = await runPilotProc(agent, 'x', { ...base, model: 'anthropic/claude-opus-5-5', piExecutable: noFallback.bin });
- assert.equal(retired.status, 'error'); assert.equal(retired.launched, false);
- assert.match(retired.error!, /retired.*reapprove/);
- assert.equal(noFallback.spawns().length, 0);
+ for (const model of ['anthropic/claude-opus-5-5', 'Anthropic/claude-opus-5-5', 'ANTHROPIC/claude-opus-5-5']) {
+  const retired = await runPilotProc(agent, 'x', { ...base, model, piExecutable: noFallback.bin });
+  assert.equal(retired.status, 'error'); assert.equal(retired.launched, false);
+  assert.match(retired.error!, /retired.*reapprove/);
+  assert.equal(noFallback.spawns().length, 0);
+ }
  // A model with fallback routes still gets exactly one spawn.
  const failed = await runPilotProc(agent, 'x', { ...base, sessionDir: path.join(dir, 's0'), model: 'anthropic-2/claude-opus-5-5', piExecutable: noFallback.bin });
  assert.equal(failed.status, 'error'); assert.equal(noFallback.spawns().length, 1);

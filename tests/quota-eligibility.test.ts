@@ -138,7 +138,7 @@ for (const source of ["frontmatter", "pin", "inherit"] as const) {
 }
 
 test("child remaps a retired first-account pin to Claude 2", async () => {
-	quota("claude2", 0);
+	quota("claude", 0);
 	quota("claude2", 30);
 	quota("codex", 90);
 	const calls: string[] = [];
@@ -148,6 +148,20 @@ test("child remaps a retired first-account pin to Claude 2", async () => {
 	assert.deepEqual(calls, [opus]);
 	assert.equal(result.status, "ok");
 	assert.equal(result.model, opus);
+});
+
+test("registry-free children remap first-account pins regardless of provider case", async () => {
+	quota("claude2", 50);
+	for (const provider of ["anthropic", "Anthropic", "ANTHROPIC"]) {
+		const calls: string[] = [];
+		const result = await runWorkerProc(agent, "test", {
+			cwd: root, modelOverride: `${provider}/claude-opus-5-5`, steerByQuota: false,
+			onAttempt: model => calls.push(model),
+		});
+		assert.equal(result.status, "ok");
+		assert.deepEqual(calls, [opus]);
+		assert.equal(result.text, opus);
+	}
 });
 
 test("a bare Claude ID ignores the retired account in both tiers", async () => {
@@ -174,10 +188,10 @@ test("child resolves bare IDs before quota checks and pins the actual provider",
 	assert.equal(result.attempts, 1);
 });
 
-test("child rejects CLI-only case aliases and slash-containing bare IDs", async () => {
+test("child rejects unknown models and slash-containing bare IDs", async () => {
 	quota("claude2", 0);
 	const slashRegistry = { ...registry, getAll: () => [{ provider: "anthropic-2", id: "custom/opus" }] } as any;
-	for (const modelOverride of ["Anthropic/claude-opus-5-5", "custom/opus", "anthropic/unknown-model"]) {
+	for (const modelOverride of ["custom/opus", "anthropic/unknown-model"]) {
 		const calls: string[] = [];
 		const result = await runWorkerProc(agent, "test", { cwd: root, modelOverride, registry: slashRegistry,
 			onAttempt: model => calls.push(model),
