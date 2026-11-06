@@ -26,11 +26,11 @@ const { default: extension } = await import("../src/index.ts");
 const cache = path.join(root, "cache", "usage-bar");
 fs.mkdirSync(cache, { recursive: true });
 const quotas = (claude: number, codex: number) => {
-	for (const [provider, remaining] of [["claude", claude], ["codex", codex]]) {
+	for (const [provider, remaining] of [["claude2", claude], ["codex", codex]]) {
 		fs.writeFileSync(path.join(cache, `${provider}-v3.json`), JSON.stringify({ updatedAt: Date.now(), limits: [{ label: "week", remaining, unit: "%" }] }));
 	}
 };
-const opus = "anthropic/claude-opus-5-5";
+const opus = "anthropic-2/claude-opus-5-5";
 const astra = "openai-codex/gpt-6-astra";
 const agent: AgentConfig = { name: "quota-worker", description: "test", tools: [], model: opus, quotaRouting: true, thinking: "high", systemPrompt: "fixture", source: "bundled", filePath: "fixture" };
 const registry = { find: (provider: string, id: string) => ({ provider, id, reasoning: true }) } as ModelRegistry;
@@ -41,7 +41,7 @@ for (const source of ["tier-frontmatter", "tier-task", "pinned-task", "pinned-fr
 		const controller = new AbortController();
 		const calls: string[] = [], warnings: string[] = [];
 		const result = await runWorker({ ...agent, quotaRouting: source !== "pinned-frontmatter" }, "test", {
-			registry, fallbackModel: { provider: "anthropic", id: "claude-opus-5-5", reasoning: true } as any,
+			registry, fallbackModel: { provider: "anthropic-2", id: "claude-opus-5-5", reasoning: true } as any,
 			modelSpec: source === "inherit" ? "inherit" : source.endsWith("task") ? opus : undefined,
 			steerByQuota: source === "tier-task" ? true : undefined,
 			signal: controller.signal, onWarning: w => warnings.push(w),
@@ -69,7 +69,7 @@ test("SDK rereads cache for subsequent spawns and skips unavailable routes", asy
 		registry: { find: (provider: string, id: string) => id === "gpt-6-astra" ? undefined : { provider, id, reasoning: true } } as ModelRegistry,
 		fallbackModel: undefined, signal: controller.signal, onAttempt: () => controller.abort(),
 	});
-	// Astra took Opus's slot; Claude 2 keeps its own.
+	// The unavailable Astra is skipped; Claude 2 remains eligible.
 	assert.equal(result.model, "anthropic-2/claude-opus-5-5");
 });
 
@@ -79,27 +79,27 @@ const writeQuotas = (entries: readonly (readonly [string, number])[]) => {
 	}
 };
 
-test("exhausted Claude reaches Claude 2 with steering off; steering may prefer Astra", async () => {
-	const opus = "anthropic/claude-opus-5-5", opus2 = "anthropic-2/claude-opus-5-5";
+test("retired account cache is ignored; steering may prefer Astra", async () => {
+	const retired = "anthropic/claude-opus-5-5";
 	writeQuotas([["claude", 0], ["claude2", 30], ["codex", 90]]);
 	const warnings: string[] = [];
 	for (const steerByQuota of [false, true]) {
 		const controller = new AbortController();
 		const calls: string[] = [];
 		await runWorker(agent, "test", {
-			registry, fallbackModel: undefined, modelSpec: opus, steerByQuota, signal: controller.signal,
+			registry, fallbackModel: undefined, modelSpec: retired, steerByQuota, signal: controller.signal,
 			onWarning: w => warnings.push(w), onAttempt: model => { calls.push(model); controller.abort(); },
 		});
 		// Steering may prefer Astra by headroom; hard eligibility alone must reach Claude 2.
-		assert.deepEqual(calls, [steerByQuota ? "openai-codex/gpt-6-astra" : opus2]);
+		assert.deepEqual(calls, [steerByQuota ? "openai-codex/gpt-6-astra" : opus]);
 	}
-	assert.ok(warnings.some(w => w.includes(`Skipped ${opus}: claude quota exhausted`)));
-	for (const provider of ["claude", "claude2", "codex"]) fs.rmSync(path.join(cache, `${provider}-v3.json`));
+	assert.ok(!warnings.some(w => w.includes(": claude quota exhausted")));
+	for (const provider of ["claude", "claude2", "codex"]) fs.rmSync(path.join(cache, `${provider}-v3.json`), { force: true });
 });
 
 test("Claude exhaustion cannot route a second worker to an already claimed Astra", async () => {
-	const opus = "anthropic/claude-opus-5-5", astra = "openai-codex/gpt-6-astra", sol = "openai-codex/gpt-6.1-sol";
-	for (const [provider, remaining] of [["claude", 0], ["claude2", 0], ["codex", 39]] as const) {
+	const opus = "anthropic-2/claude-opus-5-5", astra = "openai-codex/gpt-6-astra", sol = "openai-codex/gpt-6.1-sol";
+	for (const [provider, remaining] of [["claude2", 0], ["codex", 39]] as const) {
 		fs.writeFileSync(path.join(cache, `${provider}-v3.json`), JSON.stringify({ updatedAt: Date.now(), limits: [{ label: "week", remaining, unit: "%" }] }));
 	}
 	const diversity = new ModelDiversity();
@@ -115,11 +115,11 @@ test("Claude exhaustion cannot route a second worker to an already claimed Astra
 	assert.deepEqual(calls, []);
 	assert.ok(warnings.some(w => w.startsWith("Quota routing:")));
 	assert.ok(warnings.some(w => w.includes(`Skipped ${astra}`)));
-	assert.ok(warnings.some(w => w.includes(`Skipped ${opus}: claude quota exhausted`)));
+	assert.ok(!warnings.some(w => w.includes(": claude quota exhausted")));
 	assert.ok(warnings.some(w => w.includes("Skipped anthropic-2/claude-opus-5-5: claude2 quota exhausted")));
 	assert.equal(result.status, "error");
 	assert.equal(result.attempts, 0);
-	for (const provider of ["claude", "claude2", "codex"]) fs.rmSync(path.join(cache, `${provider}-v3.json`));
+	for (const provider of ["claude", "claude2", "codex"]) fs.rmSync(path.join(cache, `${provider}-v3.json`), { force: true });
 });
 
 test("child workers route tier choices but preserve concrete pins", async () => {

@@ -54,5 +54,5 @@ test("pr_review ignores agent rosters; only the spec + reuse seat runs GLM", asy
 	});
 	assert.equal(result.details.items.length, 6);
 	assert.equal(models.length, 6);
-	assert.deepEqual(models.filter(m => !/^(anthropic|openai-codex)\//.test(m)), ["aperture/neuralwatt/glm-5.3"]);
+	assert.deepEqual(models.filter(m => !/^(anthropic-2|openai-codex)\//.test(m)), ["aperture/neuralwatt/glm-5.3"]);
 });

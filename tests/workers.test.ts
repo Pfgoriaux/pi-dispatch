@@ -115,7 +115,7 @@ test("GLM 5.3 falls back to Codex 6.1 Sol", () => {
 test("DeepSeek 4.1 Flash falls back to Haiku 5.5, then 6.1 Sol", () => {
 	for (const modelSpec of ["neuralwatt/deepseek-v4.1-flash", "aperture/neuralwatt/deepseek-v4.1-flash"]) {
 		const routes = withProviderFallbacks([{ modelSpec, thinking: "off", entry: { provider: "test", model: modelSpec, thinking: "off", weight: 1 } }]);
-		assert.deepEqual(routes.map((c) => c.modelSpec), [modelSpec, "anthropic/claude-haiku-5-5", "anthropic-2/claude-haiku-5-5", "openai-codex/gpt-6.1-sol"]);
+		assert.deepEqual(routes.map((c) => c.modelSpec), [modelSpec, "anthropic-2/claude-haiku-5-5", "openai-codex/gpt-6.1-sol"]);
 		assert.deepEqual(withProviderFallbacks(routes), routes, "expansion is idempotent");
 	}
 });

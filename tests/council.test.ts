@@ -72,7 +72,7 @@ test("three distinct opinions see the same task, not each other's answers; no fo
 	const { calls, run } = setup(t);
 	const result = await run();
 	assert.deepEqual(calls.map(call => call.spec).sort(), [
-		"anthropic/claude-opus-5-5", "openai-codex/gpt-6-astra", "aperture/neuralwatt/glm-5.3",
+		"anthropic-2/claude-opus-5-5", "openai-codex/gpt-6-astra", "aperture/neuralwatt/glm-5.3",
 	].sort());
 	for (const call of calls) {
 		assert.match(call.context, /Choose A or B/);
@@ -94,12 +94,12 @@ test("three distinct opinions see the same task, not each other's answers; no fo
 test("failed seats never borrow another seat or Sol; GLM runs only on Neuralwatt", async (t) => {
 	const { calls, run } = setup(t, spec => spec === "aperture/neuralwatt/glm-5.3" ? "Only GLM answered" : undefined);
 	const result = await run();
-	// Opus on both Claude accounts, Astra, then GLM.
-	assert.equal(calls.length, 4);
+	// Claude 2, Astra, then GLM.
+	assert.equal(calls.length, 3);
 	assert.equal(result.details.items.filter(item => item.status === "ok").length, 1);
 	assert.equal(result.details.items[2].model, "aperture/neuralwatt/glm-5.3");
 	assert.equal(result.details.items[2].attempts, 1);
-	assert.equal(result.usage?.cost.total, 0.04);
+	assert.equal(result.usage?.cost.total, 0.03);
 	const text = JSON.stringify(result.content);
 	assert.match(text, /1\/3 opinions/);
 	assert.match(text, /Failed attempts/);
@@ -147,15 +147,15 @@ test("model allowlist checks resolved identity, not just the requested spec", as
 	assert.match(JSON.stringify(result.content), /0\/3 opinions/);
 });
 
-test("long fallback errors cannot erase the successful opinion", async (t) => {
-	const { run } = setup(t, spec => spec === "anthropic/claude-opus-5-5" ? undefined : "PRESERVED-OPINION", "x".repeat(20000));
+test("long errors cannot erase another seat's successful opinion", async (t) => {
+	const { run } = setup(t, spec => spec === "anthropic-2/claude-opus-5-5" ? undefined : "PRESERVED-OPINION", "x".repeat(20000));
 	const result = await run();
 	const opus = result.content[1];
 	assert.equal(opus.type, "text");
 	if (opus.type !== "text") return;
-	assert.match(opus.text, /PRESERVED-OPINION/);
-	assert.match(opus.text, /Failed attempts/);
-	assert.ok(Buffer.byteLength(opus.text) < 1500);
+	assert.match(JSON.stringify(result.content[2]), /PRESERVED-OPINION/);
+	assert.match(opus.text, /Unavailable:/);
+	assert.ok(Buffer.byteLength(opus.text) < 12500);
 	assert.equal(result.details.truncated, true);
 });
 
@@ -181,7 +181,7 @@ function claudeQuotas(t: TestContext, claude: number, claude2: number) {
 	}
 }
 
-test("an exhausted first Claude account moves the Opus seat to Claude 2", async (t) => {
+test("retired first-account quota does not affect the Claude 2 seat", async (t) => {
 	claudeQuotas(t, 0, 60);
 	const { run, calls } = setup(t);
 	const result = await run();

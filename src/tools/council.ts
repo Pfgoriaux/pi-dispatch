@@ -7,7 +7,7 @@ import { renderDispatchResult } from "../render.ts";
 import type { DispatchDetails, WorkerResult } from "../types.ts";
 import { runWorker, sumWorkerUsage, truncateText } from "../worker.ts";
 
-const OPUS = "anthropic/claude-opus-5-5";
+const OPUS = "anthropic-2/claude-opus-5-5";
 const ASTRA = "openai-codex/gpt-6-astra";
 const THIRD = {
 	"glm-5.3": ["aperture/neuralwatt/glm-5.3"],

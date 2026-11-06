@@ -123,8 +123,8 @@ test("explicit effort also survives provider failures and workflow last resorts"
 	const result = await runWorker(agent, "test", { registry, fallbackModel: undefined, modelSpec: "anthropic/claude-opus-5-5", thinking: "max", fallbackModels: ["fixture/last"] });
 	assert.equal(result.status, "ok");
 	assert.equal(result.model, "fixture/last");
-	// Opus on both Claude accounts, Astra, Sol, then the last resort.
-	assert.equal(calls.length, 5);
+	// Claude 2, Astra, Sol, then the last resort.
+	assert.equal(calls.length, 4);
 	assert.ok(calls.every(c => c.thinking === "max"));
 });
 

@@ -10,6 +10,7 @@
  */
 
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { activeAccountSpec } from "./roster.ts";
 import {
 	CredentialSynchronizationError,
 	type ModelRegistry,
@@ -60,13 +61,17 @@ export function resolveWorkerModel(
 	spec: string | undefined,
 	fallback: Model<Api> | undefined,
 ): Model<Api> | undefined {
-	if (!spec || spec === "inherit" || spec === "") return fallback;
+	if (!spec || spec === "inherit") {
+		if (fallback?.provider !== "anthropic") return fallback;
+		return registry.find("anthropic-2", fallback.id);
+	}
+	spec = activeAccountSpec(spec);
 	const slash = spec.indexOf("/");
 	if (slash === -1) {
 		// Bare model id: search every provider's catalogue.
 		return (
-			registry.getAll().find((m) => m.id === spec) ??
-			registry.getAvailable().find((m) => m.id === spec) ??
+			registry.getAll().find((m) => m.id === spec && m.provider !== "anthropic") ??
+			registry.getAvailable().find((m) => m.id === spec && m.provider !== "anthropic") ??
 			undefined
 		);
 	}
