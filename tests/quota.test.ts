@@ -15,11 +15,11 @@ const snapshot = (...values: number[]): QuotaSnapshot => ({ updatedAt: now, limi
 const specs = (cs: RankedCandidate[]) => cs.map(c => c.modelSpec);
 
 test("unknown, stale, future and expired reset snapshots leave existing ordering alone", () => {
-	const routes = withProviderFallbacks([candidate("anthropic/claude-opus-5-5")]);
+	const routes = withProviderFallbacks([candidate("anthropic-2/claude-opus-5-5")]);
 	for (const value of [undefined, { ...snapshot(20), updatedAt: now - 180_001 }, { ...snapshot(20), updatedAt: now + 5001 },
 		{ updatedAt: now, limits: [{ label: "energy", remaining: 20, unit: "%" as const, at: now, renewal: "reset" as const }] }]) {
 		const quotas = new Map([["codex", snapshot(100, 100)]]);
-		if (value) quotas.set("claude", value);
+		if (value) quotas.set("claude2", value);
 		assert.deepEqual(steerByQuota(routes, quotas, now), { candidates: routes, reasons: [] });
 	}
 });
@@ -80,55 +80,48 @@ test("v3 reader rejects corrupt or malformed data and does not require known pro
 });
 
 // Top-tier model routing tests
-const opus = "anthropic/claude-opus-5-5";
+const opus = "anthropic-2/claude-opus-5-5";
 const astra = "openai-codex/gpt-6-astra";
-const opus2 = "anthropic-2/claude-opus-5-5";
 const topTierRoutes = withProviderFallbacks([candidate(opus)]);
 
 test("top-tier models steer by quota headroom (Opus 5.5 vs Astra 6)", () => {
-	const quotas = new Map([["claude", snapshot(80)], ["codex", snapshot(30)]]);
+	const quotas = new Map([["claude2", snapshot(80)], ["codex", snapshot(30)]]);
 	const result = steerByQuota(topTierRoutes, quotas, now);
-	// Claude has more headroom, so Opus should be preferred; Claude 2 has no reading and keeps its slot.
-	assert.deepEqual(specs(result.candidates), [opus, opus2, astra, codexSol]);
+	// Claude 2 has more headroom, so Opus stays first.
+	assert.deepEqual(specs(result.candidates), [opus, astra, codexSol]);
 	assert.equal(result.reasons.length, 0); // no change from original order
 });
 
 test("top-tier models switch when counterpart has more headroom", () => {
-	const quotas = new Map([["claude", snapshot(10)], ["codex", snapshot(90)]]);
+	const quotas = new Map([["claude2", snapshot(10)], ["codex", snapshot(90)]]);
 	const result = steerByQuota(topTierRoutes, quotas, now);
 	// Codex has more headroom, so Astra should be preferred
-	assert.deepEqual(specs(result.candidates), [astra, opus2, opus, codexSol]);
+	assert.deepEqual(specs(result.candidates), [astra, opus, codexSol]);
 	assert.equal(result.reasons.length, 1);
 	assert.match(result.reasons[0], /Quota routing:.*gpt-6-astra.*preferred/);
 });
 
-test("Claude 2 headroom outranks an exhausted first account and a lower Codex reading", () => {
-	const quotas = new Map([["claude", snapshot(0)], ["claude2", snapshot(72)], ["codex", snapshot(40)]]);
-	const result = steerByQuota(topTierRoutes, quotas, now);
-	assert.deepEqual(specs(result.candidates), [opus2, astra, opus, codexSol]);
-	assert.match(result.reasons[0], /anthropic-2\/claude-opus-5-5 preferred.*claude2 72%/);
-	assert.equal(quotaProvider(opus2), "claude2");
-});
+
 
 test("healthy top-tier tie spends Codex first", () => {
-	const quotas = new Map([["claude", snapshot(80)], ["codex", snapshot(80)]]);
+	const quotas = new Map([["claude2", snapshot(80)], ["codex", snapshot(80)]]);
 	const result = steerByQuota(topTierRoutes, quotas, now);
 	// On a healthy tie, prefer Codex (Astra)
 	assert.equal(result.candidates[0].modelSpec, astra);
 });
 
 test("mid-tier Sonnet 5.5 and Sol 6.1 steer by headroom and spend Codex on a healthy tie", () => {
-	const midRoutes = withProviderFallbacks([candidate("anthropic/claude-sonnet-5-5")]);
-	const low = steerByQuota(midRoutes, new Map([["claude", snapshot(10)], ["codex", snapshot(90)]]), now);
+	const midRoutes = withProviderFallbacks([candidate("anthropic-2/claude-sonnet-5-5")]);
+	const low = steerByQuota(midRoutes, new Map([["claude2", snapshot(10)], ["codex", snapshot(90)]]), now);
 	assert.equal(low.candidates[0].modelSpec, codexSol);
-	const tie = steerByQuota(midRoutes, new Map([["claude", snapshot(80)], ["codex", snapshot(80)]]), now);
+	const tie = steerByQuota(midRoutes, new Map([["claude2", snapshot(80)], ["codex", snapshot(80)]]), now);
 	assert.equal(tie.candidates[0].modelSpec, codexSol);
-	const claudeAhead = steerByQuota(midRoutes, new Map([["claude", snapshot(80)], ["codex", snapshot(30)]]), now);
-	assert.equal(claudeAhead.candidates[0].modelSpec, "anthropic/claude-sonnet-5-5");
+	const claudeAhead = steerByQuota(midRoutes, new Map([["claude2", snapshot(80)], ["codex", snapshot(30)]]), now);
+	assert.equal(claudeAhead.candidates[0].modelSpec, "anthropic-2/claude-sonnet-5-5");
 });
 
 test("exhausted top-tier tie preserves roster order", () => {
-	const quotas = new Map([["claude", snapshot(5)], ["codex", snapshot(5)]]);
+	const quotas = new Map([["claude2", snapshot(5)], ["codex", snapshot(5)]]);
 	const result = steerByQuota(topTierRoutes, quotas, now);
 	// On exhausted tie, preserve original order (Opus first)
 	assert.equal(result.candidates[0].modelSpec, opus);

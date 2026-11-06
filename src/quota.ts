@@ -2,11 +2,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { quotaFamily, type RankedCandidate } from "./roster.ts";
+import { activeAccountSpec, quotaFamily, type RankedCandidate } from "./roster.ts";
 
 
 /** Providers whose quota snapshots are read. */
-const ALL_PROVIDERS = ["codex", "claude", "claude2"] as const;
+const ALL_PROVIDERS = ["codex", "claude2"] as const;
 
 interface Limit {
 	label: string;
@@ -39,9 +39,8 @@ export function validQuotaSnapshot(value: unknown, now = Date.now()): value is Q
 }
 
 export function quotaProvider(spec: string): string {
-	const provider = spec.replace(/^aperture\//i, "").split("/")[0].toLowerCase();
+	const provider = activeAccountSpec(spec.replace(/^aperture\//i, "").toLowerCase()).split("/")[0];
 	if (provider === "openai-codex") return "codex";
-	if (provider === "anthropic") return "claude";
 	// pi-usage-bar names the second Claude account's cache "claude2".
 	if (provider === "anthropic-2") return "claude2";
 	return provider;

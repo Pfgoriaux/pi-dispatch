@@ -6,7 +6,7 @@
  * Format (pi-harness compatible):
  *   {
  *     "<agentName>": [
- *       { "provider": "anthropic", "model": "claude-x", "thinking": "high", "weight": 1 },
+ *       { "provider": "anthropic-2", "model": "claude-x", "thinking": "high", "weight": 1 },
  *       ...
  *     ]
  *   }
@@ -127,7 +127,7 @@ const NEURALWATT_ROUTES = new Set(["neuralwatt/kimi-k3", "neuralwatt/glm-5.3", "
 // DeepSeek 4.1 falls back to Haiku 5.5, then the terminal 6.1 Sol.
 // Haiku spends Anthropic quota only when Neuralwatt fails.
 const DEEPSEEK_ROUTE = "neuralwatt/deepseek-v4.1-flash";
-const DEEPSEEK_FALLBACK = "anthropic/claude-haiku-5-5";
+const DEEPSEEK_FALLBACK = "anthropic-2/claude-haiku-5-5";
 
 const OPENAI_FALLBACK = "openai-codex/gpt-6.1-sol";
 
@@ -137,34 +137,22 @@ const OPENAI_FALLBACK = "openai-codex/gpt-6.1-sol";
 // Sol is also every chain's terminal fallback, so it never expands to Sonnet
 // (that would make re-expansion non-idempotent); both still share a quota family.
 const CROSS_PROVIDER_PEERS = new Map<string, { peer?: string; family: "top-tier" | "mid-tier" }>([
-	["anthropic/claude-opus-5-5", { peer: "openai-codex/gpt-6-astra", family: "top-tier" }],
-	["openai-codex/gpt-6-astra", { peer: "anthropic/claude-opus-5-5", family: "top-tier" }],
-	["anthropic/claude-sonnet-5-5", { peer: OPENAI_FALLBACK, family: "mid-tier" }],
+	["anthropic-2/claude-opus-5-5", { peer: "openai-codex/gpt-6-astra", family: "top-tier" }],
+	["openai-codex/gpt-6-astra", { peer: "anthropic-2/claude-opus-5-5", family: "top-tier" }],
+	["anthropic-2/claude-sonnet-5-5", { peer: OPENAI_FALLBACK, family: "mid-tier" }],
 	[OPENAI_FALLBACK, { family: "mid-tier" }],
 ]);
 
 const routeId = (spec: string) => spec.replace(/^aperture\//, "");
 
-// Claude subscription accounts registered by pi-ant: same model IDs, separate quotas.
-const CLAUDE_ACCOUNTS = ["anthropic", "anthropic-2"];
-const claudeModel = (spec: string) => /^anthropic(?:-2)?\/(.+)$/.exec(spec)?.[1];
-
-/** One spec per Claude account for the same model; other specs map to themselves. */
-function accountRoutes(spec: string): string[] {
-	const id = claudeModel(spec);
-	if (!id) return [spec];
-	return [spec, ...CLAUDE_ACCOUNTS.map((account) => `${account}/${id}`).filter((route) => route !== spec)];
-}
-
-/** The first-account spec for a direct Claude route; other specs map to themselves. */
-function primaryAccount(spec: string): string {
-	const id = claudeModel(spec);
-	return id ? `anthropic/${id}` : spec;
+/** Route retired first-account pins through the remaining Claude 2 login. */
+export function activeAccountSpec(spec: string): string {
+	return spec.replace(/^anthropic\//, "anthropic-2/");
 }
 
 /** Model identity across Claude accounts and the Aperture prefix. */
 export function sameModelId(spec: string): string {
-	return primaryAccount(routeId(spec));
+	return activeAccountSpec(routeId(spec));
 }
 
 /** Drop candidates naming an excluded model, on any Claude account, with or without the Aperture prefix. */
@@ -176,7 +164,7 @@ export function withoutModels(candidates: RankedCandidate[], excluded: readonly 
 /** Append last-resort specs not already in the chain, keeping their order. */
 export function withLastResorts(candidates: RankedCandidate[], specs: readonly string[] = [], thinking: string): RankedCandidate[] {
 	const present = new Set(candidates.map((c) => sameModelId(c.modelSpec)));
-	const extra = specs.filter((spec) => !present.has(sameModelId(spec))).map((modelSpec) => ({
+	const extra = specs.map(activeAccountSpec).filter((spec) => !present.has(sameModelId(spec))).map((modelSpec) => ({
 		modelSpec,
 		thinking,
 		entry: { provider: modelSpec.slice(0, modelSpec.indexOf("/")), model: modelSpec.slice(modelSpec.indexOf("/") + 1), thinking, weight: 1 },
@@ -186,14 +174,13 @@ export function withLastResorts(candidates: RankedCandidate[], specs: readonly s
 
 /** Exact-model equivalence only; unknown models must never be guessed. */
 export function quotaFamily(spec: string): string | undefined {
-	// Cross-provider peers (Opus 5.5 ↔ Astra 6, Sonnet 5.5 ↔ Sol 6.1), then other Claude models across accounts
-	const id = primaryAccount(spec);
-	return CROSS_PROVIDER_PEERS.get(id)?.family ?? (claudeModel(id) ? id : undefined);
+	const id = activeAccountSpec(spec);
+	return CROSS_PROVIDER_PEERS.get(id)?.family;
 }
 
 /**
  * Known cross-provider peers, then Codex 6.1 Sol once, last.
- * Every Claude route is followed by the same model on the other Claude account.
+ * Direct Claude routes use only the Claude 2 account.
  */
 export function withProviderFallbacks(candidates: RankedCandidate[]): RankedCandidate[] {
 	const seen = new Set<string>();
@@ -205,19 +192,18 @@ export function withProviderFallbacks(candidates: RankedCandidate[]): RankedCand
 		entry: { ...candidate.entry, provider: modelSpec.slice(0, modelSpec.indexOf("/")), model: modelSpec.slice(modelSpec.indexOf("/") + 1) },
 	});
 	const append = (candidate: RankedCandidate) => {
-		for (const route of accountRoutes(candidate.modelSpec)) {
-			if (seen.has(route)) continue;
-			seen.add(route);
-			result.push(route === candidate.modelSpec ? candidate : candidates.find(c => c.modelSpec === route) ?? at(candidate, route));
-		}
+		const route = activeAccountSpec(candidate.modelSpec);
+		if (seen.has(route)) return;
+		seen.add(route);
+		result.push(route === candidate.modelSpec ? candidate : at(candidate, route));
 	};
 	for (const candidate of candidates) {
 		// Cross-provider peers (Opus 5.5 ↔ Astra 6, Sonnet 5.5 → Sol 6.1)
-		const crossPeer = CROSS_PROVIDER_PEERS.get(primaryAccount(candidate.modelSpec))?.peer;
+		const crossPeer = CROSS_PROVIDER_PEERS.get(activeAccountSpec(candidate.modelSpec))?.peer;
 		append(candidate);
 		if (crossPeer) {
 			// Prefer an explicit counterpart configuration if present
-			const existingPeer = candidates.find(c => c.modelSpec === crossPeer);
+			const existingPeer = candidates.find(c => activeAccountSpec(c.modelSpec) === crossPeer);
 			append(existingPeer ?? at(candidate, crossPeer));
 			// Sonnet → Sol already contains Sol as its peer.
 			if (crossPeer !== OPENAI_FALLBACK) terminal ??= at(candidate, OPENAI_FALLBACK);

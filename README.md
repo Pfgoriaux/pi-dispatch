@@ -254,7 +254,7 @@ frontmatter, then the parent model. Rosters live in
 ```json
 {
   "planner": [
-    { "provider": "anthropic", "model": "claude-opus-5-5", "thinking": "high", "weight": 2 },
+    { "provider": "anthropic-2", "model": "claude-opus-5-5", "thinking": "high", "weight": 2 },
     { "provider": "openai-codex", "model": "gpt-6-astra", "thinking": "high", "weight": 1 }
   ],
   "scout": [
@@ -267,18 +267,18 @@ Weights are positive and ordered descending, not sampled. A task model override
 bypasses the roster. Worktree/review-fix children do not read in-process rosters
 or cooldowns: they use the task override or frontmatter, then parent for `inherit`.
 Bare IDs resolve through the parent registry in both tiers, then get the same
-fallbacks as a `provider/id` pin. The same model on both Claude accounts resolves
-to `anthropic`; other ambiguous or unpinnable IDs fail before spawn.
+fallbacks as a `provider/id` pin. Claude IDs resolve to `anthropic-2`;
+retired first-account catalog entries are ignored. Other ambiguous or unpinnable
+IDs fail before spawn.
 
 ### Routing and failure
 
 - Kimi and GLM 5.3 on Neuralwatt (direct and Aperture routes) fall back to
   Codex Sol 6.1; DeepSeek falls back through Haiku 5.5 then Sol.
-- Every direct Claude route (`anthropic/<id>`) is followed by the same model on
-  the second Claude account (`anthropic-2/<id>`, registered by pi-ant), and the
-  reverse for `anthropic-2` pins, ahead of cross-provider peers. Quota steering
-  can still move a higher-headroom peer ahead of either account. Both accounts
-  count as one model for exclusions, council seats and duplicate guards.
+- Claude routes use `anthropic-2/<id>`, registered by pi-ant. Retired
+  `anthropic/<id>` pins and roster entries resolve to Claude 2, with the same
+  model and thinking level. Quota steering can move a higher-headroom Codex peer
+  first. Durable pilots reject retired pins and require a new batch approval.
 - Opus and Astra retry each other and end with Sol; Sonnet also falls back to Sol.
 - `feature_plan` and `pr_review` exclude Sol. `feature_plan` ends its chains with
   GLM 5.3 on Neuralwatt; `pr_review` ends them with
@@ -288,11 +288,12 @@ to `anthropic`; other ambiguous or unpinnable IDs fail before spawn.
   Tiers/rosters opt in; concrete pins and `inherit` keep provider order.
   Every attempt still skips fresh, known exhausted providers.
 - Snapshots come from `<agentDir>/cache/usage-bar/<provider>-v3.json` written by
-  pi-usage-bar (`claude` for `anthropic`, `claude2` for `anthropic-2`). Use the
+  pi-usage-bar (`claude2` for `anthropic-2`). The retired `claude` cache is not
+  used. Use the
   lowest remaining percentage across the windows that bind the model. Claude
   per-model windows (`<model>week`, such as `fableweek` or `opusweek`) bind only
   model IDs containing that name. A skip names the empty windows, for example
-  `Skipped anthropic/claude-fable-5-1: claude quota exhausted (fableweek at 0%)`.
+  `Skipped anthropic-2/claude-fable-5-1: claude2 quota exhausted (fableweek at 0%)`.
   Missing, invalid, older-than-three-minute or
   expired-reset readings do not predict capacity; steering leaves those
   candidates in place. Dispatch neither polls providers nor reserves quota.

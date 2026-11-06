@@ -23,13 +23,13 @@ after(() => {
 });
 const cache = join(root, "cache", "usage-bar");
 mkdirSync(cache, { recursive: true });
-const opus = "anthropic/claude-opus-5-5";
-const opus2 = "anthropic-2/claude-opus-5-5";
+const retiredOpus = "anthropic/claude-opus-5-5";
+const opus = "anthropic-2/claude-opus-5-5";
 const astra = "openai-codex/gpt-6-astra";
 const sol = "openai-codex/gpt-6.1-sol";
 const nw = "aperture/neuralwatt/kimi-k3";
 const agent: AgentConfig = { name: "eligibility-fixture", description: "test", model: opus, tools: [], thinking: "high", systemPrompt: "fixture", source: "bundled", filePath: "fixture" };
-const catalog = [opus, opus2, astra, sol, nw].map(spec => {
+const catalog = [retiredOpus, opus, astra, sol, nw].map(spec => {
 	const slash = spec.indexOf("/");
 	return { provider: spec.slice(0, slash), id: spec.slice(slash + 1), reasoning: true };
 });
@@ -44,19 +44,18 @@ function quota(provider: string, remaining: number, updatedAt = Date.now()) {
 
 for (const source of ["frontmatter", "pin", "inherit", "bare-pin"] as const) {
 	test(`SDK rejects exhausted Claude for ${source} without routing`, async () => {
-		quota("claude", 0);
 		quota("claude2", 0);
 		quota("codex", 40);
 		const controller = new AbortController();
 		const calls: string[] = [];
 		const result = await runWorker(agent, "test", {
 			registry,
-			fallbackModel: { provider: "anthropic", id: "claude-opus-5-5", reasoning: true } as any,
+			fallbackModel: { provider: "anthropic-2", id: "claude-opus-5-5", reasoning: true } as any,
 			modelSpec: source === "inherit" ? "inherit" : source === "pin" ? opus : source === "bare-pin" ? "claude-opus-5-5" : undefined,
 			steerByQuota: false, signal: controller.signal,
 			onAttempt: model => { calls.push(model); controller.abort(); },
 		});
-		// Both Claude accounts are skipped; a bare ID resolves like a pin.
+		// Claude 2 is skipped; a bare ID resolves like a pin.
 		assert.deepEqual(calls, [astra]);
 		assert.equal(result.attempts, 1);
 		assert.equal(result.status, "aborted");
@@ -76,34 +75,35 @@ test("exhausted peers and terminal fallback make zero SDK attempts", async () =>
 	assert.match(result.error!, /quota exhausted/);
 });
 
-test("Claude accounts have separate caches, and per-model windows bind only their model", () => {
+test("retired cache is ignored, and per-model windows bind only their model", () => {
 	quota("claude", 0);
 	quota("claude2", 50);
-	assert.match(exhaustedQuotaReason(opus)!, /claude quota exhausted/);
-	assert.equal(exhaustedQuotaReason(opus2), undefined);
+	assert.equal(exhaustedQuotaReason(retiredOpus), undefined);
+	assert.equal(exhaustedQuotaReason(opus), undefined);
+	quota("claude2", 0);
 	assert.match(exhaustedQuotaReason(opus)!, /\(week at 0%\)$/);
-	const scoped = (label: string) => writeFileSync(join(cache, "claude-v3.json"), JSON.stringify({ updatedAt: Date.now(), limits: [
+	const scoped = (label: string) => writeFileSync(join(cache, "claude2-v3.json"), JSON.stringify({ updatedAt: Date.now(), limits: [
 		{ label: "5h", remaining: 100, unit: "%" }, { label: "week", remaining: 32, unit: "%" }, { label, remaining: 0, unit: "%" },
 	] }));
 	scoped("fableweek");
 	assert.equal(exhaustedQuotaReason(opus), undefined);
-	assert.match(exhaustedQuotaReason("anthropic/claude-fable-5-1")!, /claude quota exhausted \(fableweek at 0%\)/);
+	assert.match(exhaustedQuotaReason("anthropic-2/claude-fable-5-1")!, /claude2 quota exhausted \(fableweek at 0%\)/);
 	for (const label of ["opus55week", "opusweek"]) {
 		scoped(label);
-		assert.match(exhaustedQuotaReason(opus)!, /claude quota exhausted/);
-		assert.equal(exhaustedQuotaReason("anthropic/claude-sonnet-5-5"), undefined);
+		assert.match(exhaustedQuotaReason(opus)!, /claude2 quota exhausted/);
+		assert.equal(exhaustedQuotaReason("anthropic-2/claude-sonnet-5-5"), undefined);
 	}
 	rmSync(join(cache, "claude2-v3.json"));
 });
 
 test("eligibility rereads caches and only blocks fresh, known exhaustion", () => {
-	quota("claude", 0);
-	assert.match(exhaustedQuotaReason(opus)!, /claude quota exhausted/);
-	quota("claude", 30);
+	quota("claude2", 0);
+	assert.match(exhaustedQuotaReason(opus)!, /claude2 quota exhausted/);
+	quota("claude2", 30);
 	assert.equal(exhaustedQuotaReason(opus), undefined);
-	quota("claude", 0, Date.now() - 180_001);
+	quota("claude2", 0, Date.now() - 180_001);
 	assert.equal(exhaustedQuotaReason(opus), undefined);
-	rmSync(join(cache, "claude-v3.json"));
+	rmSync(join(cache, "claude2-v3.json"));
 	assert.equal(exhaustedQuotaReason(opus), undefined);
 	quota("neuralwatt", 0);
 	assert.match(exhaustedQuotaReason("neuralwatt/glm-5.3")!, /neuralwatt quota exhausted/);
@@ -111,7 +111,7 @@ test("eligibility rereads caches and only blocks fresh, known exhaustion", () =>
 });
 
 test("low quotas never inject a model outside the configured candidates", () => {
- for (const provider of ["claude","codex","neuralwatt"]) quota(provider, 5);
+ for (const provider of ["claude2","codex","neuralwatt"]) quota(provider, 5);
  const candidates = [{ modelSpec: "fake/small", thinking: "off", entry: { provider: "fake", model: "small", thinking: "off", weight: 1 } }];
  assert.deepEqual(quotaCandidates(candidates), candidates);
 });
@@ -125,7 +125,6 @@ process.env.PI_DISPATCH_PI_BIN = bin;
 
 for (const source of ["frontmatter", "pin", "inherit"] as const) {
 	test(`child rejects exhausted Claude for ${source} without routing`, async () => {
-		quota("claude", 0);
 		quota("claude2", 0);
 		quota("codex", 40);
 		const result = await runWorkerProc(agent, "test", { cwd: root, model: opus,
@@ -138,22 +137,21 @@ for (const source of ["frontmatter", "pin", "inherit"] as const) {
 	});
 }
 
-test("child moves an exhausted first-account pin to Claude 2", async () => {
-	quota("claude", 0);
+test("child remaps a retired first-account pin to Claude 2", async () => {
+	quota("claude2", 0);
 	quota("claude2", 30);
 	quota("codex", 90);
 	const calls: string[] = [];
-	const result = await runWorkerProc(agent, "test", { cwd: root, registry, modelOverride: opus, steerByQuota: false,
+	const result = await runWorkerProc(agent, "test", { cwd: root, registry, modelOverride: retiredOpus, steerByQuota: false,
 		onAttempt: model => calls.push(model),
 	});
-	assert.deepEqual(calls, [opus2]);
+	assert.deepEqual(calls, [opus]);
 	assert.equal(result.status, "ok");
-	assert.equal(result.model, opus2);
+	assert.equal(result.model, opus);
 });
 
-test("a bare Claude ID on both accounts resolves to the first account in both tiers", async () => {
+test("a bare Claude ID ignores the retired account in both tiers", async () => {
 	const both = { ...registry, getAll: () => catalog } as ModelRegistry;
-	quota("claude", 50);
 	quota("claude2", 50);
 	const controller = new AbortController();
 	const sdkCalls: string[] = [];
@@ -167,8 +165,7 @@ test("a bare Claude ID on both accounts resolves to the first account in both ti
 });
 
 test("child resolves bare IDs before quota checks and pins the actual provider", async () => {
-	const bareRegistry = { ...registry, getAll: () => [{ provider: "anthropic", id: "claude-opus-5-5", reasoning: true }] } as any;
-	quota("claude", 0);
+	const bareRegistry = { ...registry, getAll: () => [{ provider: "anthropic-2", id: "claude-opus-5-5", reasoning: true }] } as any;
 	quota("claude2", 0);
 	quota("codex", 40);
 	const result = await runWorkerProc(agent, "test", { cwd: root, modelOverride: "claude-opus-5-5", registry: bareRegistry });
@@ -178,8 +175,8 @@ test("child resolves bare IDs before quota checks and pins the actual provider",
 });
 
 test("child rejects CLI-only case aliases and slash-containing bare IDs", async () => {
-	quota("claude", 0);
-	const slashRegistry = { ...registry, getAll: () => [{ provider: "anthropic", id: "custom/opus" }] } as any;
+	quota("claude2", 0);
+	const slashRegistry = { ...registry, getAll: () => [{ provider: "anthropic-2", id: "custom/opus" }] } as any;
 	for (const modelOverride of ["Anthropic/claude-opus-5-5", "custom/opus", "anthropic/unknown-model"]) {
 		const calls: string[] = [];
 		const result = await runWorkerProc(agent, "test", { cwd: root, modelOverride, registry: slashRegistry,
@@ -189,7 +186,7 @@ test("child rejects CLI-only case aliases and slash-containing bare IDs", async 
 		assert.equal(result.attempts, 0);
 		assert.deepEqual(calls, []);
 	}
-	assert.match(exhaustedQuotaReason("Anthropic/claude-opus-5-5")!, /claude quota exhausted/);
+	assert.match(exhaustedQuotaReason("Anthropic/claude-opus-5-5")!, /claude2 quota exhausted/);
 });
 
 test("child cancellation wins over unresolved and unspecified identities", async () => {
@@ -201,9 +198,9 @@ test("child cancellation wins over unresolved and unspecified identities", async
 });
 
 test("child validates generated fallbacks against the parent registry", async () => {
-	quota("claude", 0);
+	quota("claude2", 0);
 	quota("codex", 40);
-	const onlyOpus = { ...registry, find: (provider: string, id: string) => provider === "anthropic" ? registry.find(provider, id) : undefined } as ModelRegistry;
+	const onlyOpus = { ...registry, find: (provider: string, id: string) => provider === "anthropic-2" ? registry.find(provider, id) : undefined } as ModelRegistry;
 	const calls: string[] = [];
 	const result = await runWorkerProc(agent, "test", { cwd: root, registry: onlyOpus, onAttempt: model => calls.push(model) });
 	assert.deepEqual(calls, []);
@@ -235,25 +232,24 @@ test("child skips all exhausted routes without spawning or inheriting", async ()
 	assert.match(result.error!, /quota exhausted/);
 });
 
-test("child fallback checks updated quota before its next attempt", async t => {
+test("child fallback checks updated Codex quota before its next attempt", async t => {
 	t.after(() => rmSync(join(cache, "claude2-v3.json"), { force: true }));
-	quota("claude", 50);
 	quota("claude2", 50);
 	quota("codex", 50);
 	writeFileSync(bin, `#!/usr/bin/env node
 const fs = require('node:fs');
 const model = process.argv[process.argv.indexOf('--model') + 1];
 if (model.includes('claude-opus-5-5')) {
-  fs.writeFileSync(${JSON.stringify(join(cache, "claude2-v3.json"))}, JSON.stringify({updatedAt:Date.now(),limits:[{label:'week',remaining:0,unit:'%'}]}));
+  fs.writeFileSync(${JSON.stringify(join(cache, "codex-v3.json"))}, JSON.stringify({updatedAt:Date.now(),limits:[{label:'week',remaining:0,unit:'%'}]}));
   process.exit(1);
 }
 console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:model}],stopReason:'stop'}}));
 `, { mode: 0o700 });
 	const calls: string[] = [];
 	const result = await runWorkerProc(agent, "test", { cwd: root, registry, modelOverride: opus, steerByQuota: false, onAttempt: model => calls.push(model) });
-	assert.equal(result.status, "ok");
-	assert.deepEqual(calls, [opus, astra], `must skip ${opus2}`);
-	assert.equal(result.attempts, 2);
+	assert.equal(result.status, "error");
+	assert.deepEqual(calls, [opus], "must skip exhausted Astra and Sol");
+	assert.equal(result.attempts, 1);
 });
 
 test("SDK rechecks quotas after asynchronous setup without counting a skipped prompt", async t => {
@@ -284,13 +280,13 @@ test("SDK rechecks quotas after asynchronous setup without counting a skipped pr
 });
 
 test("unregistered fallbacks preserve the last child provider error", async () => {
-	quota("claude", 50);
+	quota("claude2", 50);
 	quota("codex", 50);
 	writeFileSync(bin, `#!/usr/bin/env node
 console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[],stopReason:'error',errorMessage:'fixture provider error'}}));
 process.exitCode = 1;
 `, { mode: 0o700 });
-	const onlyOpus = { ...registry, find: (provider: string, id: string) => provider === "anthropic" ? registry.find(provider, id) : undefined } as ModelRegistry;
+	const onlyOpus = { ...registry, find: (provider: string, id: string) => provider === "anthropic-2" ? registry.find(provider, id) : undefined } as ModelRegistry;
 	const result = await runWorkerProc(agent, "test", { cwd: root, registry: onlyOpus });
 	assert.equal(result.status, "error");
 	assert.equal(result.attempts, 1);

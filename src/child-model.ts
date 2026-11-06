@@ -1,14 +1,14 @@
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { resolveWorkerModel } from "./model.ts";
-import { sameModelId } from "./roster.ts";
+import { activeAccountSpec, sameModelId } from "./roster.ts";
 
 /**
- * A bare ID resolves when it names one model. The same model on both Claude
- * accounts is one model: pin the first account; fallbacks add the second.
+ * A bare ID resolves when it names one model. Retired first-account catalog
+ * entries do not participate in selection.
  */
 function resolveBareModel(registry: ModelRegistry, spec: string) {
 	for (const catalog of [registry.getAll(), registry.getAvailable()]) {
-		const matches = catalog.filter(model => model.id === spec);
+		const matches = catalog.filter(model => model.id === spec && model.provider !== "anthropic");
 		const identities = new Set(matches.map(model => sameModelId(`${model.provider}/${model.id}`)));
 		if (identities.size !== 1) continue;
 		const [identity] = identities;
@@ -19,7 +19,7 @@ function resolveBareModel(registry: ModelRegistry, spec: string) {
 
 /** `provider/id` for a bare ID that resolves exactly; any other spec unchanged. */
 export function qualifiedSpec(registry: ModelRegistry, spec: string): string {
-	if (spec.includes("/") || spec === "inherit") return spec;
+	if (spec.includes("/") || spec === "inherit") return activeAccountSpec(spec);
 	const model = resolveChildModel(registry, spec);
 	return model ? `${model.provider}/${model.id}` : spec;
 }

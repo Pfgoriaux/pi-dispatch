@@ -30,7 +30,7 @@ function envModel(name: string): string | undefined {
 }
 
 const architectModel = () => envModel("DISPATCH_ARCHITECT_MODEL") ?? "openai-codex/gpt-6-astra";
-const challengerModel = () => envModel("DISPATCH_CHALLENGER_MODEL") ?? "anthropic/claude-opus-5-5";
+const challengerModel = () => envModel("DISPATCH_CHALLENGER_MODEL") ?? "anthropic-2/claude-opus-5-5";
 const preMortemModel = () => envModel("DISPATCH_PREMORTEM_MODEL") ?? "aperture/neuralwatt/deepseek-v4.1-flash";
 
 const STEPS = [

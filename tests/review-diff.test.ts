@@ -358,7 +358,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 
 	const plan = await runPlan();
 	const [draft, preMortem, challenge, final] = plan.details.items as WorkerResult[];
-	assert.deepEqual([draft.model, challenge.model, final.model], ["openai-codex/gpt-6-astra", "anthropic/claude-opus-5-5", "openai-codex/gpt-6-astra"]);
+	assert.deepEqual([draft.model, challenge.model, final.model], ["openai-codex/gpt-6-astra", "anthropic-2/claude-opus-5-5", "openai-codex/gpt-6-astra"]);
 	assert.match(preMortem.model!, /deepseek/i);
 	assert.match(promptOf("PREMORTEM-TEXT"), /DRAFT-TEXT/);
 	assert.match(promptOf("PREMORTEM-TEXT"), /Start with the draft design/);
@@ -377,7 +377,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 	// Architect fails over to Opus; the challenger must not reuse it.
 	fail = (provider, step) => provider === "openai-codex" && step === "DRAFT-TEXT";
 	const swapped = (await runPlan()).details.items as WorkerResult[];
-	assert.equal(swapped[0].model, "anthropic/claude-opus-5-5");
+	assert.equal(swapped[0].model, "anthropic-2/claude-opus-5-5");
 	assert.notEqual(modelIdentity(swapped[2].model!), modelIdentity(swapped[0].model!));
 
 	// The final step falls back, but never onto the challenger's model.
@@ -394,7 +394,7 @@ test("feature_plan passes each step forward and keeps architect and challenger a
 	assert.match(noChallenge.content[0].text, /FINAL-TEXT\n\nFull report saved to: /, "final plan still runs without a challenge");
 	assert.match(promptOf("FINAL-TEXT"), /DESIGN CHALLENGE:\\n\(unavailable:/);
 
-	// Both Claude accounts and OpenAI out of credits: GLM drafts and finalizes; the challenger cannot reuse it.
+	// Claude 2 and OpenAI out of credits: GLM drafts and finalizes; the challenger cannot reuse it.
 	fail = (provider) => provider.startsWith("anthropic") || provider === "openai-codex";
 	const glm = (await runPlan()).details.items as WorkerResult[];
 	assert.deepEqual([glm[0].model, glm[2].status, glm[3].model], ["aperture/neuralwatt/glm-5.3", "error", "aperture/neuralwatt/glm-5.3"]);

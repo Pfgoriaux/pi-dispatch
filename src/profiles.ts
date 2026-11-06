@@ -59,13 +59,13 @@ export const PROFILES: Record<ProfileTier, ModelProfile> = {
 	// BALANCED: Standard reviews, synthesis, general work.
 	// Sonnet 5.5 (with Sol 6.1 as quota-routed counterpart via withProviderFallbacks).
 	balanced: {
-		model: envModel("DISPATCH_PROFILE_BALANCED_MODEL") ?? "anthropic/claude-sonnet-5-5",
+		model: envModel("DISPATCH_PROFILE_BALANCED_MODEL") ?? "anthropic-2/claude-sonnet-5-5",
 	},
 	// PRECISE: Security, architecture, complex features, production-critical.
 	// Opus 5.5 (with Astra as quota-routed counterpart via withProviderFallbacks).
 	precise: {
 		model:
-			envModel("DISPATCH_PROFILE_PRECISE_MODEL") ?? "anthropic/claude-opus-5-5",
+			envModel("DISPATCH_PROFILE_PRECISE_MODEL") ?? "anthropic-2/claude-opus-5-5",
 	},
 	// LONG: Default writer model, multi-file refactors, codebase research.
 	// Kimi K3
@@ -83,16 +83,16 @@ export const PROFILE_TIERS: ReadonlySet<string> = new Set(
  * names its model, so agent rosters cannot route pr_review elsewhere.
  */
 export const REVIEW_MODELS = {
-	opus: envModel("DISPATCH_REVIEW_OPUS_MODEL") ?? "anthropic/claude-opus-5-5",
+	opus: envModel("DISPATCH_REVIEW_OPUS_MODEL") ?? "anthropic-2/claude-opus-5-5",
 	astra: envModel("DISPATCH_REVIEW_ASTRA_MODEL") ?? "openai-codex/gpt-6-astra",
-	preMortem: envModel("DISPATCH_REVIEW_PREMORTEM_MODEL") ?? "anthropic/claude-sonnet-5-5",
+	preMortem: envModel("DISPATCH_REVIEW_PREMORTEM_MODEL") ?? "anthropic-2/claude-sonnet-5-5",
 	specReuse: envModel("DISPATCH_REVIEW_SPEC_MODEL") ?? GLM_MODEL,
-	slop: envModel("DISPATCH_REVIEW_SLOP_MODEL") ?? "anthropic/claude-sonnet-5-5",
-	verify: envModel("DISPATCH_REVIEW_VERIFY_MODEL") ?? "anthropic/claude-sonnet-5-5",
+	slop: envModel("DISPATCH_REVIEW_SLOP_MODEL") ?? "anthropic-2/claude-sonnet-5-5",
+	verify: envModel("DISPATCH_REVIEW_VERIFY_MODEL") ?? "anthropic-2/claude-sonnet-5-5",
 } as const;
 
 /** Last resort for every pr_review step. */
-export const REVIEW_FALLBACK_MODELS: readonly string[] = ["anthropic/claude-sonnet-5-5"];
+export const REVIEW_FALLBACK_MODELS: readonly string[] = ["anthropic-2/claude-sonnet-5-5"];
 
 /**
  * Last resort for every feature_plan step, tried after the step's own chain:

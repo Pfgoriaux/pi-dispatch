@@ -5,7 +5,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import { ModelRuntime, type ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { withProviderFallbacks, type RankedCandidate } from "../src/roster.ts";
+import { rankCandidates, withProviderFallbacks, type RankedCandidate } from "../src/roster.ts";
+import { resolveWorkerModel } from "../src/model.ts";
+import { resolveChildModel } from "../src/child-model.ts";
 import { runWorker } from "../src/worker.ts";
 import { ModelDiversity } from "../src/model-diversity.ts";
 import { runWorkerProc } from "../src/worker-proc.ts";
@@ -129,20 +131,19 @@ process.exitCode = failed ? 1 : 0;
 }
 
 // Top-tier model pairing tests (Opus 5.5 ↔ Astra 6)
-const opus = "anthropic/claude-opus-5-5";
-const opus2 = "anthropic-2/claude-opus-5-5";
+const opus = "anthropic-2/claude-opus-5-5";
 const astra = "openai-codex/gpt-6-astra";
 
-test("top-tier Opus 5.5 tries Claude 2, then Astra, then 6.1 Sol", () => {
+test("top-tier Opus 5.5 uses Claude 2, then Astra, then 6.1 Sol", () => {
 	const routes = withProviderFallbacks([candidate(opus)]);
-	assert.deepEqual(routes.map(c => c.modelSpec), [opus, opus2, astra, codexSol]);
+	assert.deepEqual(routes.map(c => c.modelSpec), [opus, astra, codexSol]);
 	assert.ok(routes.every(c => c.thinking === "high"));
 	assert.deepEqual(withProviderFallbacks(routes), routes);
 });
 
-test("top-tier Astra adds Opus on both Claude accounts, then 6.1 Sol", () => {
+test("top-tier Astra adds Opus on Claude 2, then 6.1 Sol", () => {
 	const routes = withProviderFallbacks([candidate(astra)]);
-	assert.deepEqual(routes.map(c => c.modelSpec), [astra, opus, opus2, codexSol]);
+	assert.deepEqual(routes.map(c => c.modelSpec), [astra, opus, codexSol]);
 	assert.ok(routes.every(c => c.thinking === "high"));
 	assert.deepEqual(withProviderFallbacks(routes), routes);
 });
@@ -160,35 +161,35 @@ test("Aperture-prefixed Claude specs keep their single route", () => {
 	assert.deepEqual(withProviderFallbacks([candidate(`aperture/${opus}`)]).map(c => c.modelSpec), [`aperture/${opus}`]);
 });
 
-test("a Claude 2 pin falls back to the first account before cross-provider peers", () => {
-	const configured = { ...candidate(opus), thinking: "off", entry: { ...candidate(opus).entry, thinking: "off" } };
-	const routes = withProviderFallbacks([candidate(opus2), candidate(astra), configured]);
-	assert.deepEqual(routes.map(c => c.modelSpec), [opus2, opus, astra, codexSol]);
-	assert.equal(routes[1], configured);
+test("retired first-account pins map to Claude 2 without a second account attempt", () => {
+	const retired = "anthropic/claude-opus-5-5";
+	const routes = withProviderFallbacks([candidate(retired), candidate(opus)]);
+	assert.deepEqual(routes.map(c => c.modelSpec), [opus, astra, codexSol]);
+	assert.equal(routes[0].entry.provider, "anthropic-2");
+	assert.equal(routes[0].entry.model, "claude-opus-5-5");
 	assert.deepEqual(withProviderFallbacks(routes), routes);
 });
 
 // Mid-tier pairing (Sonnet 5.5 → Sol 6.1)
 
-const sonnet = "anthropic/claude-sonnet-5-5";
-const sonnet2 = "anthropic-2/claude-sonnet-5-5";
+const sonnet = "anthropic-2/claude-sonnet-5-5";
 
 test("mid-tier Sonnet 5.5 tries Claude 2, then Sol 6.1 once; Sol never expands to Sonnet", () => {
 	const routes = withProviderFallbacks([candidate(sonnet)]);
-	assert.deepEqual(routes.map(c => c.modelSpec), [sonnet, sonnet2, codexSol]);
+	assert.deepEqual(routes.map(c => c.modelSpec), [sonnet, codexSol]);
 	assert.deepEqual(withProviderFallbacks(routes), routes);
 	assert.deepEqual(withProviderFallbacks([candidate(codexSol)]).map(c => c.modelSpec), [codexSol]);
 });
 
 test("Sonnet ahead of other families keeps Sol as the single last fallback", () => {
 	const routes = withProviderFallbacks([candidate(sonnet), candidate(opus)]);
-	assert.deepEqual(routes.map(c => c.modelSpec), [sonnet, sonnet2, opus, opus2, astra, codexSol]);
+	assert.deepEqual(routes.map(c => c.modelSpec), [sonnet, opus, astra, codexSol]);
 });
 
 test("mixed top-tier and Neuralwatt get appropriate fallbacks", () => {
 	const routes = withProviderFallbacks([candidate(opus), candidate(neuralwatt)]);
-	// Opus → Claude 2 → Astra, Neuralwatt, then 6.1 Sol
-	assert.deepEqual(routes.map(c => c.modelSpec), [opus, opus2, astra, neuralwatt, codexSol]);
+	// Opus → Astra, Neuralwatt, then 6.1 Sol
+	assert.deepEqual(routes.map(c => c.modelSpec), [opus, astra, neuralwatt, codexSol]);
 });
 
 /** Mock the SDK so `failing` models error with a non-retryable credit failure. */
@@ -221,15 +222,50 @@ function mockModels(t: { mock: typeof test.mock }, failing: string[], calls: str
 	} as unknown as ModelRegistry;
 }
 
+test("retired roster entries select Claude 2 and keep thinking effort", () => {
+	const routes = rankCandidates([{ provider: "anthropic", model: "claude-opus-5-5", thinking: "max", weight: 4 }]);
+	assert.deepEqual(routes.map(c => c.modelSpec), [opus, astra, codexSol]);
+	assert.equal(routes[0].entry.provider, "anthropic-2");
+	assert.equal(routes[0].thinking, "max");
+});
+
+for (const source of ["pin", "inherit", "last-resort"] as const) {
+	test(`SDK remaps retired Claude ${source} even when the old provider is available`, async t => {
+		const calls: string[] = [];
+		const registry = mockModels(t, ["fixture/fail"], calls);
+		const retired = "anthropic/claude-opus-5-5";
+		const result = await runWorker(agent, "test", {
+			registry,
+			fallbackModel: registry.find("anthropic", "claude-opus-5-5"),
+			modelSpec: source === "pin" ? retired : source === "inherit" ? "inherit" : "fixture/fail",
+			fallbackModels: source === "last-resort" ? [retired] : undefined,
+		});
+		assert.equal(result.status, "ok");
+		assert.deepEqual(calls, source === "last-resort" ? ["fixture/fail", opus] : [opus]);
+	});
+}
+
+test("missing Claude 2 never resolves a bare or explicit pin to the retired provider", () => {
+	const retired = { provider: "anthropic", id: "claude-opus-5-5" };
+	const registry = {
+		getAll: () => [retired], getAvailable: () => [retired],
+		find: (provider: string) => provider === "anthropic" ? retired : undefined,
+	} as unknown as ModelRegistry;
+	for (const spec of [retired.id, `anthropic/${retired.id}`]) {
+		assert.equal(resolveWorkerModel(registry, spec, undefined), undefined);
+		assert.equal(resolveChildModel(registry, spec), undefined);
+	}
+});
+
 for (const [pinned, peer] of [[astra, opus], [opus, astra]]) {
 	test(`${pinned} failover skips excluded peer and reports the failed attempt`, { timeout: 10000 }, async (t) => {
 		const calls: string[] = [];
-		const registry = mockModels(t, [pinned, opus2], calls);
-		// Neither the Aperture prefix nor the second Claude account lets the peer slip through.
+		const registry = mockModels(t, [pinned], calls);
+		// The Aperture prefix cannot let the excluded peer slip through.
 		const result = await runWorker(agent, "test", {
 			registry, fallbackModel: undefined, modelSpec: pinned, excludeModels: [`aperture/${peer}`],
 		});
-		const failed = pinned === opus ? [opus, opus2] : [astra];
+		const failed = [pinned];
 		assert.deepEqual(calls, [...failed, codexSol]);
 		assert.equal(result.status, "ok");
 		assert.equal(result.model, codexSol);
@@ -239,7 +275,7 @@ for (const [pinned, peer] of [[astra, opus], [opus, astra]]) {
 
 test("parallel credit fallbacks use Sol only once, then continue with fewer workers", async (t) => {
 	const calls: string[] = [];
-	const registry = mockModels(t, [opus, opus2, astra, neuralwatt], calls);
+	const registry = mockModels(t, [opus, astra, neuralwatt], calls);
 	const diversity = new ModelDiversity();
 	const results = await Promise.all([opus, astra, neuralwatt].map(modelSpec => runWorker(agent, "test", {
 		registry, fallbackModel: undefined, modelSpec, claimModel: diversity.worker(),
@@ -247,7 +283,6 @@ test("parallel credit fallbacks use Sol only once, then continue with fewer work
 	assert.equal(results.filter(r => r.status === "ok").length, 1);
 	assert.equal(calls.filter(model => model === codexSol).length, 1);
 	assert.equal(calls.filter(model => model === opus).length, 1);
-	assert.equal(calls.filter(model => model === opus2).length, 1, "same owner can retry the other Claude account");
 	assert.equal(calls.filter(model => model === astra).length, 1);
 	assert.equal(calls.filter(model => model === neuralwatt).length, 1);
 	assert.equal(results.reduce((sum, r) => sum + (r.usage?.totalTokens ?? 0), 0), calls.length * 2);
@@ -293,11 +328,11 @@ const lastResorts = [glmNeuralwatt];
 
 test("workflow last resorts run GLM on Neuralwatt with Sol excluded", async (t) => {
 	const calls: string[] = [];
-	const registry = mockModels(t, [opus, opus2], calls);
+	const registry = mockModels(t, [opus], calls);
 	const result = await runWorker(agent, "test", {
 		registry, fallbackModel: undefined, modelSpec: opus, excludeModels: [astra, codexSol], fallbackModels: lastResorts,
 	});
-	assert.deepEqual(calls, [opus, opus2, glmNeuralwatt]);
+	assert.deepEqual(calls, [opus, glmNeuralwatt]);
 	assert.equal(result.status, "ok");
 	assert.equal(result.model, glmNeuralwatt);
 });
@@ -313,7 +348,7 @@ test("workflow last resorts are not retried when already in the chain", async (t
 
 test("parallel reviewers cannot both fall back to GLM", async (t) => {
 	const calls: string[] = [];
-	const registry = mockModels(t, [opus, opus2, astra, codexSol], calls);
+	const registry = mockModels(t, [opus, astra, codexSol], calls);
 	const pool = new ModelDiversity();
 	const [first, second] = await Promise.all([[opus, astra], [astra, opus]].map(([modelSpec, peer]) => runWorker(agent, "test", {
 		registry, fallbackModel: undefined, modelSpec, excludeModels: [peer],

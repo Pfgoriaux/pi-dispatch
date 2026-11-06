@@ -178,11 +178,11 @@ test("successful fallback keeps unsupported choices visible after aggregation", 
 	const { registry, calls } = thinkingFixture(t, (p, id) => ({ ...thinkingModel(p, id), reasoning: !p?.startsWith("anthropic") }));
 	const ctx = { cwd: process.env.PI_CODING_AGENT_DIR!, isProjectTrusted: () => false, modelRegistry: registry };
 	const result = await tools().get("dispatch")!.execute("test", { herdr: false, aggregate: true,
-		tasks: [{ agent: "scout", task: "test", model: "anthropic/claude-opus-5-5", thinking: "xhigh" }],
+		tasks: [{ agent: "scout", task: "test", model: "anthropic-2/claude-opus-5-5", thinking: "xhigh" }],
 	}, undefined, undefined, ctx as any);
 	assert.ok((result.details as DispatchDetails).items.every(r => r.status === "ok"));
 	assert.match(text(result), /Unsupported thinking xhigh.*supported choices: off/);
-	assert.match(text(result), /Unsupported thinking medium for anthropic\/claude-sonnet-5-5/);
+	assert.match(text(result), /Unsupported thinking medium for anthropic-2\/claude-sonnet-5-5/);
 	assert.deepEqual(calls.map(c => c.thinking), ["xhigh", "medium"]);
 	assert.ok(calls.every(c => !c.spec.startsWith("anthropic")));
 });
