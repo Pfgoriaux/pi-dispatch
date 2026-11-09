@@ -27,6 +27,9 @@ const recognized: [provider: string, id: string, family: KnownModelFamily][] = [
 	["neuralwatt", "kimi-k3", "kimi-k3"],
 	["neuralwatt", "kimi-k3-fast", "kimi-k3"],
 	["aperture", "neuralwatt/kimi-k3", "kimi-k3"],
+	["neuralwatt", "kimi-k3.1-pro", "kimi-k3.1"],
+	["aperture", "neuralwatt/kimi-k3.1-pro", "kimi-k3.1"],
+	["moonshot", "kimi-k3.1-pro-highspeed", "kimi-k3.1"],
 	["aperture", "neuralwatt/deepseek-v4.1-flash", "deepseek-v4.1"],
 	["openrouter", "deepseek/deepseek-v4.1", "deepseek-v4.1"],
 ];
@@ -52,6 +55,7 @@ const unknown: [provider: string, id: string][] = [
 	["openai", "gpt-60"],
 	["neuralwatt", "glm-5.2"],
 	["neuralwatt", "kimi-k2.7-code"],
+	["neuralwatt", "kimi-k3.10-pro"],
 	["deepseek", "deepseek-v3"],
 	["deepseek", "deepseek-v4-pro"],
 	["deepseek", "deepseek-v4-flash"],

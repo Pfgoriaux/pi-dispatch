@@ -115,6 +115,14 @@ test("Kimi replaces GLM and never retries another model", async (t) => {
 	assert.ok(!calls.some(call => /glm|sol/.test(call.spec)));
 });
 
+test("Kimi K3.1 Pro replaces GLM", async (t) => {
+	const { calls, run } = setup(t, () => "Answer");
+	const result = await run({ third: "kimi-k3.1-pro" });
+	assert.equal(result.details.items[2].status, "ok");
+	assert.equal(result.details.items[2].model, "aperture/neuralwatt/kimi-k3.1-pro");
+	assert.equal(calls.length, 3);
+});
+
 test("all failures are explicit, output is capped, and cancellation starts no requests", async (t) => {
 	let mode: "fail" | "long" = "fail";
 	const { calls, run } = setup(t, () => mode === "fail" ? undefined : "界".repeat(10000));

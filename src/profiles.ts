@@ -20,7 +20,7 @@
  *              with quota-aware routing between them.
  *
  *   long     — Frontend and UI, design, data visualization, image inputs,
- *              end-to-end feature builds. Kimi K3. Backend changes, refactors,
+ *              end-to-end feature builds. Kimi K3.1 Pro. Backend changes, refactors,
  *              code migrations, bug fixes, scripts and terminal-heavy work name
  *              GLM_MODEL explicitly.
  *
@@ -45,7 +45,7 @@ function envModel(name: string): string | undefined {
 }
 
 /** Literal defaults; Hetzner drafting guidance must not inherit profile overrides. */
-export const KIMI_MODEL = "aperture/neuralwatt/kimi-k3";
+export const KIMI_MODEL = "aperture/neuralwatt/kimi-k3.1-pro";
 export const GLM_MODEL = "aperture/neuralwatt/glm-5.3";
 
 export const PROFILES: Record<ProfileTier, ModelProfile> = {
@@ -68,7 +68,7 @@ export const PROFILES: Record<ProfileTier, ModelProfile> = {
 			envModel("DISPATCH_PROFILE_PRECISE_MODEL") ?? "anthropic-2/claude-opus-5-5",
 	},
 	// LONG: Default writer model, multi-file refactors, codebase research.
-	// Kimi K3
+	// Kimi K3.1 Pro, falling back to Kimi K3 (withProviderFallbacks).
 	long: {
 		model: envModel("DISPATCH_PROFILE_LONG_MODEL") ?? KIMI_MODEL,
 	},

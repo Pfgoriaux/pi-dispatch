@@ -37,6 +37,14 @@ for (const prefix of ["", "aperture/"]) {
 	});
 }
 
+for (const prefix of ["", "aperture/"]) {
+	test(`${prefix}Neuralwatt Kimi K3.1 Pro falls back to Kimi K3, then Codex 6.1 Sol`, () => {
+		const routes = withProviderFallbacks([candidate(`${prefix}neuralwatt/kimi-k3.1-pro`)]);
+		assert.deepEqual(routes.map(c => c.modelSpec), [`${prefix}neuralwatt/kimi-k3.1-pro`, `${prefix}neuralwatt/kimi-k3`, codexSol]);
+		assert.deepEqual(withProviderFallbacks(routes), routes);
+	});
+}
+
 test("6.1 Sol stays last across model families and explicit duplicates", () => {
 	const routes = withProviderFallbacks([candidate(neuralwatt), candidate(codexSol), candidate("neuralwatt/glm-5.3")]);
 	assert.equal(routes.at(-1)?.modelSpec, codexSol);

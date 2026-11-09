@@ -205,7 +205,7 @@ interfaces, review only, then dispatch an authorized `precise` writer.
 ### Council
 
 `council({ question, context?, third?, herdr?, thinking? })` runs Opus, Astra and GLM 5.3
-by default; `third:"kimi-k3"` replaces GLM. All use the invocation’s thinking (default high) and the advisor
+by default; `third:"kimi-k3.1-pro"` or `third:"kimi-k3"` replaces GLM. All use the invocation’s thinking (default high) and the advisor
 role, restricted to local read/search tools even when custom roles grant more.
 Configured Linkup tools remain available.
 
@@ -237,9 +237,9 @@ receives current role names and tools before each turn, not all role prompts.
 | cheap | Aperture Neuralwatt DeepSeek V4.1 Flash |
 | balanced | Anthropic Sonnet 5.5 |
 | precise | Anthropic Opus 5.5 |
-| long | Aperture Neuralwatt Kimi K3 |
+| long | Aperture Neuralwatt Kimi K3.1 Pro |
 
-Writers split by work, not size. `long` (Kimi K3) takes frontend and UI, design
+Writers split by work, not size. `long` (Kimi K3.1 Pro) takes frontend and UI, design
 systems, data visualization, image inputs, and end-to-end feature builds.
 Explicit `aperture/neuralwatt/glm-5.3` takes backend changes, refactors and
 migrations, bug fixes, scripts and infra, and terminal-heavy work; it takes text
@@ -274,7 +274,8 @@ IDs fail before spawn.
 ### Routing and failure
 
 - Kimi and GLM 5.3 on Neuralwatt (direct and Aperture routes) fall back to
-  Codex Sol 6.1; DeepSeek falls back through Haiku 5.5 then Sol.
+  Codex Sol 6.1. Kimi K3.1 Pro falls back through Kimi K3 on the same route
+  then Sol; DeepSeek falls back through Haiku 5.5 then Sol.
 - Claude routes use `anthropic-2/<id>`, registered by pi-ant. Retired
   `anthropic/<id>` pins and roster entries resolve to Claude 2, with the same
   model and thinking level. Quota steering can move a higher-headroom Codex peer
@@ -368,7 +369,7 @@ no-op.
 | GPT-6 Astra | `gpt-6-astra` and dash-suffixed variants |
 | GPT-6.1 Sol | `gpt-6.1-sol` and dash-suffixed variants |
 | GLM-5.3 | `glm-5.3` and dash-suffixed variants |
-| Kimi K3 | `kimi-k3` and dash-suffixed variants |
+| Kimi K3 and K3.1 | `kimi-k3`, `kimi-k3.1` and dash-suffixed variants |
 | DeepSeek 4.1 | `deepseek-v4.1` and dash-suffixed variants |
 
 Other versions do not inherit a neighbouring version's guidance; GPT-6 Sol,
@@ -503,15 +504,15 @@ Profile environment overrides do not change it.
 
 | Executor contract | Task model | Task reviewModel | Task modelFallbacks |
 |---|---|---|---|
-| `long`: frontend and UI, design systems, data visualization, image inputs, end-to-end feature builds | `aperture/neuralwatt/kimi-k3` | `aperture/neuralwatt/glm-5.3` | None |
-| GLM: backend changes, refactors and code migrations, bug fixes, scripts and infra, terminal-heavy work | `aperture/neuralwatt/glm-5.3` | `aperture/neuralwatt/kimi-k3` | None |
+| `long`: frontend and UI, design systems, data visualization, image inputs, end-to-end feature builds | `aperture/neuralwatt/kimi-k3.1-pro` | `aperture/neuralwatt/glm-5.3` | None |
+| GLM: backend changes, refactors and code migrations, bug fixes, scripts and infra, terminal-heavy work | `aperture/neuralwatt/glm-5.3` | `aperture/neuralwatt/kimi-k3.1-pro` | None |
 | `precise` | Keep local; do not draft for Hetzner | — | — |
 
 GLM 5.3 takes text only; a task that needs an image goes to Kimi.
 
 Writer and reviewer thinking must be `high` or above: set `worker.thinking`, and
 any `worker.reviewThinking`, task `thinking`, or task `reviewThinking`, to `high`
-(default) or `max`. Kimi K3 and GLM 5.3 have no xhigh level, so workers refuse it. This guidance does not rewrite configuration, validate providers, or
+(default) or `max`. Kimi and GLM 5.3 have no xhigh level, so workers refuse it. This guidance does not rewrite configuration, validate providers, or
 route tasks automatically.
 
 Give each task one concern and small, bounded `ownedFiles`: exact files or narrow
@@ -582,7 +583,7 @@ and each task’s `thinking` and `reviewThinking`:
   "store": "/abs/path/night-1.sqlite",
   "repo": { "root": "/abs/repo", "baseBranch": "feat/x", "worktreesRoot": "/abs/.worktrees",
             "sessionsRoot": "/abs/sessions", "branchPrefix": "pilot/night-1" },
-  "worker": { "piExecutable": "/abs/bin/pi", "model": "aperture/neuralwatt/kimi-k3", "thinking": "high" },
+  "worker": { "piExecutable": "/abs/bin/pi", "model": "aperture/neuralwatt/kimi-k3.1-pro", "thinking": "high" },
   "reviewer": { "model": "openai-codex/gpt-6-astra",
                 "fallbacks": ["aperture/neuralwatt/glm-5.3"] },
   "publication": { "remote": "origin", "url": "git@github.com:owner/repo.git",

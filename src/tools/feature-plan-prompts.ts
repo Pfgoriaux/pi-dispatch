@@ -24,7 +24,7 @@ export const HETZNER_MODEL_GUIDANCE = `| Executor contract | Task model | Task r
 | GLM: backend changes, refactors and code migrations, bug fixes, scripts and infra, terminal-heavy work | \`${GLM_MODEL}\` | \`${KIMI_MODEL}\` | None |
 | \`precise\` | Keep local; do not draft for Hetzner | — | — |
 GLM 5.3 takes text only; a task that needs an image goes to Kimi.
-Writer and reviewer thinking must be \`high\` or above: set worker.thinking, and any worker.reviewThinking, task thinking, or task reviewThinking, to \`high\` (default) or \`max\`. Kimi K3 and GLM 5.3 have no xhigh level, so workers refuse it. durable_batch refuses lower effort before drafting.
+Writer and reviewer thinking must be \`high\` or above: set worker.thinking, and any worker.reviewThinking, task thinking, or task reviewThinking, to \`high\` (default) or \`max\`. Kimi and GLM 5.3 have no xhigh level, so workers refuse it. durable_batch refuses lower effort before drafting.
 Use these literal defaults, not environment-overridden PROFILES or REVIEW_MODELS. This is drafting guidance, not automatic configuration rewriting, provider validation, or routing.`;
 
 export const HETZNER_DRAFT_GUIDANCE = [
