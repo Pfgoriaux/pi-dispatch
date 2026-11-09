@@ -287,7 +287,7 @@ IDs fail before spawn.
 - Quota steering ranks existing peer candidates without inserting a top model.
   Tiers/rosters opt in; concrete pins and `inherit` keep provider order.
   Every attempt still skips fresh, known exhausted providers.
-- Snapshots come from `<agentDir>/cache/usage-bar/<provider>-v3.json` written by
+- Snapshots come from `<agentDir>/cache/usage-bar/<provider>-v4.json` written by
   pi-usage-bar (`claude2` for `anthropic-2`). The retired `claude` cache is not
   used. Use the
   lowest remaining percentage across the windows that bind the model. Claude

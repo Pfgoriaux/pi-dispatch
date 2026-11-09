@@ -39,7 +39,7 @@ const registry = {
 } as ModelRegistry;
 const snapshot = (remaining: number, updatedAt = Date.now()) => ({ updatedAt, limits: [{ label: "week", remaining, unit: "%" as const }] });
 function quota(provider: string, remaining: number, updatedAt = Date.now()) {
-	writeFileSync(join(cache, `${provider}-v3.json`), JSON.stringify(snapshot(remaining, updatedAt)));
+	writeFileSync(join(cache, `${provider}-v4.json`), JSON.stringify(snapshot(remaining, updatedAt)));
 }
 
 for (const source of ["frontmatter", "pin", "inherit", "bare-pin"] as const) {
@@ -82,7 +82,7 @@ test("retired cache is ignored, and per-model windows bind only their model", ()
 	assert.equal(exhaustedQuotaReason(opus), undefined);
 	quota("claude2", 0);
 	assert.match(exhaustedQuotaReason(opus)!, /\(week at 0%\)$/);
-	const scoped = (label: string) => writeFileSync(join(cache, "claude2-v3.json"), JSON.stringify({ updatedAt: Date.now(), limits: [
+	const scoped = (label: string) => writeFileSync(join(cache, "claude2-v4.json"), JSON.stringify({ updatedAt: Date.now(), limits: [
 		{ label: "5h", remaining: 100, unit: "%" }, { label: "week", remaining: 32, unit: "%" }, { label, remaining: 0, unit: "%" },
 	] }));
 	scoped("fableweek");
@@ -93,7 +93,7 @@ test("retired cache is ignored, and per-model windows bind only their model", ()
 		assert.match(exhaustedQuotaReason(opus)!, /claude2 quota exhausted/);
 		assert.equal(exhaustedQuotaReason("anthropic-2/claude-sonnet-5-5"), undefined);
 	}
-	rmSync(join(cache, "claude2-v3.json"));
+	rmSync(join(cache, "claude2-v4.json"));
 });
 
 test("eligibility rereads caches and only blocks fresh, known exhaustion", () => {
@@ -103,7 +103,7 @@ test("eligibility rereads caches and only blocks fresh, known exhaustion", () =>
 	assert.equal(exhaustedQuotaReason(opus), undefined);
 	quota("claude2", 0, Date.now() - 180_001);
 	assert.equal(exhaustedQuotaReason(opus), undefined);
-	rmSync(join(cache, "claude2-v3.json"));
+	rmSync(join(cache, "claude2-v4.json"));
 	assert.equal(exhaustedQuotaReason(opus), undefined);
 	quota("neuralwatt", 0);
 	assert.match(exhaustedQuotaReason("neuralwatt/glm-5.3")!, /neuralwatt quota exhausted/);
@@ -111,7 +111,7 @@ test("eligibility rereads caches and only blocks fresh, known exhaustion", () =>
 });
 
 test("Neuralwatt overage budget keeps workers eligible after the included energy", () => {
-	const overage = (extra: number) => writeFileSync(join(cache, "neuralwatt-v3.json"), JSON.stringify({ updatedAt: Date.now(), limits: [
+	const overage = (extra: number) => writeFileSync(join(cache, "neuralwatt-v4.json"), JSON.stringify({ updatedAt: Date.now(), limits: [
 		{ label: "extra", remaining: 2 * extra, unit: "$", percentRemaining: extra, at: Date.now() + 86_400_000, renewal: "reset" },
 		{ label: "credits", remaining: 51.26, unit: "$", percentRemaining: 93 },
 	] }));
@@ -258,14 +258,14 @@ test("child skips all exhausted routes without spawning or inheriting", async ()
 });
 
 test("child fallback checks updated Codex quota before its next attempt", async t => {
-	t.after(() => rmSync(join(cache, "claude2-v3.json"), { force: true }));
+	t.after(() => rmSync(join(cache, "claude2-v4.json"), { force: true }));
 	quota("claude2", 50);
 	quota("codex", 50);
 	writeFileSync(bin, `#!/usr/bin/env node
 const fs = require('node:fs');
 const model = process.argv[process.argv.indexOf('--model') + 1];
 if (model.includes('claude-opus-5-5')) {
-  fs.writeFileSync(${JSON.stringify(join(cache, "codex-v3.json"))}, JSON.stringify({updatedAt:Date.now(),limits:[{label:'week',remaining:0,unit:'%'}]}));
+  fs.writeFileSync(${JSON.stringify(join(cache, "codex-v4.json"))}, JSON.stringify({updatedAt:Date.now(),limits:[{label:'week',remaining:0,unit:'%'}]}));
   process.exit(1);
 }
 console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:model}],stopReason:'stop'}}));

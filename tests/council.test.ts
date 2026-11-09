@@ -175,7 +175,7 @@ function claudeQuotas(t: TestContext, claude: number, claude2: number) {
 	const cache = path.join(process.env.PI_CODING_AGENT_DIR!, "cache", "usage-bar");
 	fs.mkdirSync(cache, { recursive: true });
 	for (const [provider, remaining] of [["claude", claude], ["claude2", claude2]] as const) {
-		const file = path.join(cache, `${provider}-v3.json`);
+		const file = path.join(cache, `${provider}-v4.json`);
 		fs.writeFileSync(file, JSON.stringify({ updatedAt: Date.now(), limits: [{ label: "week", remaining, unit: "%" }] }));
 		t.after(() => fs.rmSync(file));
 	}

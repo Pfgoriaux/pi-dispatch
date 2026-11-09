@@ -21,7 +21,7 @@ const finite = (v: unknown): v is number => typeof v === "number" && Number.isFi
 const object = (v: unknown): Record<string, unknown> =>
 	v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 
-/** Mirrors usage-bar's v3 wire contract without importing a separately versioned extension. */
+/** Mirrors usage-bar's v4 wire contract without importing a separately versioned extension. */
 export function validQuotaSnapshot(value: unknown, now = Date.now()): value is QuotaSnapshot {
 	const s = object(value);
 	return finite(s.updatedAt) && s.updatedAt > 0 && s.updatedAt <= now + 5000
@@ -60,7 +60,7 @@ function bindsModel(limit: Limit, spec?: string): boolean {
 export function readQuotaSnapshot(provider: string, directory: string, now = Date.now()): QuotaSnapshot | undefined {
 	if (!/^[a-z0-9-]{1,64}$/.test(provider)) return undefined;
 	try {
-		const text = readFileSync(join(directory, `${provider}-v3.json`), "utf8");
+		const text = readFileSync(join(directory, `${provider}-v4.json`), "utf8");
 		if (text.length > 16_384) return undefined;
 		const value: unknown = JSON.parse(text);
 		return validQuotaSnapshot(value, now) ? value : undefined;

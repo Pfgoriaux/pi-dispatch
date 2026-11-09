@@ -63,15 +63,15 @@ test("refill timestamps are not promises of restored capacity", () => {
 	}
 });
 
-test("v3 reader rejects corrupt or malformed data and does not require known provider names", t => {
+test("v4 reader rejects corrupt or malformed data and does not require known provider names", t => {
 	const dir = mkdtempSync(join(tmpdir(), "dispatch-quotas-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	assert.equal(readQuotaSnapshot("missing", dir, now), undefined);
 	for (const text of ["{", JSON.stringify({ updatedAt: now, limits: [] }), JSON.stringify(snapshot(101)), " ".repeat(16_385)]) {
-		writeFileSync(join(dir, "new-provider-v3.json"), text);
+		writeFileSync(join(dir, "new-provider-v4.json"), text);
 		assert.equal(readQuotaSnapshot("new-provider", dir, now), undefined);
 	}
-	writeFileSync(join(dir, "new-provider-v3.json"), JSON.stringify(snapshot(70)));
+	writeFileSync(join(dir, "new-provider-v4.json"), JSON.stringify(snapshot(70)));
 	assert.deepEqual(readQuotaSnapshot("new-provider", dir, now), snapshot(70));
 	assert.equal(readQuotaSnapshot("../new-provider", dir, now), undefined);
 	assert.equal(validQuotaSnapshot({ ...snapshot(50), limits: [{ label: "bad\nlabel", remaining: 50, unit: "%" }] }, now), false);
