@@ -110,6 +110,17 @@ test("eligibility rereads caches and only blocks fresh, known exhaustion", () =>
 	assert.match(exhaustedQuotaReason("aperture/neuralwatt/glm-5.3")!, /neuralwatt quota exhausted/);
 });
 
+test("Neuralwatt overage budget keeps workers eligible after the included energy", () => {
+	const overage = (extra: number) => writeFileSync(join(cache, "neuralwatt-v3.json"), JSON.stringify({ updatedAt: Date.now(), limits: [
+		{ label: "extra", remaining: 2 * extra, unit: "$", percentRemaining: extra, at: Date.now() + 86_400_000, renewal: "reset" },
+		{ label: "credits", remaining: 51.26, unit: "$", percentRemaining: 93 },
+	] }));
+	overage(25);
+	assert.equal(exhaustedQuotaReason("aperture/neuralwatt/glm-5.3"), undefined);
+	overage(0);
+	assert.match(exhaustedQuotaReason("aperture/neuralwatt/glm-5.3")!, /neuralwatt quota exhausted \(extra at 0%\)/);
+});
+
 test("low quotas never inject a model outside the configured candidates", () => {
  for (const provider of ["claude2","codex","neuralwatt"]) quota(provider, 5);
  const candidates = [{ modelSpec: "fake/small", thinking: "off", entry: { provider: "fake", model: "small", thinking: "off", weight: 1 } }];

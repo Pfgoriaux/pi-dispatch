@@ -294,6 +294,9 @@ IDs fail before spawn.
   per-model windows (`<model>week`, such as `fableweek` or `opusweek`) bind only
   model IDs containing that name. A skip names the empty windows, for example
   `Skipped anthropic-2/claude-fable-5-1: claude2 quota exhausted (fableweek at 0%)`.
+  Once Neuralwatt's included energy runs out, pi-ui reports the overage budget
+  (`extra`, credits up to the monthly spending limit) in place of `energy`, so
+  Neuralwatt workers keep running until that budget is empty.
   Missing, invalid, older-than-three-minute or
   expired-reset readings do not predict capacity; steering leaves those
   candidates in place. Dispatch neither polls providers nor reserves quota.
