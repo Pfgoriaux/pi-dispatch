@@ -2,7 +2,7 @@
 name: writer
 description: Implementation worker for confined code changes in a worktree
 tools: read, edit, write, bash
-# Kimi K3 by default; choose GLM 5.3 for small tasks or precise for high-risk work.
+# Kimi K3.1 Pro by default; choose GLM 5.3 for small tasks or precise for high-risk work.
 model: long
 ---
 

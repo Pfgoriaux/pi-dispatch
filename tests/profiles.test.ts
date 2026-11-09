@@ -15,7 +15,7 @@ test("tier defaults use Aperture for Neuralwatt and direct Pi for Codex", () => 
 	], { env, encoding: "utf8" }));
 	assert.equal(profiles.cheap.model, "aperture/neuralwatt/deepseek-v4.1-flash");
 	assert.equal(profiles.balanced.model, "anthropic-2/claude-sonnet-5-5");
-	assert.equal(profiles.long.model, "aperture/neuralwatt/kimi-k3");
+	assert.equal(profiles.long.model, "aperture/neuralwatt/kimi-k3.1-pro");
 	assert.equal(profiles.precise.model, "anthropic-2/claude-opus-5-5");
 });
 
@@ -34,7 +34,7 @@ test("bundled roles resolve to Kimi for writing and precise for planning", t => 
 		})));`,
 	], { env, encoding: "utf8" }));
 	assert.deepEqual(roles, [
-		{ name: "writer", model: "aperture/neuralwatt/kimi-k3" },
+		{ name: "writer", model: "aperture/neuralwatt/kimi-k3.1-pro" },
 		{ name: "planner", model: "anthropic-2/claude-opus-5-5" },
 	]);
 });
