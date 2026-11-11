@@ -8,7 +8,7 @@ import { markCooldown, resolveCandidates, withProviderFallbacks, type RankedCand
 import type { AgentConfig } from "../src/types.ts";
 
 const now = 2_000_000_000_000;
-const nw = "aperture/neuralwatt/kimi-k3";
+const nw = "aperture/neuralwatt/kimi-k3.1-pro";
 const codexSol = "openai-codex/gpt-6.1-sol";
 const candidate = (modelSpec: string): RankedCandidate => ({ modelSpec, thinking: "high", entry: { provider: "", model: modelSpec, thinking: "high", weight: 1 } });
 const snapshot = (...values: number[]): QuotaSnapshot => ({ updatedAt: now, limits: values.map((remaining, i) => ({ label: i ? "week" : "5h", remaining, unit: "%", renewal: "refill", at: now + 60_000 })) });

@@ -101,7 +101,7 @@ test("two malformed calls may recover without cutoff", { timeout: 10000 }, async
 test("internal cutoff can fail over an explicit route and accounts for both attempts", { timeout: 10000 }, async (t) => {
 	const state = setup(t, (model) => model.id.startsWith("neuralwatt/") ? "bad</arg_value>" : undefined);
 	const result = await runWorker(agent, "fixture", {
-		registry, fallbackModel: undefined, modelSpec: "aperture/neuralwatt/kimi-k3",
+		registry, fallbackModel: undefined, modelSpec: "aperture/neuralwatt/kimi-k3.1-pro",
 	});
 	assert.equal(result.status, "ok");
 	assert.equal(result.model, "openai-codex/gpt-6.1-sol");
@@ -116,7 +116,7 @@ test("parent cancellation wins over cutoff and never retries", { timeout: 10000 
 	const state = setup(t, () => "bad</arg_value>");
 	const controller = new AbortController();
 	const result = await runWorker(agent, "fixture", {
-		registry, fallbackModel: undefined, modelSpec: "aperture/neuralwatt/kimi-k3",
+		registry, fallbackModel: undefined, modelSpec: "aperture/neuralwatt/kimi-k3.1-pro",
 		signal: controller.signal,
 		onStream: (line) => { if (line.startsWith("cutoff:")) controller.abort(); },
 	});

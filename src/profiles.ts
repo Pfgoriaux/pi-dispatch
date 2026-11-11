@@ -68,7 +68,7 @@ export const PROFILES: Record<ProfileTier, ModelProfile> = {
 			envModel("DISPATCH_PROFILE_PRECISE_MODEL") ?? "anthropic-2/claude-opus-5-5",
 	},
 	// LONG: Default writer model, multi-file refactors, codebase research.
-	// Kimi K3.1 Pro, falling back to Kimi K3 (withProviderFallbacks).
+	// Kimi K3.1 Pro.
 	long: {
 		model: envModel("DISPATCH_PROFILE_LONG_MODEL") ?? KIMI_MODEL,
 	},

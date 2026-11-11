@@ -18,7 +18,7 @@ import { isolateAgentDir } from "./isolated-agent-dir.ts";
 isolateAgentDir();
 
 const codexSol = "openai-codex/gpt-6.1-sol";
-const neuralwatt = "aperture/neuralwatt/kimi-k3";
+const neuralwatt = "aperture/neuralwatt/kimi-k3.1-pro";
 const agent: AgentConfig = {
 	name: "fallback-fixture", description: "test", tools: [], model: neuralwatt,
 	thinking: "high", systemPrompt: "fixture", source: "bundled", filePath: "fixture",
@@ -28,19 +28,11 @@ const candidate = (modelSpec: string): RankedCandidate => ({
 });
 
 for (const prefix of ["", "aperture/"]) {
-	test(`${prefix}Neuralwatt Kimi K3 falls back to Codex 6.1 Sol once`, () => {
-		const first = `${prefix}neuralwatt/kimi-k3`;
+	test(`${prefix}Neuralwatt Kimi K3.1 Pro falls back to Codex 6.1 Sol once`, () => {
+		const first = `${prefix}neuralwatt/kimi-k3.1-pro`;
 		const routes = withProviderFallbacks([candidate(first)]);
 		assert.deepEqual(routes.map(c => c.modelSpec), [first, codexSol]);
 		assert.ok(routes.every(c => c.thinking === "high"));
-		assert.deepEqual(withProviderFallbacks(routes), routes);
-	});
-}
-
-for (const prefix of ["", "aperture/"]) {
-	test(`${prefix}Neuralwatt Kimi K3.1 Pro falls back to Kimi K3, then Codex 6.1 Sol`, () => {
-		const routes = withProviderFallbacks([candidate(`${prefix}neuralwatt/kimi-k3.1-pro`)]);
-		assert.deepEqual(routes.map(c => c.modelSpec), [`${prefix}neuralwatt/kimi-k3.1-pro`, `${prefix}neuralwatt/kimi-k3`, codexSol]);
 		assert.deepEqual(withProviderFallbacks(routes), routes);
 	});
 }
@@ -298,7 +290,7 @@ test("parallel credit fallbacks use Sol only once, then continue with fewer work
 });
 
 test("gateway aliases cannot supply a second voice, but a new phase can reuse models", async (t) => {
-	const direct = "neuralwatt/kimi-k3";
+	const direct = "neuralwatt/kimi-k3.1-pro";
 	const calls: string[] = [];
 	const registry = mockModels(t, [], calls);
 	const diversity = new ModelDiversity();

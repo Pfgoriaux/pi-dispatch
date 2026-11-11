@@ -27,7 +27,7 @@ const retiredOpus = "anthropic/claude-opus-5-5";
 const opus = "anthropic-2/claude-opus-5-5";
 const astra = "openai-codex/gpt-6-astra";
 const sol = "openai-codex/gpt-6.1-sol";
-const nw = "aperture/neuralwatt/kimi-k3";
+const nw = "aperture/neuralwatt/kimi-k3.1-pro";
 const agent: AgentConfig = { name: "eligibility-fixture", description: "test", model: opus, tools: [], thinking: "high", systemPrompt: "fixture", source: "bundled", filePath: "fixture" };
 const catalog = [retiredOpus, opus, astra, sol, nw].map(spec => {
 	const slash = spec.indexOf("/");

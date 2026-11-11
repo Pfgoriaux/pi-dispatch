@@ -5,11 +5,6 @@ export interface PromptAdaptation {
   text: string;
 }
 
-const kimi: PromptAdaptation = {
-  rationale: "Bounded autonomy and checkpoints.",
-  text: "Keep the requested deliverable and stopping condition explicit. For analysis-only tasks, evidence is the deliverable; do not edit files. Check current and file-specific facts with tools before answering from memory. Make changes only when authorized by the task. Report validation and unresolved blockers; do not assume permission for deployment, publication, or infrastructure changes.",
-};
-
 // Local prompting choices, not claims about model capabilities or API settings.
 const adaptations: Record<KnownModelFamily, PromptAdaptation> = {
   "claude-fable-5.1": {
@@ -67,9 +62,10 @@ const adaptations: Record<KnownModelFamily, PromptAdaptation> = {
     rationale: "Bounded investigation with explicit evidence gaps.",
     text: "Use the stated scope and evidence standard; do not broaden the task into a general repository survey. Cite relevant files and symbols for code claims. Distinguish verified findings, inferences, and evidence not found.",
   },
-  "kimi-k3": kimi,
-  // K3.1 Pro is post-trained from K3 and keeps K3's API behavior; see docs/model-prompts/prompting-kimi-k3.md.
-  "kimi-k3.1": kimi,
+  "kimi-k3.1": {
+    rationale: "Bounded autonomy and checkpoints.",
+    text: "Keep the requested deliverable and stopping condition explicit. For analysis-only tasks, evidence is the deliverable; do not edit files. Check current and file-specific facts with tools before answering from memory. Make changes only when authorized by the task. Report validation and unresolved blockers; do not assume permission for deployment, publication, or infrastructure changes.",
+  },
   "deepseek-v4.1": {
     rationale: "Explicit deliverables and concise evidence summaries.",
     text: "Keep task, supplied context, and constraints distinct. Follow the requested output format. Give conclusions and concise supporting evidence, not private reasoning. Distinguish verified facts from inferences.",

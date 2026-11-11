@@ -107,10 +107,10 @@ test("failed seats never borrow another seat or Sol; GLM runs only on Neuralwatt
 });
 
 test("Kimi replaces GLM and never retries another model", async (t) => {
-	const { calls, run } = setup(t, spec => spec === "aperture/neuralwatt/kimi-k3" ? undefined : "Answer");
-	const result = await run({ third: "kimi-k3" });
+	const { calls, run } = setup(t, spec => spec === "aperture/neuralwatt/kimi-k3.1-pro" ? undefined : "Answer");
+	const result = await run({ third: "kimi-k3.1-pro" });
 	assert.equal(result.details.items[2].status, "error");
-	assert.equal(result.details.items[2].model, "aperture/neuralwatt/kimi-k3");
+	assert.equal(result.details.items[2].model, "aperture/neuralwatt/kimi-k3.1-pro");
 	assert.equal(calls.length, 3);
 	assert.ok(!calls.some(call => /glm|sol/.test(call.spec)));
 });
