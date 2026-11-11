@@ -43,15 +43,15 @@ test("worker adapts the resolved model on every fallback without changing role o
     systemPrompt: "Read-only scout role", source: "bundled", filePath: "fixture",
   }, "Inspect only; do not edit.", {
     registry, fallbackModel: undefined, cwd: root,
-    modelSpec: "aperture/neuralwatt/kimi-k3",
+    modelSpec: "aperture/neuralwatt/kimi-k3.1-pro",
   });
   assert.equal(result.status, "ok", result.error);
   assert.equal(seen.length, 2);
-  assert.match(seen[0], /Model-specific guidance \(kimi-k3\)/);
+  assert.match(seen[0], /Model-specific guidance \(kimi-k3\.1\)/);
   assert.match(seen[1], /Model-specific guidance \(gpt-6-astra\)/);
   assert.match(seen[1], /Do not stop at a plan when you can proceed/);
   assert.match(seen[1], /Complete required project checks/);
-  assert.doesNotMatch(seen[1], /Model-specific guidance \(kimi-k3\)/);
+  assert.doesNotMatch(seen[1], /Model-specific guidance \(kimi-k3\.1\)/);
 });
 
 test("model-prompts extension loads through Pi's actual resource loader without provider calls", async (t) => {

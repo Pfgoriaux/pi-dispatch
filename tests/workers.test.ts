@@ -87,16 +87,16 @@ test("ranked roster retains provider/model names containing slashes", () => {
 
 test("Neuralwatt routes keep roster order, then fall back to Codex 6.1 Sol", () => {
 	const entries = [
-		{ provider: "aperture", model: "neuralwatt/kimi-k3", thinking: "low", weight: 3 },
+		{ provider: "aperture", model: "neuralwatt/kimi-k3.1-pro", thinking: "low", weight: 3 },
 		{ provider: "neuralwatt", model: "glm-5.3", thinking: "high", weight: 2 },
 	];
 	const ranked = rankCandidates(entries);
 	assert.deepEqual(ranked.map(c => c.modelSpec), [
-		"aperture/neuralwatt/kimi-k3", "neuralwatt/glm-5.3", "openai-codex/gpt-6.1-sol",
+		"aperture/neuralwatt/kimi-k3.1-pro", "neuralwatt/glm-5.3", "openai-codex/gpt-6.1-sol",
 	]);
 	assert.equal(ranked[2].thinking, "low");
 	assert.deepEqual(withProviderFallbacks(ranked), ranked, "expansion is idempotent");
-	markCooldown("aperture", "neuralwatt/kimi-k3");
+	markCooldown("aperture", "neuralwatt/kimi-k3.1-pro");
 	assert.equal(rankCandidates(entries)[0].modelSpec, "neuralwatt/glm-5.3");
 });
 
@@ -121,7 +121,7 @@ test("DeepSeek 4.1 Flash falls back to Haiku 5.5, then 6.1 Sol", () => {
 });
 
 test("unmapped models and other providers get no fallback routes", () => {
-	for (const modelSpec of ["neuralwatt/unknown", "neuralwatt/glm-5.2", "neuralwatt/glm-5.3-flash", "other/kimi-k3", "aperture/neuralwatt/kimi-k3-fast"]) {
+	for (const modelSpec of ["neuralwatt/unknown", "neuralwatt/glm-5.2", "neuralwatt/glm-5.3-flash", "other/kimi-k3.1-pro", "aperture/neuralwatt/kimi-k3.1-pro-fast"]) {
 		const candidates = [{ modelSpec, thinking: "low", entry: { provider: "test", model: modelSpec, thinking: "low", weight: 1 } }];
 		assert.deepEqual(withProviderFallbacks(candidates), candidates);
 	}
@@ -132,11 +132,11 @@ for (const source of ["explicit", "inherit", "frontmatter"] as const) {
 		t.mock.method(ModelRuntime, "create", async () => { throw new Error("402 payment_required"); });
 		const controller = new AbortController();
 		const attempts: string[] = [];
-		const parent = { provider: "aperture", id: "neuralwatt/kimi-k3", reasoning: true } as Model<Api>;
-		const result = await runWorker({ ...agent, name: "fallback-test-agent", model: "aperture/neuralwatt/kimi-k3" }, "test", {
+		const parent = { provider: "aperture", id: "neuralwatt/kimi-k3.1-pro", reasoning: true } as Model<Api>;
+		const result = await runWorker({ ...agent, name: "fallback-test-agent", model: "aperture/neuralwatt/kimi-k3.1-pro" }, "test", {
 			registry: { find: (provider: string, id: string) => ({ provider, id, reasoning: true }) } as ModelRegistry,
 			fallbackModel: parent,
-			modelSpec: source === "explicit" ? "aperture/neuralwatt/kimi-k3" : source === "inherit" ? "inherit" : undefined,
+			modelSpec: source === "explicit" ? "aperture/neuralwatt/kimi-k3.1-pro" : source === "inherit" ? "inherit" : undefined,
 			signal: controller.signal,
 			onAttempt: (selected, _thinking, attempt) => {
 				attempts.push(selected);
@@ -144,7 +144,7 @@ for (const source of ["explicit", "inherit", "frontmatter"] as const) {
 				if (attempt === 2) controller.abort();
 			},
 		});
-		assert.deepEqual(attempts, ["aperture/neuralwatt/kimi-k3", "openai-codex/gpt-6.1-sol"]);
+		assert.deepEqual(attempts, ["aperture/neuralwatt/kimi-k3.1-pro", "openai-codex/gpt-6.1-sol"]);
 		assert.equal(result.status, "aborted");
 		assert.equal(result.model, "openai-codex/gpt-6.1-sol");
 	});
@@ -153,13 +153,13 @@ for (const source of ["explicit", "inherit", "frontmatter"] as const) {
 test("exhaustion preserves billing error and actual model when fallback cannot resolve", async (t) => {
 	t.mock.method(ModelRuntime, "create", async () => { throw new Error("402 payment_required"); });
 	const result = await runWorker(agent, "test", {
-		registry: { find: (provider: string, id: string) => provider === "aperture" && id === "neuralwatt/kimi-k3" ? { provider, id, reasoning: true } : undefined } as ModelRegistry,
+		registry: { find: (provider: string, id: string) => provider === "aperture" && id === "neuralwatt/kimi-k3.1-pro" ? { provider, id, reasoning: true } : undefined } as ModelRegistry,
 		fallbackModel: undefined,
-		modelSpec: "aperture/neuralwatt/kimi-k3",
+		modelSpec: "aperture/neuralwatt/kimi-k3.1-pro",
 	});
 	assert.equal(result.status, "error");
 	assert.match(result.error!, /402 payment_required/);
-	assert.equal(result.model, "aperture/neuralwatt/kimi-k3");
+	assert.equal(result.model, "aperture/neuralwatt/kimi-k3.1-pro");
 	assert.equal(result.attempts, 1);
 });
 

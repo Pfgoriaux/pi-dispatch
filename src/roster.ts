@@ -122,16 +122,13 @@ export function loadRosterConfig(): Promise<Map<string, RosterEntry[]> | undefin
 
 // Neuralwatt models whose failures fall back to Codex 6.1 Sol. Do not guess IDs.
 // GLM Flash and Kimi fast variants are not used.
-const NEURALWATT_ROUTES = new Set(["neuralwatt/kimi-k3.1-pro", "neuralwatt/kimi-k3", "neuralwatt/glm-5.3", "neuralwatt/deepseek-v4.1-flash"]);
+const NEURALWATT_ROUTES = new Set(["neuralwatt/kimi-k3.1-pro", "neuralwatt/glm-5.3", "neuralwatt/deepseek-v4.1-flash"]);
 
 // Routes with an extra fallback before the terminal 6.1 Sol.
-// Kimi K3.1 Pro is a Neuralwatt preview with lower rate limits; Kimi K3 on the same route backs it up.
 // DeepSeek 4.1 falls back to Haiku 5.5, which spends Anthropic quota only when Neuralwatt fails.
-const KIMI_ROUTE = "neuralwatt/kimi-k3.1-pro";
 const DEEPSEEK_FALLBACK = "anthropic-2/claude-haiku-5-5";
-const ROUTE_FALLBACKS = new Map<string, (spec: string) => string>([
-	[KIMI_ROUTE, (spec) => spec.replace(KIMI_ROUTE, "neuralwatt/kimi-k3")],
-	["neuralwatt/deepseek-v4.1-flash", () => DEEPSEEK_FALLBACK],
+const ROUTE_FALLBACKS = new Map<string, string>([
+	["neuralwatt/deepseek-v4.1-flash", DEEPSEEK_FALLBACK],
 ]);
 
 const OPENAI_FALLBACK = "openai-codex/gpt-6.1-sol";
@@ -216,7 +213,7 @@ export function withProviderFallbacks(candidates: RankedCandidate[]): RankedCand
 		}
 		const route = routeId(candidate.modelSpec);
 		if (!NEURALWATT_ROUTES.has(route)) continue;
-		const fallback = ROUTE_FALLBACKS.get(route)?.(candidate.modelSpec);
+		const fallback = ROUTE_FALLBACKS.get(route);
 		if (fallback) append(candidates.find(c => c.modelSpec === fallback) ?? at(candidate, fallback));
 		terminal ??= at(candidate, OPENAI_FALLBACK);
 	}

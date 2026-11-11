@@ -205,7 +205,7 @@ interfaces, review only, then dispatch an authorized `precise` writer.
 ### Council
 
 `council({ question, context?, third?, herdr?, thinking? })` runs Opus, Astra and GLM 5.3
-by default; `third:"kimi-k3.1-pro"` or `third:"kimi-k3"` replaces GLM. All use the invocation’s thinking (default high) and the advisor
+by default; `third:"kimi-k3.1-pro"` replaces GLM. All use the invocation’s thinking (default high) and the advisor
 role, restricted to local read/search tools even when custom roles grant more.
 Configured Linkup tools remain available.
 
@@ -274,8 +274,7 @@ IDs fail before spawn.
 ### Routing and failure
 
 - Kimi and GLM 5.3 on Neuralwatt (direct and Aperture routes) fall back to
-  Codex Sol 6.1. Kimi K3.1 Pro falls back through Kimi K3 on the same route
-  then Sol; DeepSeek falls back through Haiku 5.5 then Sol.
+  Codex Sol 6.1. DeepSeek falls back through Haiku 5.5 then Sol.
 - Claude routes use `anthropic-2/<id>`, registered by pi-ant. Retired
   `anthropic/<id>` pins and roster entries resolve to Claude 2, with the same
   model and thinking level. Quota steering can move a higher-headroom Codex peer
@@ -369,7 +368,7 @@ no-op.
 | GPT-6 Astra | `gpt-6-astra` and dash-suffixed variants |
 | GPT-6.1 Sol | `gpt-6.1-sol` and dash-suffixed variants |
 | GLM-5.3 | `glm-5.3` and dash-suffixed variants |
-| Kimi K3 and K3.1 | `kimi-k3`, `kimi-k3.1` and dash-suffixed variants |
+| Kimi K3.1 Pro | `kimi-k3.1` and dash-suffixed variants |
 | DeepSeek 4.1 | `deepseek-v4.1` and dash-suffixed variants |
 
 Other versions do not inherit a neighbouring version's guidance; GPT-6 Sol,

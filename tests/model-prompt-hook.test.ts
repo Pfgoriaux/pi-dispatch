@@ -35,8 +35,8 @@ test("uses ctx.model, preserves the role, and follows model changes", () => {
 	assert.match(first, /Complete required project checks/);
 	assert.match(first, /your role permits delegation/);
 	assert.match(first, /Respect requests to work without delegation or other models/);
-	const next = prompt(run("hf:moonshotai/Kimi-K3"));
-	assert.match(next, /Model-specific guidance \(kimi-k3\)/);
+	const next = prompt(run("hf:moonshotai/Kimi-K3.1-Pro"));
+	assert.match(next, /Model-specific guidance \(kimi-k3\.1\)/);
 	assert.doesNotMatch(next, /Model-specific guidance \(gpt-6-astra\)/);
 	assert.equal(run("unknown"), undefined);
 	assert.equal(run(), undefined);
@@ -74,7 +74,7 @@ test("leaves retired GPT-6 models unchanged", () => {
 });
 
 test("every adaptation preserves permission boundaries and appears once", () => {
-	const ids = ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "gpt-6-astra", "gpt-6.1-sol", "glm-5.3", "kimi-k3", "deepseek-v4.1-flash"];
+	const ids = ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "gpt-6-astra", "gpt-6.1-sol", "glm-5.3", "kimi-k3.1-pro", "deepseek-v4.1-flash"];
 	for (const id of ids) {
 		const text = buildAdaptedSystemPrompt("Read-only.", knownModelFamily({ provider: "test", id }));
 		assert.match(text, /does not expand permissions/, id);

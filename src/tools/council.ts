@@ -12,7 +12,6 @@ const ASTRA = "openai-codex/gpt-6-astra";
 const THIRD = {
 	"glm-5.3": ["aperture/neuralwatt/glm-5.3"],
 	"kimi-k3.1-pro": ["aperture/neuralwatt/kimi-k3.1-pro"],
-	"kimi-k3": ["aperture/neuralwatt/kimi-k3"],
 } as const;
 
 function report(result: WorkerResult, requested: string) {
@@ -31,7 +30,7 @@ export function registerCouncilTool(pi: ExtensionAPI): void {
 		exposure: "model-only",
 		label: "Council",
 		description:
-			"Get three independent, read-only opinions in parallel: Opus 5.5, GPT-6 Astra, and GLM 5.3, Kimi K3.1 Pro or Kimi K3. Returns labeled reports; the caller synthesizes them.",
+			"Get three independent, read-only opinions in parallel: Opus 5.5, GPT-6 Astra, and GLM 5.3 or Kimi K3.1 Pro. Returns labeled reports; the caller synthesizes them.",
 		promptSnippet: "Consult three different models on a consequential decision",
 		promptGuidelines: [
 			"council: Use for requested multiple opinions or consequential competing options. Prefer one advisor for focused questions and feature_plan for implementation plans; skip routine work.",
@@ -42,7 +41,7 @@ export function registerCouncilTool(pi: ExtensionAPI): void {
 			thinking: Type.Optional(TaskThinkingSchema),
 			question: Type.String({ minLength: 1, description: "The decision or question to assess" }),
 			context: Type.Optional(Type.String({ description: "Evidence, options, paths, constraints, and applicable instructions" })),
-			third: Type.Optional(Type.Union([Type.Literal("glm-5.3"), Type.Literal("kimi-k3.1-pro"), Type.Literal("kimi-k3")], {
+			third: Type.Optional(Type.Union([Type.Literal("glm-5.3"), Type.Literal("kimi-k3.1-pro")], {
 				description: "Third model; defaults to glm-5.3",
 			})),
 			herdr: Type.Optional(Type.Boolean({ description: "false disables Herdr viewer tabs" })),

@@ -135,7 +135,7 @@ console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content
 		{ expected: astra },
 		{ modelOverride: opus, steerByQuota: true, expected: astra },
 		{ modelOverride: opus, expected: opus },
-		{ modelOverride: "aperture/neuralwatt/kimi-k3", expected: "aperture/neuralwatt/kimi-k3" },
+		{ modelOverride: "aperture/neuralwatt/kimi-k3.1-pro", expected: "aperture/neuralwatt/kimi-k3.1-pro" },
 	]) {
 		const result = await runWorkerProc(agent, "test", { cwd: root, ...options });
 		assert.equal(result.status, "ok");

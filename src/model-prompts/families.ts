@@ -16,7 +16,6 @@ export type KnownModelFamily =
   | "gpt-6-astra"
   | "gpt-6.1-sol"
   | "glm-5.3"
-  | "kimi-k3"
   | "kimi-k3.1"
   | "deepseek-v4.1";
 
@@ -45,8 +44,7 @@ export function knownModelFamily(
   // GLM-5.3 family (flash, flash-flex, etc.)
   if (isFamilyId(id, "glm-5.3")) return "glm-5.3";
 
-  // Kimi K3 and K3.1 families (k3.1 does not match the k3 dash-suffix rule)
-  if (isFamilyId(id, "kimi-k3")) return "kimi-k3";
+  // Kimi K3.1 family
   if (isFamilyId(id, "kimi-k3.1")) return "kimi-k3.1";
 
   // DeepSeek 4.1 family; V4 is retired locally.
